@@ -4135,3 +4135,368 @@ func TestHardcoverDiffDuplicateRowNeverBindsANeighbour(t *testing.T) {
 		}
 	}
 }
+
+// realisticLocal is one row of a realistic library for the Hardcover diff.
+// owns is the catalogue foreign ID of the book the row really is, which the
+// assertions check independently of the title the row carries.
+type realisticLocal struct {
+	id    int64
+	pos   string
+	fid   string
+	title string
+	owns  string
+}
+
+type realisticDiffCase struct {
+	name    string
+	catalog *metadata.SeriesCatalog
+	locals  []realisticLocal
+}
+
+func (c realisticDiffCase) series(reversed bool) *models.Series {
+	rows := make([]models.SeriesBook, 0, len(c.locals))
+	for _, l := range c.locals {
+		rows = append(rows, models.SeriesBook{SeriesID: 1, BookID: l.id, PositionInSeries: l.pos,
+			Book: &models.Book{ID: l.id, ForeignID: l.fid, Title: l.title, Status: models.BookStatusImported}})
+	}
+	if reversed {
+		for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+			rows[i], rows[j] = rows[j], rows[i]
+		}
+	}
+	return &models.Series{ID: 1, Title: c.catalog.Title, Books: rows}
+}
+
+// realisticDiffOutcome reads a diff against the books each row really is.
+// A starved row is Local only although no other row of the same book is
+// bound, so nothing in the diff stands for it. ownedMissing lists catalogue
+// entries a row owns that the diff nevertheless offers as Missing, which is
+// what series fill creates.
+func realisticDiffOutcome(c realisticDiffCase, diff seriesHardcoverDiffResponse) (bound map[int64]string, starved []int64, ownedMissing []string) {
+	bound = map[int64]string{}
+	for _, row := range append(append([]seriesHardcoverDiffBook{}, diff.Present...), diff.Uncertain...) {
+		if row.LocalBookID != nil {
+			bound[*row.LocalBookID] = row.ForeignBookID
+		}
+	}
+	localOnly := map[int64]bool{}
+	for _, row := range diff.LocalOnly {
+		if row.LocalBookID != nil {
+			localOnly[*row.LocalBookID] = true
+		}
+	}
+	for _, l := range c.locals {
+		if !localOnly[l.id] {
+			continue
+		}
+		copyBound := false
+		for _, other := range c.locals {
+			if _, ok := bound[other.id]; ok && other.id != l.id && other.owns == l.owns {
+				copyBound = true
+			}
+		}
+		if !copyBound {
+			starved = append(starved, l.id)
+		}
+	}
+	missing := map[string]bool{}
+	for _, row := range diff.Missing {
+		missing[row.ForeignBookID] = true
+	}
+	seen := map[string]bool{}
+	for _, l := range c.locals {
+		if missing[l.owns] && !seen[l.owns] {
+			seen[l.owns] = true
+			ownedMissing = append(ownedMissing, l.owns)
+		}
+	}
+	return bound, starved, ownedMissing
+}
+
+func realisticCatalogBook(pos, fid, title string) metadata.SeriesCatalogBook {
+	return metadata.SeriesCatalogBook{ForeignID: fid, Title: title, Position: pos, Book: models.Book{ForeignID: fid, Title: title}}
+}
+
+func hwfwmCatalogID(n int) string {
+	if n == 1 {
+		return "hc:he-who-fights-with-monsters-2021"
+	}
+	return fmt.Sprintf("hc:he-who-fights-with-monsters-%d", n)
+}
+
+// hwfwmCatalog builds He Who Fights with Monsters in the shape Hardcover
+// serves it: volume 1 under the bare series title, and three spellings of a
+// numbered volume after it.
+func hwfwmCatalog(volumes ...int) *metadata.SeriesCatalog {
+	cat := &metadata.SeriesCatalog{ForeignID: "hc-series:12723", ProviderID: "12723", Title: "He Who Fights with Monsters", AuthorName: "Shirtaloon"}
+	for _, n := range volumes {
+		title := fmt.Sprintf("He Who Fights with Monsters %d: A LitRPG Adventure", n)
+		switch n {
+		case 1:
+			title = "He Who Fights with Monsters"
+		case 4:
+			title = "He Who Fights with Monsters 4: He Who Fights with Monsters, Book 4"
+		case 9:
+			title = "He Who Fights with Monsters 9: A LitRPG Adventure (He Who Fights with Monsters, Book 9)"
+		}
+		cat.Books = append(cat.Books, realisticCatalogBook(strconv.Itoa(n), hwfwmCatalogID(n), title))
+	}
+	cat.BookCount = len(cat.Books)
+	return cat
+}
+
+// hwfwmFullLibrary is volumes 1 to 12 under their bare titles, as an
+// Audiobookshelf import carries them, with volume 12 held twice.
+func hwfwmFullLibrary(withPositions bool) []realisticLocal {
+	var locals []realisticLocal
+	add := func(id int64, n int, fid, title string) {
+		pos := ""
+		if withPositions {
+			pos = strconv.Itoa(n)
+		}
+		locals = append(locals, realisticLocal{id, pos, fid, title, hwfwmCatalogID(n)})
+	}
+	add(101, 1, "abs:hwfwm-1", "He Who Fights with Monsters")
+	for n := 2; n <= 12; n++ {
+		add(int64(100+n), n, fmt.Sprintf("abs:hwfwm-%d", n), fmt.Sprintf("He Who Fights with Monsters %d", n))
+	}
+	add(113, 12, "abs:hwfwm-12-b", "He Who Fights with Monsters 12")
+	return locals
+}
+
+func realisticDiffCases() []realisticDiffCase {
+	positionsName := func(on bool) string {
+		if on {
+			return "with positions"
+		}
+		return "without positions"
+	}
+	at := func(on bool, pos string) string {
+		if on {
+			return pos
+		}
+		return ""
+	}
+	var cases []realisticDiffCase
+
+	// The #2553 library: volume 12 twice, volume 1 under a subtitle it
+	// shares with catalogue 12, and volumes 4 and 9 under bare titles.
+	for _, withPositions := range []bool{true, false} {
+		for _, vol9ID := range []bool{true, false} {
+			fid9, idName := "abs:hwfwm-9", "no catalogue ids"
+			if vol9ID {
+				fid9, idName = hwfwmCatalogID(9), "volume 9 carries its catalogue id"
+			}
+			cases = append(cases, realisticDiffCase{
+				name:    "#2553 library/" + positionsName(withPositions) + "/" + idName,
+				catalog: hwfwmCatalog(1, 4, 9, 12),
+				locals: []realisticLocal{
+					{9, at(withPositions, "12"), "abs:hwfwm-12-a", "He Who Fights with Monsters 12: A LitRPG Adventure", hwfwmCatalogID(12)},
+					{125, at(withPositions, "12"), "abs:hwfwm-12-b", "He Who Fights with Monsters 12: A LitRPG Adventure", hwfwmCatalogID(12)},
+					{114, at(withPositions, "1"), "abs:hwfwm-1", "He Who Fights with Monsters: A LitRPG Adventure", hwfwmCatalogID(1)},
+					{117, at(withPositions, "4"), "abs:hwfwm-4", "He Who Fights with Monsters 4", hwfwmCatalogID(4)},
+					{122, at(withPositions, "9"), fid9, "He Who Fights with Monsters 9", hwfwmCatalogID(9)},
+				},
+			})
+		}
+	}
+
+	// Every volume under a bare title. Each "He Who Fights with Monsters N"
+	// scores 0.96 against the umbrella title volume 1 holds and 0.90 against
+	// its own entry.
+	all := make([]int, 0, 12)
+	for n := 1; n <= 12; n++ {
+		all = append(all, n)
+	}
+	for _, withPositions := range []bool{true, false} {
+		cases = append(cases, realisticDiffCase{
+			name:    "He Who Fights with Monsters 1 to 12 plus a second 12/" + positionsName(withPositions),
+			catalog: hwfwmCatalog(all...),
+			locals:  hwfwmFullLibrary(withPositions),
+		})
+	}
+
+	// Defiance of the Fall numbers its volumes with a bare trailing number
+	// in the catalogue (#2538), and the library carries the audiobook
+	// spelling with a subtitle, volume 7 twice.
+	defiance := &metadata.SeriesCatalog{ForeignID: "hc-series:23984", Title: "Defiance of the Fall"}
+	defianceID := func(n int) string { return fmt.Sprintf("hc:defiance-of-the-fall-%d", n) }
+	for n := 1; n <= 17; n++ {
+		defiance.Books = append(defiance.Books, realisticCatalogBook(strconv.Itoa(n), defianceID(n), fmt.Sprintf("Defiance of the Fall %d", n)))
+	}
+	for _, withPositions := range []bool{true, false} {
+		var locals []realisticLocal
+		for n := 1; n <= 16; n++ {
+			locals = append(locals, realisticLocal{int64(200 + n), at(withPositions, strconv.Itoa(n)), fmt.Sprintf("abs:dotf-%d", n),
+				fmt.Sprintf("Defiance of the Fall %d: A LitRPG Adventure", n), defianceID(n)})
+		}
+		locals = append(locals, realisticLocal{217, at(withPositions, "7"), "abs:dotf-7-b", "Defiance of the Fall 7: A LitRPG Adventure", defianceID(7)})
+		cases = append(cases, realisticDiffCase{name: "Defiance of the Fall/" + positionsName(withPositions), catalog: defiance, locals: locals})
+	}
+
+	// The Primal Hunter: catalogue "The Primal Hunter N", library "The
+	// Primal Hunter N: A LitRPG Adventure", volume 1 twice.
+	primal := &metadata.SeriesCatalog{ForeignID: "hc-series:primal-hunter", Title: "The Primal Hunter"}
+	primalID := func(n int) string { return fmt.Sprintf("hc:the-primal-hunter-%d", n) }
+	for n := 1; n <= 13; n++ {
+		primal.Books = append(primal.Books, realisticCatalogBook(strconv.Itoa(n), primalID(n), fmt.Sprintf("The Primal Hunter %d", n)))
+	}
+	for _, withPositions := range []bool{true, false} {
+		locals := []realisticLocal{{301, at(withPositions, "1"), "abs:tph-1-a", "The Primal Hunter 1: A LitRPG Adventure", primalID(1)}}
+		for n := 1; n <= 13; n++ {
+			fid := fmt.Sprintf("abs:tph-%d", n)
+			if n == 1 {
+				fid = "abs:tph-1-b"
+			}
+			locals = append(locals, realisticLocal{int64(301 + n), at(withPositions, strconv.Itoa(n)), fid,
+				fmt.Sprintf("The Primal Hunter %d: A LitRPG Adventure", n), primalID(n)})
+		}
+		cases = append(cases, realisticDiffCase{name: "The Primal Hunter/" + positionsName(withPositions), catalog: primal, locals: locals})
+	}
+
+	// Stormlight, the #2410 shape: The Way of Kings twice beside Prime.
+	stormlight := &metadata.SeriesCatalog{ForeignID: "hc-series:42", Title: "The Stormlight Archive", Books: []metadata.SeriesCatalogBook{
+		realisticCatalogBook("1", "hc:the-way-of-kings", "The Way of Kings"),
+		realisticCatalogBook("", "hc:the-way-of-kings-prime", "The Way of Kings Prime"),
+		realisticCatalogBook("2", "hc:words-of-radiance", "Words of Radiance"),
+	}}
+	for _, withPositions := range []bool{true, false} {
+		cases = append(cases, realisticDiffCase{name: "Stormlight/" + positionsName(withPositions), catalog: stormlight, locals: []realisticLocal{
+			{401, at(withPositions, "1"), "abs:wok-ebook", "The Way of Kings", "hc:the-way-of-kings"},
+			{402, at(withPositions, "1"), "abs:wok-audio", "The Way of Kings", "hc:the-way-of-kings"},
+			{403, at(withPositions, "2"), "abs:wor", "Words of Radiance", "hc:words-of-radiance"},
+		}})
+	}
+	return cases
+}
+
+// TestHardcoverDiffRealisticSeriesNeverStarves guards the other side of
+// #2410. Keeping a second copy of a book off its neighbour must not also
+// keep a real book off its own entry. A rule that refused every weaker
+// fallback did exactly that on libraries without stored positions: each
+// bare "He Who Fights with Monsters N" lost the umbrella entry to volume 1,
+// was treated as a copy of it and listed Local only, and its own volume
+// showed as Missing, so series fill created and searched for books the user
+// already had.
+//
+// Every case runs in both library orders. A row may be Local only only when
+// another row of the same book is bound, and no entry a row owns may appear
+// in Missing. Which entry a row binds is not asserted: title similarity
+// still cross binds a few of these in one order or the other, on main too.
+func TestHardcoverDiffRealisticSeriesNeverStarves(t *testing.T) {
+	for _, c := range realisticDiffCases() {
+		for _, reversed := range []bool{false, true} {
+			order := "library order"
+			if reversed {
+				order = "reversed library order"
+			}
+			t.Run(c.name+"/"+order, func(t *testing.T) {
+				diff := buildHardcoverDiff(context.Background(), nil, 0, c.series(reversed), nil, c.catalog)
+				bound, starved, ownedMissing := realisticDiffOutcome(c, diff)
+				if len(starved) > 0 {
+					t.Errorf("real books %v are Local only with no other copy bound (bindings %v)", starved, bound)
+				}
+				if len(ownedMissing) > 0 {
+					t.Errorf("owned entries %v are listed Missing (bindings %v)", ownedMissing, bound)
+				}
+			})
+		}
+	}
+
+	// The same library through the real fill handler: a complete library
+	// must fill nothing. Starving it created Wanted copies of owned volumes
+	// and queued searches for them.
+	for _, reversed := range []bool{false, true} {
+		order := "library order"
+		if reversed {
+			order = "reversed library order"
+		}
+		t.Run("fill on He Who Fights with Monsters without positions/"+order, func(t *testing.T) {
+			author := &models.Author{ForeignID: "hc:shirtaloon", Name: "Shirtaloon", SortName: "Shirtaloon", MetadataProvider: "hardcover"}
+			all := make([]int, 0, 12)
+			for n := 1; n <= 12; n++ {
+				all = append(all, n)
+			}
+			catalog := hwfwmCatalog(all...)
+			for i := range catalog.Books {
+				b := &catalog.Books[i]
+				b.ProviderID = strconv.Itoa(1272300 + i + 1)
+				b.Book.SortTitle = b.Book.Title
+				b.Book.MetadataProvider = "hardcover"
+				b.Book.MediaType = models.MediaTypeAudiobook
+				b.Book.Author = author
+			}
+			searcher := newMockBookSearcher()
+			h, seriesRepo, authorRepo, bookRepo := seriesFixtureWithProvider(t, &stubSeriesProvider{
+				catalogs: map[string]*metadata.SeriesCatalog{catalog.ForeignID: catalog},
+			}, searcher)
+			ctx := context.Background()
+			series := &models.Series{ForeignID: "abs-series:hwfwm", Title: "He Who Fights with Monsters"}
+			if err := seriesRepo.Create(ctx, series); err != nil {
+				t.Fatal(err)
+			}
+			if err := seriesRepo.UpsertHardcoverLink(ctx, &models.SeriesHardcoverLink{
+				SeriesID: series.ID, HardcoverSeriesID: catalog.ForeignID, HardcoverProviderID: catalog.ProviderID,
+				HardcoverTitle: catalog.Title, HardcoverAuthorName: catalog.AuthorName, HardcoverBookCount: catalog.BookCount,
+				Confidence: 1, LinkedBy: "manual",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			storedAuthor := *author
+			if err := authorRepo.Create(ctx, &storedAuthor); err != nil {
+				t.Fatal(err)
+			}
+			locals := hwfwmFullLibrary(false)
+			if reversed {
+				for i, j := 0, len(locals)-1; i < j; i, j = i+1, j-1 {
+					locals[i], locals[j] = locals[j], locals[i]
+				}
+			}
+			for _, l := range locals {
+				book := &models.Book{ForeignID: l.fid, AuthorID: storedAuthor.ID, Title: l.title, SortTitle: l.title,
+					Status: models.BookStatusImported, MediaType: models.MediaTypeAudiobook, Monitored: true, Genres: []string{}}
+				if err := bookRepo.Create(ctx, book); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := seriesRepo.LinkBookIfMissing(ctx, series.ID, book.ID, "", true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := bookRepo.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			rec := httptest.NewRecorder()
+			h.Fill(rec, withURLParam(httptest.NewRequest(http.MethodPost, "/api/v1/series/1/fill", nil), "id", strconv.FormatInt(series.ID, 10)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var response map[string]int
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+
+			after, err := bookRepo.List(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(after) != len(before) {
+				existing := map[int64]bool{}
+				for _, b := range before {
+					existing[b.ID] = true
+				}
+				var created []string
+				for _, b := range after {
+					if !existing[b.ID] {
+						created = append(created, b.Title)
+					}
+				}
+				t.Errorf("fill created %d books for a complete library: %q", len(created), created)
+			}
+			if response["queued"] != 0 {
+				t.Errorf("queued = %d, want 0: every volume is already imported", response["queued"])
+			}
+		})
+	}
+}
