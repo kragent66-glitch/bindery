@@ -1269,10 +1269,7 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 	// every later one (#2343). Without it two locals could resolve to the same
 	// index, which duplicated the row in Present, over-counted PresentCount,
 	// and pushed the second local's real catalog entry into Missing behind an
-	// Add button that ensureHardcoverCatalogBook's guards then refuse. A local
-	// whose best candidate is taken falls through to its next best, and to
-	// LocalOnly when it has none. First local seen wins the tie, matching the
-	// order this loop has always used.
+	// Add button that ensureHardcoverCatalogBook's guards then refuse.
 	matchedCatalog := make(map[int]struct{})
 	// Identities bind first (#2553). Assigning in library order let an
 	// earlier local's fuzzy title match claim the catalogue slot that a later
@@ -1296,14 +1293,55 @@ func buildHardcoverDiff(ctx context.Context, books *db.BookRepo, userID int64, s
 			}
 		}
 	}
+	// Title matches bind strongest first, and a local whose own best entry is
+	// already taken falls through only to an entry it matches just as well
+	// (#2410). Falling through to any weaker one sent the second of two rows
+	// for The Way of Kings, an ebook and an audiobook, to "The Way of Kings
+	// Prime" at 0.90, which showed Prime as owned and hid it from Missing and
+	// so from series fill. The loser's title is evidence for the entry it
+	// lost, not for a neighbour, so it is Local only: the outcome #2553 gives
+	// a duplicate at one stored position. An equal score still falls through,
+	// which is the tie the exclusion set was built for. Strongest first keeps
+	// the answer out of library order, which for unpositioned rows is
+	// SQLite's tiebreak.
+	matches := make(map[int]catalogMatch, len(series.Books))
+	preferred := make(map[int]catalogMatch, len(series.Books))
+	byTitle := make([]int, 0, len(series.Books))
 	for li, local := range series.Books {
 		if local.Book == nil {
 			continue
 		}
-		match, byIdentity := identity[li]
-		if !byIdentity {
-			match = bestCatalogMatch(local, catalog.Books, matchedCatalog)
+		if match, ok := identity[li]; ok {
+			matches[li] = match
+			continue
 		}
+		preferred[li] = bestCatalogMatch(local, catalog.Books, nil)
+		byTitle = append(byTitle, li)
+	}
+	sort.SliceStable(byTitle, func(a, b int) bool {
+		return preferred[byTitle[a]].score > preferred[byTitle[b]].score
+	})
+	for _, li := range byTitle {
+		local := series.Books[li]
+		match := bestCatalogMatch(local, catalog.Books, matchedCatalog)
+		if best := preferred[li]; match.score < best.score {
+			c := catalog.Books[best.index]
+			slog.Debug("series diff: local book's best catalogue entry is already bound, left Local only",
+				"seriesID", series.ID, "localBookID", local.Book.ID, "localTitle", local.Book.Title,
+				"catalogForeignID", firstNonEmpty(c.ForeignID, c.Book.ForeignID), "score", best.score,
+				"fallbackScore", match.score)
+			match = catalogMatch{index: -1}
+		}
+		if match.index >= 0 && match.score >= 70 {
+			matchedCatalog[match.index] = struct{}{}
+		}
+		matches[li] = match
+	}
+	for li, local := range series.Books {
+		if local.Book == nil {
+			continue
+		}
+		match := matches[li]
 		logDiffDecision(series.ID, local, catalog.Books, match)
 		localItem := localDiffBook(local)
 		if match.index < 0 {

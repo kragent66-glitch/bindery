@@ -1,0 +1,2 @@
+### Fixed
+- **A second copy of a book no longer claims its neighbour in the series diff** (#2410): when a series held one book twice, such as an ebook row and an audiobook row of The Way of Kings, the Hardcover diff bound the second copy to a similar title like The Way of Kings Prime. Prime then showed as owned and was left out of series fill. The second copy is now listed as Local only and Prime stays in Missing.

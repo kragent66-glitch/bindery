@@ -3974,3 +3974,164 @@ func TestHardcoverDiffBindsIdentityFirstAndRespectsPositions(t *testing.T) {
 		}
 	}
 }
+
+// TestHardcoverDiffDuplicateRowNeverBindsANeighbour reproduces #2410. The
+// library holds The Way of Kings twice, an ebook row and an audiobook row with
+// distinct foreign IDs, and the catalogue carries a near identical neighbour,
+// The Way of Kings Prime. The first row binds to The Way of Kings. The second
+// used to fall through the #2343 exclusion set to Prime on title similarity
+// alone, which listed Prime as owned and dropped it from Missing and so from
+// series fill. A duplicate row for a book that already bound is Local only.
+//
+// Every combination the issue raises is covered: rows with and without stored
+// positions, Prime sharing The Way of Kings' position, at a different one and
+// at none, either row or neither carrying the catalogue's own ID, and both
+// library orders, because the rows' order is SQLite's tiebreak on an equal
+// position and must not decide the answer.
+func TestHardcoverDiffDuplicateRowNeverBindsANeighbour(t *testing.T) {
+	const (
+		wokID   = "hc:the-way-of-kings"
+		primeID = "hc:the-way-of-kings-prime"
+		worID   = "hc:words-of-radiance"
+	)
+	catalogWith := func(primePos string) *metadata.SeriesCatalog {
+		cat := func(pos, fid, title string) metadata.SeriesCatalogBook {
+			return metadata.SeriesCatalogBook{ForeignID: fid, Title: title, Position: pos, Book: models.Book{ForeignID: fid, Title: title}}
+		}
+		return &metadata.SeriesCatalog{
+			ForeignID: "hc-series:42",
+			Title:     "The Stormlight Archive",
+			Books: []metadata.SeriesCatalogBook{
+				cat("1", wokID, "The Way of Kings"),
+				cat(primePos, primeID, "The Way of Kings Prime"),
+				cat("2", worID, "Words of Radiance"),
+			},
+		}
+	}
+	local := func(id int64, pos, fid, title string) models.SeriesBook {
+		return models.SeriesBook{SeriesID: 1, BookID: id, PositionInSeries: pos,
+			Book: &models.Book{ID: id, ForeignID: fid, Title: title, Status: models.BookStatusImported}}
+	}
+	bindings := func(diff seriesHardcoverDiffResponse) map[int64]string {
+		bound := map[int64]string{}
+		for _, row := range append(append([]seriesHardcoverDiffBook{}, diff.Present...), diff.Uncertain...) {
+			if row.LocalBookID != nil {
+				bound[*row.LocalBookID] = row.ForeignBookID
+			}
+		}
+		return bound
+	}
+	primePositions := []struct{ name, pos string }{
+		{"prime shares position 1", "1"},
+		{"prime at a different position", "0.5"},
+		{"prime unpositioned", ""},
+	}
+
+	const ebook, audio = int64(1), int64(2)
+	rowPositions := []struct{ name, ebook, audio string }{
+		{"rows unpositioned", "", ""},
+		{"both rows at position 1", "1", "1"},
+		{"only the ebook row positioned", "1", ""},
+	}
+	identities := []struct {
+		name         string
+		ebook, audio string
+		owner        int64 // the row that must win, 0 when either may
+	}{
+		{"neither row carries the catalogue id", "abs:wok-ebook", "abs:wok-audio", 0},
+		{"ebook row carries the catalogue id", wokID, "abs:wok-audio", ebook},
+		{"audiobook row carries the catalogue id", "abs:wok-ebook", wokID, audio},
+	}
+	for _, pp := range primePositions {
+		for _, rp := range rowPositions {
+			for _, id := range identities {
+				for _, reversed := range []bool{false, true} {
+					order := "library order ebook first"
+					if reversed {
+						order = "library order audiobook first"
+					}
+					t.Run(pp.name+"/"+rp.name+"/"+id.name+"/"+order, func(t *testing.T) {
+						rows := []models.SeriesBook{
+							local(ebook, rp.ebook, id.ebook, "The Way of Kings"),
+							local(audio, rp.audio, id.audio, "The Way of Kings"),
+						}
+						if reversed {
+							rows[0], rows[1] = rows[1], rows[0]
+						}
+						series := &models.Series{ID: 1, Title: "The Stormlight Archive", Books: rows}
+
+						diff := buildHardcoverDiff(context.Background(), nil, 0, series, nil, catalogWith(pp.pos))
+
+						bound := bindings(diff)
+						for localID, fid := range bound {
+							if fid != wokID {
+								t.Errorf("local %d bound to %s, want only The Way of Kings bound (bindings %v)", localID, fid, bound)
+							}
+						}
+						winner, loser := ebook, audio
+						if bound[ebook] != wokID {
+							winner, loser = audio, ebook
+						}
+						if bound[winner] != wokID {
+							t.Fatalf("neither row bound to The Way of Kings (bindings %v)", bound)
+						}
+						if id.owner != 0 && winner != id.owner {
+							t.Errorf("local %d bound to The Way of Kings, want local %d, which carries its foreign ID", winner, id.owner)
+						}
+						localOnly := false
+						for _, row := range diff.LocalOnly {
+							if row.LocalBookID != nil && *row.LocalBookID == loser {
+								localOnly = true
+							}
+						}
+						if !localOnly {
+							t.Errorf("duplicate row %d is not Local only (bindings %v)", loser, bound)
+						}
+						missing := map[string]bool{}
+						for _, row := range diff.Missing {
+							missing[row.ForeignBookID] = true
+						}
+						if !missing[primeID] || !missing[worID] {
+							t.Errorf("Missing = %v, want Prime and Words of Radiance, neither is owned", diffForeignIDs(diff.Missing))
+						}
+						if diff.PresentCount+len(diff.Uncertain) != 1 {
+							t.Errorf("present %d, uncertain %d, want one bound row", diff.PresentCount, len(diff.Uncertain))
+						}
+					})
+				}
+			}
+		}
+	}
+
+	// The issue's order dependence: [Kings, Prime] paired correctly while
+	// [Prime, Kings] cross assigned. Each row must bind its own entry in
+	// either order.
+	for _, pp := range primePositions {
+		for _, reversed := range []bool{false, true} {
+			order := "kings first"
+			if reversed {
+				order = "prime first"
+			}
+			t.Run("kings and prime/"+pp.name+"/"+order, func(t *testing.T) {
+				rows := []models.SeriesBook{
+					local(1, "", "abs:wok", "The Way of Kings"),
+					local(2, "", "abs:wok-prime", "The Way of Kings Prime"),
+				}
+				if reversed {
+					rows[0], rows[1] = rows[1], rows[0]
+				}
+				series := &models.Series{ID: 1, Title: "The Stormlight Archive", Books: rows}
+
+				diff := buildHardcoverDiff(context.Background(), nil, 0, series, nil, catalogWith(pp.pos))
+
+				bound := bindings(diff)
+				if bound[1] != wokID || bound[2] != primeID {
+					t.Errorf("bindings %v, want local 1 on %s and local 2 on %s", bound, wokID, primeID)
+				}
+				if got := diffForeignIDs(diff.Missing); len(got) != 1 || got[0] != worID {
+					t.Errorf("Missing = %v, want only %s", got, worID)
+				}
+			})
+		}
+	}
+}
