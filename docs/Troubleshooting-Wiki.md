@@ -111,6 +111,14 @@ Clicking **Grab** on a release you already have a Queue entry for is refused wit
 - **downloading / grabbed / importing** — it's in flight; check the Queue.
 - **`importBlocked`** — a re-grab is allowed and reuses the existing Queue row with a fresh retry budget. Use this when the original files are gone; use **Retry import** instead when they're still on disk.
 
+### Automatic search skips a release you have a failed Queue row for
+
+Automatic search applies the same rule, with one addition. A Queue row that is in flight, or imported into a book you still have, stops the sweep from grabbing that release again. A row that failed, or that is `importBlocked`, does not: once it has been sitting untouched for six hours, the next sweep grabs the release again and reuses the same Queue row, with the old error message, import path and client id cleared.
+
+The six hour wait is deliberate. A release that fails at the download client fails again the moment it is re-sent, so without it a bad release would be re-grabbed on every sweep. Clicking **Grab** yourself has no such wait and retries straight away.
+
+Earlier releases let a failed row block the release permanently, and the skip was silent: the log showed `auto-grabbing book` and then nothing, as though the grab had gone ahead. Every skip now writes a line naming the release, its GUID, the blocking Queue row and its status, and the `book search finished` line for that book ends with an `outcome` that says the same thing.
+
 ### Retrying a download that failed
 
 A Queue row in `failed` never produced a file: the grab did not reach the download client, or the client gave up on it. There is nothing to import, so **Retry import** does not apply and is not offered. Use **Retry download** on the row instead. It sends the same release to your download client again, which is the right move when the cause was transient (the client was down, the indexer answered 429 or 500). It deliberately does not search for a different release; when the release itself is gone, search the book and grab another one, or blocklist this one first.
