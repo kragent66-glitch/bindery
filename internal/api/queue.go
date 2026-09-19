@@ -72,8 +72,12 @@ func regrabbableState(s models.DownloadState) bool {
 // regrabbable is the gate grab applies to an existing download row for the
 // same GUID: the row may be reused when its state is dead (regrabbableState)
 // or when it is an orphaned import (orphanedImport).
+//
+// It is models.Download.BlocksRegrab negated, which is what the scheduler's
+// auto grab gates on; the two are spelled out separately here only because
+// each half carries the reasoning for its own case.
 func regrabbable(d *models.Download) bool {
-	return !d.BlocksRegrab()
+	return regrabbableState(d.Status) || orphanedImport(d)
 }
 
 // orphanedImport reports whether d finished importing into a book that has
@@ -103,7 +107,7 @@ func regrabbable(d *models.Download) bool {
 //
 // The predicate itself is models.Download.IsOrphanedImport, shared with the
 // scheduler's auto grab. Keep it in sync with the SQL guards in
-// db.DownloadRepo.RetryFailed and RetryOrphanedImport.
+// db.DownloadRepo.RetryFailed and RetryDeadForAutoGrab.
 func orphanedImport(d *models.Download) bool {
 	return d.IsOrphanedImport()
 }
