@@ -1584,11 +1584,12 @@ func TestDownloadRepoRetryFailedResetsPerGrabFields(t *testing.T) {
 }
 
 // TestDownloadRepoRetryDeadForAutoGrabConditions pins the scheduler's claim.
-// It takes an orphaned import whatever its age (#2289) and a dead row that has
-// been idle past the cooldown (#2710), and nothing else. In particular it
-// refuses a row that died seconds ago, which a manual grab can leave behind
-// between the scheduler reading the row and claiming it, and which RetryFailed
-// would accept.
+// It takes an orphaned import whatever its age (#2289) and a failed row that
+// died before the cutoff (#2710), and nothing else. In particular it refuses a
+// row that died seconds ago, which a manual grab can leave behind between the
+// scheduler reading the row and claiming it, and which RetryFailed would
+// accept; and it refuses an importBlocked row at any age, which RetryFailed
+// also accepts.
 func TestDownloadRepoRetryDeadForAutoGrabConditions(t *testing.T) {
 	database, err := OpenMemory()
 	if err != nil {
@@ -1608,12 +1609,12 @@ func TestDownloadRepoRetryDeadForAutoGrabConditions(t *testing.T) {
 		t.Fatalf("create book: %v", err)
 	}
 
-	// Every claim below asks for rows idle for at least an hour.
-	idleBefore := time.Now().UTC().Add(-time.Hour)
+	// Every claim below asks for rows that died at least an hour ago.
+	deadBefore := time.Now().UTC().Add(-time.Hour)
 	claim := func(id int64) bool {
 		t.Helper()
 		ok, err := repo.RetryDeadForAutoGrab(ctx, &models.Download{ID: id, Title: "New",
-			NZBURL: "https://example.com/new.nzb", Status: models.StateGrabbed, Protocol: "usenet"}, idleBefore)
+			NZBURL: "https://example.com/new.nzb", Status: models.StateGrabbed, Protocol: "usenet"}, deadBefore)
 		if err != nil {
 			t.Fatalf("RetryDeadForAutoGrab(%d): %v", id, err)
 		}
@@ -1633,7 +1634,6 @@ func TestDownloadRepoRetryDeadForAutoGrabConditions(t *testing.T) {
 		bookID *int64
 	}{
 		{"failed seconds ago", models.StateFailed, nil},
-		{"importBlocked seconds ago", models.StateImportBlocked, nil},
 		{"imported with its book", models.StateImported, &book.ID},
 		{"in flight with no book", models.StateDownloading, nil},
 	} {
@@ -1641,6 +1641,12 @@ func TestDownloadRepoRetryDeadForAutoGrabConditions(t *testing.T) {
 			NZBURL: "https://example.com/old.nzb", Status: tc.status, Protocol: "usenet"}
 		if err := repo.Create(ctx, dl); err != nil {
 			t.Fatalf("%s: create: %v", tc.name, err)
+		}
+		if tc.status == models.StateFailed {
+			// The shape a real failure has: it died just now, on a row that
+			// was written (and grabbed) earlier.
+			backdate(dl.ID, "dead_at", time.Now().UTC())
+			failedID = dl.ID
 		}
 		if claim(dl.ID) {
 			t.Errorf("%s: the scheduler's claim must refuse this row", tc.name)
@@ -1652,39 +1658,57 @@ func TestDownloadRepoRetryDeadForAutoGrabConditions(t *testing.T) {
 		if got.Status != tc.status || got.Title != "Old" {
 			t.Errorf("%s: a refused claim must leave the row alone, got status=%q title=%q", tc.name, got.Status, got.Title)
 		}
-		if tc.status == models.StateFailed {
-			failedID = dl.ID
-		}
 	}
 
-	// An old row whose import failed recently is still inside the cooldown:
-	// completed_at, not added_at, is what says when the attempt ended.
-	recent := &models.Download{GUID: "roi-recently-blocked", Title: "Old",
-		NZBURL: "https://example.com/old.nzb", Status: models.StateImportBlocked, Protocol: "usenet"}
-	if err := repo.Create(ctx, recent); err != nil {
-		t.Fatalf("create recently blocked: %v", err)
+	// #2710 finding 1: the real shape of a failed torrent. Written and grabbed
+	// hours ago, never completed, dead only now. Nothing but dead_at records
+	// the failure, so a cooldown measured from added_at or grabbed_at would
+	// let this row through the moment it died.
+	fresh := &models.Download{GUID: "roi-just-died", Title: "Old",
+		NZBURL: "https://example.com/old.nzb", Status: models.StateFailed, Protocol: "usenet"}
+	if err := repo.Create(ctx, fresh); err != nil {
+		t.Fatalf("create just died: %v", err)
 	}
-	backdate(recent.ID, "added_at", time.Now().UTC().Add(-90*24*time.Hour))
-	backdate(recent.ID, "completed_at", time.Now().UTC().Add(-time.Minute))
-	if claim(recent.ID) {
-		t.Error("a row whose attempt ended a minute ago must stay inside the cooldown")
+	backdate(fresh.ID, "added_at", time.Now().UTC().Add(-10*time.Hour))
+	backdate(fresh.ID, "grabbed_at", time.Now().UTC().Add(-10*time.Hour))
+	backdate(fresh.ID, "dead_at", time.Now().UTC())
+	if claim(fresh.ID) {
+		t.Error("a torrent grabbed ten hours ago and failed just now must stay inside the cooldown")
+	}
+
+	// An importBlocked row is never claimed here, however long ago it died.
+	blocked := &models.Download{GUID: "roi-blocked", Title: "Old",
+		NZBURL: "https://example.com/old.nzb", Status: models.StateImportBlocked, Protocol: "usenet"}
+	if err := repo.Create(ctx, blocked); err != nil {
+		t.Fatalf("create blocked: %v", err)
+	}
+	backdate(blocked.ID, "added_at", time.Now().UTC().Add(-90*24*time.Hour))
+	backdate(blocked.ID, "dead_at", time.Now().UTC().Add(-90*24*time.Hour))
+	if claim(blocked.ID) {
+		t.Error("the sweep must not re-download a blocked row whose files are still on disk")
+	}
+	if ok, err := repo.RetryFailed(ctx, &models.Download{ID: blocked.ID, Title: "New",
+		NZBURL: "https://example.com/new.nzb", Status: models.StateGrabbed, Protocol: "usenet"}); err != nil || !ok {
+		t.Fatalf("the manual grab must still accept a blocked row (#1955): ok=%v err=%v", ok, err)
 	}
 
 	// The #2710 row: failed months ago, for a cause that is long gone.
 	stale := &models.Download{GUID: "roi-stale-failure", Title: "Old",
-		NZBURL: "https://example.com/old.nzb", Status: models.StateFailed, Protocol: "usenet"}
+		NZBURL: "https://example.com/old.nzb", Status: models.StateFailed, Protocol: "usenet",
+		ErrorMessage: "fetch torrent: url not allowed: points to loopback address"}
 	if err := repo.Create(ctx, stale); err != nil {
 		t.Fatalf("create stale failure: %v", err)
 	}
 	backdate(stale.ID, "added_at", time.Now().UTC().Add(-90*24*time.Hour))
+	backdate(stale.ID, "dead_at", time.Now().UTC().Add(-90*24*time.Hour))
 	if !claim(stale.ID) {
 		t.Fatal("#2710: a row that failed months ago must not block the scheduler's re-grab")
 	}
 	if got, err := repo.GetByID(ctx, stale.ID); err != nil || got == nil {
 		t.Fatalf("reload stale failure: %v", err)
-	} else if got.Status != models.StateGrabbed || got.Title != "New" || got.ErrorMessage != "" {
-		t.Errorf("the claim must reset the reused row, got status=%q title=%q error=%q",
-			got.Status, got.Title, got.ErrorMessage)
+	} else if got.Status != models.StateGrabbed || got.Title != "New" || got.ErrorMessage != "" || got.DeadAt != nil {
+		t.Errorf("the claim must reset the reused row, got status=%q title=%q error=%q dead_at=%v",
+			got.Status, got.Title, got.ErrorMessage, got.DeadAt)
 	}
 
 	orphan := &models.Download{GUID: "roi-orphan", Title: "Old", NZBURL: "https://example.com/old.nzb",
@@ -1715,6 +1739,136 @@ func TestDownloadRepoRetryDeadForAutoGrabConditions(t *testing.T) {
 	if ok, err := repo.RetryFailed(ctx, &models.Download{ID: failedID, Title: "New",
 		NZBURL: "https://example.com/new.nzb", Status: models.StateGrabbed, Protocol: "usenet"}); err != nil || !ok {
 		t.Fatalf("RetryFailed must accept a row that failed seconds ago for the manual grab: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestRetryDeadForAutoGrabMatchesThePredicate is the guard against the SQL and
+// the Go predicate drifting. RetryDeadForAutoGrab spells its states out
+// literally, so nothing but this test notices when models.Download's gate and
+// the claim's WHERE clause stop agreeing. Every state is covered because
+// models.AllStates derives from the transition table.
+func TestRetryDeadForAutoGrabMatchesThePredicate(t *testing.T) {
+	database, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	repo := NewDownloadRepo(database)
+
+	long := time.Now().UTC().Add(-90 * 24 * time.Hour)
+	for _, s := range models.AllStates() {
+		dl := &models.Download{GUID: "pred-" + string(s), Title: "Old",
+			NZBURL: "https://example.com/old.nzb", Status: s, Protocol: "usenet"}
+		if err := repo.Create(ctx, dl); err != nil {
+			t.Fatalf("%s: create: %v", s, err)
+		}
+		// Old enough that the cooldown can never be the reason for a refusal:
+		// what is under test here is the STATE agreement.
+		if _, err := database.ExecContext(ctx,
+			"UPDATE downloads SET added_at=?, dead_at=? WHERE id=?", long, long, dl.ID); err != nil {
+			t.Fatalf("%s: backdate: %v", s, err)
+		}
+		reloaded, err := repo.GetByID(ctx, dl.ID)
+		if err != nil || reloaded == nil {
+			t.Fatalf("%s: reload: %v", s, err)
+		}
+
+		wantClaim := !reloaded.BlocksAutoRegrab()
+		gotClaim, err := repo.RetryDeadForAutoGrab(ctx, &models.Download{ID: dl.ID, Title: "New",
+			NZBURL: "https://example.com/new.nzb", Status: models.StateGrabbed, Protocol: "usenet"},
+			time.Now().UTC())
+		if err != nil {
+			t.Fatalf("%s: claim: %v", s, err)
+		}
+		if gotClaim != wantClaim {
+			t.Errorf("state %q: the SQL claim says %v, models.Download.BlocksAutoRegrab says it should be %v",
+				s, gotClaim, wantClaim)
+		}
+	}
+}
+
+// TestDownloadRepoStampsDeadAt covers the writers that kill a row. Nothing
+// else on a download moves when it dies, so without these stamps the
+// scheduler's cooldown counts from the moment the download STARTED (#2710).
+func TestDownloadRepoStampsDeadAt(t *testing.T) {
+	database, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	repo := NewDownloadRepo(database)
+
+	reload := func(id int64) *models.Download {
+		t.Helper()
+		got, err := repo.GetByID(ctx, id)
+		if err != nil || got == nil {
+			t.Fatalf("reload %d: %v", id, err)
+		}
+		return got
+	}
+
+	// SetError: the send failed, or the client gave up.
+	sendFailed := &models.Download{GUID: "dead-set-error", Title: "T", NZBURL: "u",
+		Status: models.StateGrabbed, Protocol: "usenet"}
+	if err := repo.Create(ctx, sendFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetError(ctx, sendFailed.ID, "indexer returned 429"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reload(sendFailed.ID); got.DeadAt == nil {
+		t.Error("SetError must stamp the moment of death")
+	} else if got.DeadSince().Before(got.AddedAt) {
+		t.Errorf("the death stamp must not predate the row, got dead_at=%v added_at=%v", got.DeadAt, got.AddedAt)
+	}
+
+	// UpdateStatus: the poller sees the torrent errored.
+	viaStatus := &models.Download{GUID: "dead-update-status", Title: "T", NZBURL: "u",
+		Status: models.StateGrabbed, Protocol: "usenet"}
+	if err := repo.Create(ctx, viaStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.UpdateStatus(ctx, viaStatus.ID, models.StateDownloading); err != nil {
+		t.Fatal(err)
+	}
+	if got := reload(viaStatus.ID); got.DeadAt != nil {
+		t.Errorf("a live row must have no death stamp, got %v", got.DeadAt)
+	}
+	if err := repo.UpdateStatus(ctx, viaStatus.ID, models.StateFailed); err != nil {
+		t.Fatal(err)
+	}
+	if got := reload(viaStatus.ID); got.DeadAt == nil {
+		t.Error("UpdateStatus into a terminal failure must stamp the moment of death")
+	}
+
+	// SetErrorWithStatus: importFailed is still being retried, importBlocked
+	// is not. Only the second is a death.
+	viaImport := &models.Download{GUID: "dead-import", Title: "T", NZBURL: "u",
+		Status: models.StateImporting, Protocol: "usenet"}
+	if err := repo.Create(ctx, viaImport); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetErrorWithStatus(ctx, viaImport.ID, models.StateImportFailed, "no book matched"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reload(viaImport.ID); got.DeadAt != nil {
+		t.Errorf("importFailed is not a death, got dead_at=%v", got.DeadAt)
+	}
+	if err := repo.SetErrorWithStatus(ctx, viaImport.ID, models.StateImportBlocked, "retry limit reached"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reload(viaImport.ID); got.DeadAt == nil {
+		t.Error("importBlocked is terminal to every automatic path and must be stamped")
+	}
+
+	// Re-arming a blocked row clears the stamp again.
+	if accepted, found, err := repo.ResetImportRetry(ctx, viaImport.ID); err != nil || !accepted || !found {
+		t.Fatalf("ResetImportRetry: accepted=%v found=%v err=%v", accepted, found, err)
+	}
+	if got := reload(viaImport.ID); got.DeadAt != nil {
+		t.Errorf("a re-armed row is no longer dead, got dead_at=%v", got.DeadAt)
 	}
 }
 

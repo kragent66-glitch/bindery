@@ -113,9 +113,11 @@ Clicking **Grab** on a release you already have a Queue entry for is refused wit
 
 ### Automatic search skips a release you have a failed Queue row for
 
-Automatic search applies the same rule, with one addition. A Queue row that is in flight, or imported into a book you still have, stops the sweep from grabbing that release again. A row that failed, or that is `importBlocked`, does not: once it has been sitting untouched for six hours, the next sweep grabs the release again and reuses the same Queue row, with the old error message, import path and client id cleared.
+Automatic search applies a narrower rule than the Grab button. A Queue row stops the sweep from grabbing that release again when it is in flight, when it is imported into a book you still have, or when it is `importBlocked`. A `failed` row does not: six hours after it failed, the next sweep grabs the release again and reuses the same Queue row, with the old error message, import path and client id cleared.
 
-The six hour wait is deliberate. A release that fails at the download client fails again the moment it is re-sent, so without it a bad release would be re-grabbed on every sweep. Clicking **Grab** yourself has no such wait and retries straight away.
+The six hour wait counts from the failure itself, not from when the download was added or started. A torrent grabbed at noon that your client gives up on at ten in the evening is retried from ten in the evening. The wait is there because a release that fails at the download client usually fails again the moment it is re-sent, and nothing blocklists it automatically, so without the wait a bad release would be re-grabbed on every sweep. Clicking **Grab** yourself has no wait and retries straight away.
+
+`importBlocked` is deliberately left to you. Those files downloaded fine and are still on disk; what failed was the import. The sweep cannot tell whether they are still there, and re-downloading them would fetch bytes you already have and leave the old torrent in your client with nothing tracking it, so a blocked row is only ever re-grabbed when you ask for it. Use **Retry import** if the files are still in place, and **Grab** if they are gone.
 
 Earlier releases let a failed row block the release permanently, and the skip was silent: the log showed `auto-grabbing book` and then nothing, as though the grab had gone ahead. Every skip now writes a line naming the release, its GUID, the blocking Queue row and its status, and the `book search finished` line for that book ends with an `outcome` that says the same thing.
 

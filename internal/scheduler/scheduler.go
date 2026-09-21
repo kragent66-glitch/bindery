@@ -1152,12 +1152,13 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 		outcome = "duplicate check failed"
 		return
 	}
-	// Live work blocks the grab; a finished attempt does not (#2710). A dead
-	// row (failed, importBlocked) is reused once it has been idle for
-	// deadRegrabCooldown, and an import whose book has since been deleted is
-	// reused whatever its age (#2289). blockingRegrabReason decides, and names
-	// the reason so the skip is not silent: the "auto-grabbing book" line
-	// above has already been written by now.
+	// Live work blocks the grab; a failed attempt does not (#2710). A failed
+	// row is reused once deadRegrabCooldown has passed since it died, and an
+	// import whose book has since been deleted is reused whatever its age
+	// (#2289). An importBlocked row is left to the manual grab and the
+	// queue's Retry import. blockingRegrabReason decides, and names the reason
+	// so the skip is not silent: the "auto-grabbing book" line above has
+	// already been written by now.
 	if reason := blockingRegrabReason(existing, time.Now().UTC()); reason != "" {
 		outcome = reason + " (" + string(existing.Status) + ")"
 		slog.Info("skipping a release the queue still holds",
@@ -1192,7 +1193,7 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 		// so a row a manual grab claimed between the read above and here is a
 		// skip rather than a second send to the client.
 		dl.ID = existing.ID
-		ok, err := s.downloads.RetryDeadForAutoGrab(ctx, dl, time.Now().UTC().Add(-deadRegrabCooldown))
+		ok, err := claimDeadRowForAutoGrab(ctx, s.downloads, dl, time.Now().UTC().Add(-deadRegrabCooldown))
 		if err != nil {
 			slog.Error("SearchAndGrabBook: failed to reuse download record", "download_id", existing.ID, "error", err)
 			outcome = "download record failed"

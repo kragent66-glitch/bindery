@@ -96,6 +96,29 @@ func (s DownloadState) IsDeadForRegrab() bool {
 	return s == StateFailed || s == StateImportBlocked
 }
 
+// IsDeadForAutoRegrab is IsDeadForRegrab for the scheduler's automatic grab:
+// only a failed download, where nothing was fetched or the client gave up on
+// what it had. StateImportBlocked is deliberately excluded, for the reasons
+// Download.BlocksAutoRegrab gives.
+//
+// db.DownloadRepo.RetryDeadForAutoGrab claims exactly the states this accepts;
+// TestRetryDeadForAutoGrabMatchesThePredicate fails if the two diverge.
+func (s DownloadState) IsDeadForAutoRegrab() bool {
+	return s == StateFailed
+}
+
+// AllStates returns every download state, derived from the transition table so
+// a new state cannot be added without appearing here. Order is stable so tests
+// that enumerate states report the same way twice.
+func AllStates() []DownloadState {
+	out := make([]DownloadState, 0, len(validTransitions))
+	for s := range validTransitions {
+		out = append(out, s)
+	}
+	slices.Sort(out)
+	return out
+}
+
 // CanTransitionTo reports whether a transition from s to next is valid.
 func (s DownloadState) CanTransitionTo(next DownloadState) bool {
 	return slices.Contains(validTransitions[s], next)
