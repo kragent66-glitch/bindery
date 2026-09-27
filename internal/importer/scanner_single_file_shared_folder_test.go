@@ -1,11 +1,13 @@
 package importer
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -14,7 +16,57 @@ import (
 // manual import of one audiobook file and a single-file torrent both resolve
 // to). It returns the folder the ebook landed in and the path recorded for the
 // audiobook.
-func importEbookThenAudiobookFile(t *testing.T, mode, audioName string, seedShared func(bookDir string)) (ebookDir, audiobookPath string) {
+func importEbookThenAudiobookFile(t *testing.T, mode, audioName string, seedShared func(bookDir string)) (ebookDir, audiobookPath, audioSrc string) {
+	t.Helper()
+	s, book, dlRepo, bookRepo, ctx, ebookDir := importSharedEbook(t, mode)
+	if seedShared != nil {
+		seedShared(ebookDir)
+	}
+
+	// The audiobook source is the FILE itself, not a folder holding it.
+	audioDownloadDir := t.TempDir()
+	audioSrc = filepath.Join(audioDownloadDir, audioName)
+	if err := os.WriteFile(audioSrc, []byte("m4b-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	audioDL := &models.Download{
+		GUID:    "guid-2686-audiobook-" + t.Name(),
+		Title:   "We Who Wrestle with God [M4B]",
+		BookID:  &book.ID,
+		Status:  models.StateCompleted,
+		Quality: "m4b",
+	}
+	if err := dlRepo.Create(ctx, audioDL); err != nil {
+		t.Fatal(err)
+	}
+	s.ImportFromPath(ctx, audioDL, audioSrc, "")
+
+	gotAudio, err := dlRepo.GetByGUID(ctx, audioDL.GUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotAudio.Status != models.StateImported {
+		t.Fatalf("audiobook import status = %q, want %q (error: %s)",
+			gotAudio.Status, models.StateImported, gotAudio.ErrorMessage)
+	}
+	files, err := bookRepo.ListFiles(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if f.Format == models.MediaTypeAudiobook {
+			audiobookPath = f.Path // audiobook rows store the directory itself
+		}
+	}
+	if audiobookPath == "" {
+		t.Fatal("no audiobook file recorded after audiobook import")
+	}
+	return ebookDir, audiobookPath, audioSrc
+}
+
+// importSharedEbook sets up the shared-folder fixture in the given transfer
+// mode and imports an ebook for its book, returning the folder it landed in.
+func importSharedEbook(t *testing.T, mode string) (s *Scanner, book *models.Book, dlRepo *db.DownloadRepo, bookRepo *db.BookRepo, ctx context.Context, ebookDir string) {
 	t.Helper()
 	sharedDir := t.TempDir()
 	s, book, dlRepo, bookRepo, settingsRepo, _, ctx := sharedFormatFixture(t, sharedDir)
@@ -56,49 +108,7 @@ func importEbookThenAudiobookFile(t *testing.T, mode, audioName string, seedShar
 	if ebookDir == "" {
 		t.Fatal("precondition: no ebook file recorded after ebook import")
 	}
-	if seedShared != nil {
-		seedShared(ebookDir)
-	}
-
-	// The audiobook source is the FILE itself, not a folder holding it.
-	audioDownloadDir := t.TempDir()
-	audioSrc := filepath.Join(audioDownloadDir, audioName)
-	if err := os.WriteFile(audioSrc, []byte("m4b-bytes"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	audioDL := &models.Download{
-		GUID:    "guid-2686-audiobook-" + t.Name(),
-		Title:   "We Who Wrestle with God [M4B]",
-		BookID:  &book.ID,
-		Status:  models.StateCompleted,
-		Quality: "m4b",
-	}
-	if err := dlRepo.Create(ctx, audioDL); err != nil {
-		t.Fatal(err)
-	}
-	s.ImportFromPath(ctx, audioDL, audioSrc, "")
-
-	gotAudio, err := dlRepo.GetByGUID(ctx, audioDL.GUID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if gotAudio.Status != models.StateImported {
-		t.Fatalf("audiobook import status = %q, want %q (error: %s)",
-			gotAudio.Status, models.StateImported, gotAudio.ErrorMessage)
-	}
-	files, err = bookRepo.ListFiles(ctx, book.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, f := range files {
-		if f.Format == models.MediaTypeAudiobook {
-			audiobookPath = f.Path // audiobook rows store the directory itself
-		}
-	}
-	if audiobookPath == "" {
-		t.Fatal("no audiobook file recorded after audiobook import")
-	}
-	return ebookDir, audiobookPath
+	return s, book, dlRepo, bookRepo, ctx, ebookDir
 }
 
 // TestTryImportInternal_SingleFileAudiobookMergesIntoExistingEbookFolder is
@@ -111,7 +121,7 @@ func importEbookThenAudiobookFile(t *testing.T, mode, audioName string, seedShar
 func TestTryImportInternal_SingleFileAudiobookMergesIntoExistingEbookFolder(t *testing.T) {
 	for _, mode := range []string{"hardlink", "copy", "move"} {
 		t.Run(mode, func(t *testing.T) {
-			ebookDir, audiobookPath := importEbookThenAudiobookFile(t, mode, "book.m4b", nil)
+			ebookDir, audiobookPath, _ := importEbookThenAudiobookFile(t, mode, "book.m4b", nil)
 			if audiobookPath != ebookDir {
 				t.Errorf("#2686 regression (mode=%s): audiobook recorded at %q, ebook is in %q, want the same shared folder rather than a \"(2)\" sibling",
 					mode, audiobookPath, ebookDir)
@@ -160,7 +170,7 @@ func TestTryImportInternal_SingleFileAudiobookMergeSkipsSameNamedFile(t *testing
 		t.Run(mode, func(t *testing.T) {
 			existing := []byte("an entirely different m4b that was already here")
 			var seeded string
-			ebookDir, audiobookPath := importEbookThenAudiobookFile(t, mode, "book.m4b", func(bookDir string) {
+			ebookDir, audiobookPath, audioSrc := importEbookThenAudiobookFile(t, mode, "book.m4b", func(bookDir string) {
 				seeded = filepath.Join(bookDir, "book.m4b")
 				if err := os.WriteFile(seeded, existing, 0o644); err != nil {
 					t.Fatal(err)
@@ -176,7 +186,69 @@ func TestTryImportInternal_SingleFileAudiobookMergeSkipsSameNamedFile(t *testing
 			if string(got) != string(existing) {
 				t.Errorf("a merge overwrote a file already in the book's folder, it must be skipped instead")
 			}
+			// The skipped file was never placed, so the source is the only
+			// copy of what was downloaded. Every mode must leave it.
+			if _, err := os.Stat(audioSrc); err != nil {
+				t.Errorf("mode=%s: the source of a skipped file is gone (%v); nothing was placed, so it must stay", mode, err)
+			}
 		})
+	}
+}
+
+// TestTryImportInternal_SingleFileAudiobookFailedMergeKeepsTheEbook covers the
+// failure path of the #2686 merge. The single-file branch rolls back a failed
+// placement with rollbackPlacedFiles, and now that it can target the book's
+// own folder, that rollback must remove only the half-placed audiobook file,
+// never the folder or the ebook already in it.
+func TestTryImportInternal_SingleFileAudiobookFailedMergeKeepsTheEbook(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permission bits do not block reads")
+	}
+	s, book, dlRepo, _, ctx, ebookDir := importSharedEbook(t, "copy")
+
+	// An unreadable source makes the copy fail after the merge decision.
+	audioSrc := filepath.Join(t.TempDir(), "book.m4b")
+	if err := os.WriteFile(audioSrc, []byte("m4b-bytes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(audioSrc, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(audioSrc, 0o600) })
+	audioDL := &models.Download{
+		GUID:    "guid-2686-failed-merge",
+		Title:   "We Who Wrestle with God [M4B]",
+		BookID:  &book.ID,
+		Status:  models.StateCompleted,
+		Quality: "m4b",
+	}
+	if err := dlRepo.Create(ctx, audioDL); err != nil {
+		t.Fatal(err)
+	}
+	s.ImportFromPath(ctx, audioDL, audioSrc, "")
+
+	got, err := dlRepo.GetByGUID(ctx, audioDL.GUID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status == models.StateImported {
+		t.Fatalf("precondition: the placement was meant to fail, but the import succeeded")
+	}
+	entries, err := os.ReadDir(ebookDir)
+	if err != nil {
+		t.Fatalf("the shared folder %q is gone after a failed merge: %v", ebookDir, err)
+	}
+	var foundEpub bool
+	for _, e := range entries {
+		switch {
+		case strings.HasSuffix(e.Name(), ".epub"):
+			foundEpub = true
+		case strings.HasSuffix(e.Name(), ".m4b"):
+			t.Errorf("a half-placed %q was left in the shared folder", e.Name())
+		}
+	}
+	if !foundEpub {
+		t.Errorf("the ebook is gone from %q after a failed merge", ebookDir)
 	}
 }
 
