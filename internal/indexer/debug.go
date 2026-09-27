@@ -255,75 +255,12 @@ func filterUsenetJunkDebug(results []newznab.SearchResult) ([]newznab.SearchResu
 	return out, dropped
 }
 
-// filterRelevantDebug is filterRelevant instrumented to record each drop with
-// the keyword set that failed to match.
+// filterRelevantDebug returns the relevance filter's kept results together with
+// a record of every drop and its reason, for the interactive search panel and
+// for the automatic search that projects it (SearchBookWithOutcomes). It shares
+// its implementation with filterRelevant; see filterRelevantDetailed.
 func filterRelevantDebug(results []newznab.SearchResult, title, author string, aliases []string) ([]newznab.SearchResult, []FilterDebug) {
-	// Strip edition qualifiers ("(German Edition)" etc.) and normalize smart
-	// quotes before tokenizing — mirrors the first step of filterRelevant so
-	// both paths produce identical keyword sets.
-	title = newznab.NormalizeQueryTitle(title)
-	// Strip possessive author prefix before keyword extraction (mirrors filterRelevant).
-	title = stripPossessivePrefix(title, author)
-	fullKws := newznab.SigWords(title)
-	primaryKws := newznab.SigWords(primaryTitle(title))
-	authorKws := newznab.SigWords(author)
-	// Elision fallback, identical to filterRelevant: this path serves the
-	// interactive search AND auto-grab (SearchBookWithOutcomes projects
-	// SearchBookWithDebug), so a fix applied to one filter and not the other
-	// is invisible here and live there. See newznab.SigWordsElided.
-	fullElided := newznab.SigWordsElided(title)
-	primaryElided := newznab.SigWordsElided(primaryTitle(title))
-
-	authorTokenSets := latinAliasTokenSets(author, aliases)
-
-	tryMatch := func(n string, kws []string) bool {
-		for _, toks := range authorTokenSets {
-			if titleMatchesResult(n, kws, toks, true) {
-				return true
-			}
-		}
-		return false
-	}
-
-	// tryMatchElided retries a FAILED strict match with the apostrophe-
-	// separated reading. Never tried first, skipped when the readings agree.
-	tryMatchElided := func(n string, elided, kws []string) bool {
-		if len(elided) == 0 || sameKws(elided, kws) {
-			return false
-		}
-		return tryMatch(n, elided)
-	}
-
-	if len(fullKws) == 0 && len(primaryKws) == 0 && len(authorKws) == 0 {
-		return results, nil
-	}
-
-	normTitles := make([]string, len(results))
-	for i, r := range results {
-		normTitles[i] = NormalizeRelease(r.Title)
-	}
-
-	filtered := make([]newznab.SearchResult, 0, len(results))
-	var dropped []FilterDebug
-	for i, r := range results {
-		n := normTitles[i]
-		fullOK := tryMatch(n, fullKws) || tryMatchElided(n, fullElided, fullKws)
-		primaryOK := false
-		if !fullOK && len(primaryKws) > 0 && !sameKws(primaryKws, fullKws) {
-			primaryOK = tryMatch(n, primaryKws) || tryMatchElided(n, primaryElided, primaryKws)
-		}
-		if fullOK || primaryOK {
-			filtered = append(filtered, r)
-			continue
-		}
-		dropped = append(dropped, FilterDebug{
-			Title:       r.Title,
-			IndexerName: r.IndexerName,
-			Stage:       "relevance",
-			Reason:      "title/author keywords did not match release name",
-		})
-	}
-	return filtered, dropped
+	return filterRelevantDetailed(results, title, author, aliases)
 }
 
 // SearchBookWithOutcomes is SearchBook plus a per-indexer account of what

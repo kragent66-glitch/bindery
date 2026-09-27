@@ -6,6 +6,20 @@ import (
 	"github.com/vavallee/bindery/internal/indexer/newznab"
 )
 
+// relevanceFilters is every entry point to the relevance filter. The #2502
+// guards were once pinned against filterRelevant alone while production ran
+// filterRelevantDebug, so every table here runs through both.
+var relevanceFilters = []struct {
+	name string
+	fn   func([]newznab.SearchResult, string, string, []string) []newznab.SearchResult
+}{
+	{"filterRelevant", filterRelevant},
+	{"filterRelevantDebug", func(r []newznab.SearchResult, title, author string, aliases []string) []newznab.SearchResult {
+		kept, _ := filterRelevantDebug(r, title, author, aliases)
+		return kept
+	}},
+}
+
 // These releases were auto-grabbed and imported as three different books.
 func TestFilterRelevantConflictingBookIdentity(t *testing.T) {
 	cases := []struct{ title, author, release string }{
@@ -13,13 +27,15 @@ func TestFilterRelevantConflictingBookIdentity(t *testing.T) {
 		{"12 Rules for Life", "Jordan B. Peterson", "Beyond Order: 12 More Rules for Life by Jordan B. Peterson EPUB"},
 		{"Coup d'Etat", "Ben Coes", "Coup D'Etat - Edward Luttwak"},
 	}
-	for _, c := range cases {
-		t.Run(c.title, func(t *testing.T) {
-			got := filterRelevant([]newznab.SearchResult{{Title: c.release}}, c.title, c.author, nil)
-			if len(got) != 0 {
-				t.Fatalf("wrong release accepted: %q for %q by %s", c.release, c.title, c.author)
-			}
-		})
+	for _, f := range relevanceFilters {
+		for _, c := range cases {
+			t.Run(f.name+"/"+c.title, func(t *testing.T) {
+				got := f.fn([]newznab.SearchResult{{Title: c.release}}, c.title, c.author, nil)
+				if len(got) != 0 {
+					t.Fatalf("%s accepted the wrong release: %q for %q by %s", f.name, c.release, c.title, c.author)
+				}
+			})
+		}
 	}
 }
 
@@ -53,12 +69,14 @@ func TestFilterRelevantIdentityCompatibility(t *testing.T) {
 		{"Death by Black Hole", "Neil deGrasse Tyson", "Death by Black Hole by Neil deGrasse Tyson EPUB", true},
 		{"Death by Black Hole", "Neil deGrasse Tyson", "Death by Black Hole by Edward Luttwak EPUB", false},
 	}
-	for _, c := range cases {
-		t.Run(c.release, func(t *testing.T) {
-			got := filterRelevant(toResults(c.release), c.title, c.author, nil)
-			if (len(got) == 1) != c.want {
-				t.Fatalf("filterRelevant(%q, %q, %q): kept=%v, want %v", c.release, c.title, c.author, len(got) == 1, c.want)
-			}
-		})
+	for _, f := range relevanceFilters {
+		for _, c := range cases {
+			t.Run(f.name+"/"+c.release, func(t *testing.T) {
+				got := f.fn(toResults(c.release), c.title, c.author, nil)
+				if (len(got) == 1) != c.want {
+					t.Fatalf("%s(%q, %q, %q): kept=%v, want %v", f.name, c.release, c.title, c.author, len(got) == 1, c.want)
+				}
+			})
+		}
 	}
 }

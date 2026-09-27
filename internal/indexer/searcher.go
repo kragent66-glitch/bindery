@@ -787,6 +787,26 @@ func titleMatchesResult(normResult string, titleKws []string, authorToks []strin
 // dropped when an abbreviated result set the gate — e.g. "Name.Wind.epub"
 // enabling strict mode that then rejected "Name.of.the.Wind.epub".
 func filterRelevant(results []newznab.SearchResult, title, author string, aliases []string) []newznab.SearchResult {
+	kept, _ := filterRelevantDetailed(results, title, author, aliases)
+	return kept
+}
+
+// filterRelevantDetailed is the one implementation of the relevance filter,
+// returning the kept results and a record of each result it dropped and why.
+// filterRelevant and filterRelevantDebug are both thin wrappers over it.
+//
+// There used to be two copies, and they drifted. The guards added for #2502
+// (a release naming a different author for the same title, and title words
+// that match only when scattered through a longer title) went into
+// filterRelevant alone. But every production search runs the other copy:
+// the scheduler reaches SearchBookWithOutcomes, which projects
+// SearchBookWithDebug, and the interactive search calls SearchBookWithDebug
+// directly. filterRelevant was reached only by the scheduler's fallback for
+// searchers that cannot report outcomes, which in practice means test stubs.
+// So #2502's fix was pinned by tests that never ran the production path, and
+// automatic search kept grabbing the exact releases it was written to reject.
+// One implementation means a guard cannot land in one path and miss the other.
+func filterRelevantDetailed(results []newznab.SearchResult, title, author string, aliases []string) ([]newznab.SearchResult, []FilterDebug) {
 	// Strip edition qualifiers ("(German Edition)" etc.) and normalize
 	// smart quotes before tokenizing, so they don't become spurious keywords.
 	title = newznab.NormalizeQueryTitle(title)
@@ -847,7 +867,7 @@ func filterRelevant(results []newznab.SearchResult, title, author string, aliase
 	}
 
 	if len(fullKws) == 0 && len(primaryKws) == 0 && len(authorKws) == 0 {
-		return results
+		return results, nil
 	}
 
 	// Pre-normalize all result titles once.
@@ -856,11 +876,17 @@ func filterRelevant(results []newznab.SearchResult, title, author string, aliase
 		normTitles[i] = NormalizeRelease(r.Title)
 	}
 
+	drop := func(r newznab.SearchResult, reason string) FilterDebug {
+		return FilterDebug{Title: r.Title, IndexerName: r.IndexerName, Stage: "relevance", Reason: reason}
+	}
+
 	filtered := make([]newznab.SearchResult, 0, len(results))
+	var dropped []FilterDebug
 	for i, r := range results {
 		n := normTitles[i]
 		if conflictingTitleAuthor(r.Title, title, authorTokenSets) ||
 			conflictingTitleAuthor(r.Title, primaryTitle(title), authorTokenSets) {
+			dropped = append(dropped, drop(r, "release names a different author for this title"))
 			continue
 		}
 		// Only insignificant connecting words may separate title keywords.
@@ -869,18 +895,26 @@ func filterRelevant(results []newznab.SearchResult, title, author string, aliase
 
 		// allowFallback=true: each result gets phrase match first, then keyword
 		// fallback if the phrase fails. No batch-level gate.
-		fullOK := (tryMatch(n, fullKws) || tryMatchElided(n, fullElided, fullKws)) &&
-			identityOK(identity, fullIdentity, fullIdentityElided)
-		primaryOK := false
+		fullKeywords := tryMatch(n, fullKws) || tryMatchElided(n, fullElided, fullKws)
+		fullOK := fullKeywords && identityOK(identity, fullIdentity, fullIdentityElided)
+		primaryKeywords, primaryOK := false, false
 		if !fullOK && len(primaryKws) > 0 && !sameKws(primaryKws, fullKws) {
-			primaryOK = (tryMatch(n, primaryKws) || tryMatchElided(n, primaryElided, primaryKws)) &&
-				identityOK(identity, primaryIdentity, primaryIdentityElided)
+			primaryKeywords = tryMatch(n, primaryKws) || tryMatchElided(n, primaryElided, primaryKws)
+			primaryOK = primaryKeywords && identityOK(identity, primaryIdentity, primaryIdentityElided)
 		}
 		if fullOK || primaryOK {
 			filtered = append(filtered, r)
+			continue
 		}
+		reason := "title/author keywords did not match release name"
+		if fullKeywords || primaryKeywords {
+			// The words are all there but not as this title: other words sit
+			// between them, as "12 Rules for Life" inside "12 More Rules for Life".
+			reason = "title words appear, but split by words that are not in this title"
+		}
+		dropped = append(dropped, drop(r, reason))
 	}
-	return filtered
+	return filtered, dropped
 }
 
 // latinAliasTokenSets builds the candidate author token sets used to anchor a
