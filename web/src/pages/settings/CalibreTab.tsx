@@ -361,6 +361,8 @@ function CalibreSection({
               Optional. If the Calibre container mounts your library at a different path than Bindery,
               map Bindery&rsquo;s prefix to Calibre&rsquo;s as <code className="font-mono">from:to</code> pairs
               (comma separated), e.g. <code className="font-mono">/books:/mnt/user/media/books</code>.
+              For Calibre on Windows, map to a network share, e.g. <code className="font-mono">/books:\\nas\media\books</code>;
+              a share address is more reliable than a mapped drive letter, which the running Calibre may not see.
               Leave empty when both containers see the library at the same path.
             </p>
             <div className="flex gap-2">

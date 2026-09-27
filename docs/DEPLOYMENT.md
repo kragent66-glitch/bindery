@@ -339,6 +339,8 @@ Notes for this topology:
 - Bindery's side keeps forward slashes in the result, and the reverse direction (the save path Bindery hands qBittorrent when it grabs a torrent) is rebuilt as a Windows path automatically.
 - Hardlinks cannot cross this boundary, so imports **copy**. Budget disk space accordingly.
 
+**Network shares** work the same way. A client that saves to `\\nas\downloads` (or `//nas/downloads`) maps with `\\nas\downloads:/mnt/Storage/Downloads`. The server and share name match without regard to case, and a share on the right hand side (for example the Calibre push remap `/books:\\nas\media\books`) is rebuilt with its leading `\\` intact. Write both the server and the share: `\\nas` on its own is rejected. A share address is more reliable than a mapped drive letter for anything running as a Windows service or a desktop app like Calibre, because a drive letter mapped in one session can be invisible to another.
+
 ### Docker Compose
 
 ```yaml
