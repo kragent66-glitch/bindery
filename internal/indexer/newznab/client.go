@@ -662,9 +662,15 @@ func titleHasRelevantResult(queryTitle string, results []SearchResult) bool {
 	//
 	// Gated on a non-empty word list: SigWordsElided returns nil for a title
 	// with no apostrophe, and an empty list means "nothing checkable" (true)
-	// upstream — letting it through here would accept junk for every title.
-	if elided := SigWordsElided(queryTitle); len(elided) > 0 {
-		return wordsPresentInAll(elided, combined)
+	// upstream; letting it through here would accept junk for every title.
+	if elided := SigWordsElided(queryTitle); len(elided) > 0 && wordsPresentInAll(elided, combined) {
+		return true
+	}
+	// A "Series N: Title" name is judged on the book's own title as well,
+	// since release names carry the title without the series position. Same
+	// two word floor as the relevance filter's fallback reading.
+	if series := SigWords(SeriesPositionTitle(queryTitle)); len(series) >= 2 && wordsPresentInAll(series, combined) {
+		return true
 	}
 	return false
 }

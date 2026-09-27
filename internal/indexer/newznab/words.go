@@ -175,3 +175,41 @@ var queryUmlautReplacer = strings.NewReplacer(
 func TransliterateQuery(s string) string {
 	return queryUmlautReplacer.Replace(norm.NFC.String(s))
 }
+
+// SeriesPositionTitle returns the book's own title from a "Series N: Title"
+// name, or "" when title does not have that shape.
+//
+// Providers often store a series entry with the series and its position ahead
+// of the colon ("Feral Mage 4: The Mining Company Contract"), while release
+// names carry only the book's own title ("The Mining Company Contract by Chase
+// Kilgore"). The full title then needs "feral" and "mage", and the part before
+// the colon is the series, not the book, so neither reading can match a
+// release that names the book correctly.
+//
+// The shape is recognised only when the part before the colon ends in a
+// position: a number, optionally prefixed with "#" or followed by a period
+// ("Feral Mage 4", "Book 8", "Discworld #3", "Vol. 2."), with at least one word
+// ahead of it. An ordinary "Title: Subtitle" has no such number, so it is left
+// to the existing readings. The returned title is a fallback reading for the
+// relevance checks and must never replace the stricter ones.
+func SeriesPositionTitle(title string) string {
+	i := strings.Index(title, ":")
+	if i <= 0 {
+		return ""
+	}
+	head := strings.Fields(title[:i])
+	tail := strings.TrimSpace(title[i+1:])
+	if len(head) < 2 || tail == "" {
+		return ""
+	}
+	pos := strings.TrimSuffix(strings.TrimPrefix(head[len(head)-1], "#"), ".")
+	if pos == "" {
+		return ""
+	}
+	for _, r := range pos {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return tail
+}
