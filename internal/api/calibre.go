@@ -6,10 +6,12 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/vavallee/bindery/internal/calibre"
 	"github.com/vavallee/bindery/internal/db"
+	"github.com/vavallee/bindery/internal/pathmap"
 )
 
 // Calibre settings keys. Centralised so the handler and main.go agree on
@@ -60,6 +62,16 @@ type CalibreHandler struct {
 	// is the path a push hands to the Calibre side, so it is what the "can
 	// you see this?" probe asks about. Empty disables the probe.
 	libraryRoot string
+
+	// ebookPaths supplies recent imported ebooks so Test can probe one real
+	// book through the push remap, not just the root (#2831). nil falls back
+	// to a file found under libraryRoot.
+	ebookPaths recentEbookPathLister
+}
+
+// recentEbookPathLister is the slice of db.BookFileRepo the Test probe needs.
+type recentEbookPathLister interface {
+	RecentEbookPaths(ctx context.Context, limit int) ([]string, error)
 }
 
 func NewCalibreHandler(settings *db.SettingsRepo) *CalibreHandler {
@@ -81,6 +93,15 @@ func (h *CalibreHandler) WithLifetimeCtx(ctx context.Context) *CalibreHandler {
 // every "Test says OK but nothing reaches Calibre" report (#1346, #1355).
 func (h *CalibreHandler) WithLibraryRoot(dir string) *CalibreHandler {
 	h.libraryRoot = strings.TrimSpace(dir)
+	return h
+}
+
+// WithBookFiles attaches the source of recent ebook paths Test samples from.
+// A nil lister is ignored.
+func (h *CalibreHandler) WithBookFiles(l recentEbookPathLister) *CalibreHandler {
+	if l != nil {
+		h.ebookPaths = l
+	}
 	return h
 }
 
@@ -209,18 +230,35 @@ func (h *CalibreHandler) Test(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-		message, probeErr := h.probeLibraryRoot(r.Context(), pc)
-		if probeErr != "" {
-			slog.Warn("calibre test failed: plugin cannot see the library root",
-				"plugin_url", cfg.PluginURL, "library_root", h.libraryRoot, "error", probeErr)
-			writeJSON(w, http.StatusBadGateway, map[string]string{"error": probeErr})
+		// An old bridge is worth saying out loud whether or not the probe
+		// passes: the fixes it lacks bite on the push, not on the probe.
+		warning := calibre.BridgeUpgradeWarning(health.PluginVersion)
+		res := h.probePushPaths(r.Context(), pc)
+		if res.failure != "" {
+			slog.Warn("calibre test failed: plugin cannot see a pushed path",
+				"plugin_url", cfg.PluginURL, "library_root", h.libraryRoot, "sample", res.sample, "error", res.failure)
+			body := map[string]string{"error": res.failure}
+			if res.sample != "" {
+				body["sample"] = res.sample
+			}
+			if warning != "" {
+				body["warning"] = warning
+			}
+			writeJSON(w, http.StatusBadGateway, body)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{
+		body := map[string]string{
 			"ok":      "true",
 			"version": version,
-			"message": message,
-		})
+			"message": res.message,
+		}
+		if res.sample != "" {
+			body["sample"] = res.sample
+		}
+		if warning != "" {
+			body["warning"] = warning
+		}
+		writeJSON(w, http.StatusOK, body)
 		return
 	}
 
@@ -243,36 +281,156 @@ func (h *CalibreHandler) Test(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// probeLibraryRoot asks the plugin whether the Calibre process can open the
-// directory Bindery pushes from, using the same remap a real push would apply.
-// It returns the success message on the left and, on the right, an actionable
-// failure. A plugin that does not advertise `path_probe`, or a Bindery with no
-// library root configured, falls back to exactly the previous answer.
+// pushProbeResult is what probePushPaths found. Exactly one of message and
+// failure is set. sample is the wire path of the book that was probed, empty
+// when no book was probed.
+type pushProbeResult struct {
+	message string
+	failure string
+	sample  string
+}
+
+// sampleBookCandidates bounds how many recent ebook rows Test looks through for
+// one that still exists on Bindery's side.
+const sampleBookCandidates = 25
+
+// sampleDirReadBudget bounds the directory reads the fallback walk may spend
+// looking for any file under the library root, so a root full of empty author
+// folders cannot turn a button click into a library scan.
+const sampleDirReadBudget = 50
+
+// probePushPaths asks the plugin whether the Calibre process can open the
+// directory Bindery pushes from, and then one real book under it, using the
+// same remap a real push would apply. A plugin that does not advertise
+// `path_probe`, or a Bindery with no library root configured, falls back to
+// exactly the previous answer.
+//
+// The root alone is not enough (#2831). A remap whose source is the root
+// matches the root exactly, so the probe skips the join that every real push
+// goes through, and a remap that produces a broken book path still passes.
+// Probing a real book exercises the join.
 //
 // The plugin's own `library` field from /v1/health is deliberately not used as
 // a substitute. It reports where Calibre keeps its library, which is a
 // different directory from the one Bindery pushes out of, so it answers a
 // question nobody asked. It stays in use where it belongs, in the bulk sync's
 // same-library check.
-func (h *CalibreHandler) probeLibraryRoot(ctx context.Context, pc *calibre.PluginClient) (message, failure string) {
+func (h *CalibreHandler) probePushPaths(ctx context.Context, pc *calibre.PluginClient) pushProbeResult {
 	if h.libraryRoot == "" || !pc.SupportsPathProbe(ctx) {
-		return "plugin reachable", ""
+		return pushProbeResult{message: "plugin reachable"}
 	}
 	probe, err := pc.ProbePath(ctx, h.libraryRoot)
 	if err != nil {
 		// The probe is a diagnostic, not a gate. If it cannot run, say the
 		// plugin is reachable, which is the one thing that was proven.
 		slog.Debug("calibre test: path probe unavailable", "error", err)
-		return "plugin reachable", ""
+		return pushProbeResult{message: "plugin reachable"}
 	}
 	wire := pc.PushPath(h.libraryRoot)
 	switch {
 	case !probe.Exists:
-		return "", fmt.Sprintf("plugin reachable, but the Calibre container cannot see %q. Bindery pushes book paths under %q and Calibre opens them on its own side, so set a push path remap in Settings then Calibre, or mount the library at the same path in both containers.", wire, h.libraryRoot)
+		return pushProbeResult{failure: fmt.Sprintf("plugin reachable, but the Calibre container cannot see %s. Bindery pushes book paths under %s and Calibre opens them on its own side, so set a push path remap in Settings then Calibre, or mount the library at the same path in both containers.", quotePath(wire), quotePath(h.libraryRoot)) + mappedDriveHint(wire)}
 	case !probe.IsDir:
-		return "", fmt.Sprintf("plugin reachable, but %q is not a directory on the Calibre side. Check the push path remap in Settings then Calibre.", wire)
+		return pushProbeResult{failure: fmt.Sprintf("plugin reachable, but %s is not a directory on the Calibre side. Check the push path remap in Settings then Calibre.", quotePath(wire)) + mappedDriveHint(wire)}
 	case !probe.Readable:
-		return "", fmt.Sprintf("plugin reachable, but the Calibre container cannot read %q. Check the volume permissions, and that both containers run as a user that can read the library.", wire)
+		return pushProbeResult{failure: fmt.Sprintf("plugin reachable, but the Calibre container cannot read %s. Check the volume permissions, and that both containers run as a user that can read the library.", quotePath(wire)) + mappedDriveHint(wire)}
 	}
-	return fmt.Sprintf("plugin reachable, and it can read %s", wire), ""
+
+	local := h.pickSampleBook(ctx)
+	if local == "" {
+		return pushProbeResult{message: fmt.Sprintf("plugin reachable, and it can read %s. No imported book was found to test, so only the library root was checked.", wire)}
+	}
+	sampleWire := pc.PushPath(local)
+	sp, err := pc.ProbePath(ctx, local)
+	if err != nil {
+		slog.Debug("calibre test: sample book probe failed", "path", sampleWire, "error", err)
+		return pushProbeResult{
+			message: fmt.Sprintf("plugin reachable, and it can read %s. Checking the book at %s did not complete, so only the library root was checked.", wire, quotePath(sampleWire)),
+			sample:  sampleWire,
+		}
+	}
+	switch {
+	case !sp.Exists || sp.IsDir:
+		return pushProbeResult{
+			failure: fmt.Sprintf("plugin reachable, and Calibre can see the library root %s, but not the book at %s. The push path remap covers the root but not the book, so check the remap pair in Settings then Calibre, and any other root folders your books are stored under.", quotePath(wire), quotePath(sampleWire)) + mappedDriveHint(sampleWire),
+			sample:  sampleWire,
+		}
+	case !sp.Readable:
+		return pushProbeResult{
+			failure: fmt.Sprintf("plugin reachable, and Calibre can see the book at %s but cannot read it. Check the file permissions, and that Calibre runs as a user that can read the library.", quotePath(sampleWire)) + mappedDriveHint(sampleWire),
+			sample:  sampleWire,
+		}
+	}
+	return pushProbeResult{
+		message: fmt.Sprintf("plugin reachable, and it can read %s and the book at %s", wire, quotePath(sampleWire)),
+		sample:  sampleWire,
+	}
+}
+
+// pickSampleBook returns one book file that exists on Bindery's side: the
+// newest imported ebook when there is one, otherwise the first file found in
+// the first few levels under the library root. "" when neither turns one up.
+func (h *CalibreHandler) pickSampleBook(ctx context.Context) string {
+	if h.ebookPaths != nil {
+		paths, err := h.ebookPaths.RecentEbookPaths(ctx, sampleBookCandidates)
+		if err != nil {
+			slog.Debug("calibre test: recent ebook lookup failed", "error", err)
+		}
+		for _, p := range paths {
+			if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+				return p
+			}
+		}
+	}
+	budget := sampleDirReadBudget
+	// Three levels covers the default naming template,
+	// {Author}/{Title} ({Year})/{file}.
+	return firstFileUnder(h.libraryRoot, 3, &budget)
+}
+
+// firstFileUnder walks dir depth first, files before folders, skipping hidden
+// entries, and returns the first regular file within depth levels.
+func firstFileUnder(dir string, depth int, budget *int) string {
+	if depth <= 0 || *budget <= 0 {
+		return ""
+	}
+	*budget--
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		if e.Type().IsRegular() {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".") || !e.IsDir() {
+			continue
+		}
+		if found := firstFileUnder(filepath.Join(dir, e.Name()), depth-1, budget); found != "" {
+			return found
+		}
+	}
+	return ""
+}
+
+// quotePath wraps a path in plain double quotes. %q would escape every
+// backslash, so a share path would read as \\\\nas\\share in the message.
+func quotePath(p string) string {
+	return `"` + p + `"`
+}
+
+// mappedDriveHint explains the mapped drive trap when the path Calibre was
+// asked to open starts with a drive letter: a drive mapped in one Windows
+// logon session is invisible to a Calibre running in another, such as a
+// service or a different user. Empty for any other path.
+func mappedDriveHint(wire string) string {
+	if !pathmap.IsWindowsPath(wire) {
+		return ""
+	}
+	return fmt.Sprintf(` %s is a drive letter. A mapped drive belongs to one Windows logon session, so the running Calibre may not see it. Use the share address in the remap instead, like \\nas\share\books.`, strings.TrimSpace(wire)[:2])
 }

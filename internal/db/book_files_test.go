@@ -35,6 +35,35 @@ func TestBookFileRepo_AddAndListByBook(t *testing.T) {
 	}
 }
 
+// TestBookFileRepo_RecentEbookPaths: the Calibre Test connection wants the
+// newest ebook first and never an audiobook, which the bridge cannot add.
+func TestBookFileRepo_RecentEbookPaths(t *testing.T) {
+	database, _, book := openTestDB(t)
+	ctx := context.Background()
+	files := NewBookFileRepo(database)
+
+	for _, f := range []struct{ format, path string }{
+		{models.MediaTypeEbook, "/lib/old.epub"},
+		{models.MediaTypeAudiobook, "/audio/new.m4b"},
+		{models.MediaTypeEbook, "/lib/new.epub"},
+	} {
+		if err := files.Add(ctx, book.ID, f.format, f.path); err != nil {
+			t.Fatalf("Add %s: %v", f.path, err)
+		}
+	}
+
+	got, err := files.RecentEbookPaths(ctx, 10)
+	if err != nil {
+		t.Fatalf("RecentEbookPaths: %v", err)
+	}
+	if len(got) != 2 || got[0] != "/lib/new.epub" || got[1] != "/lib/old.epub" {
+		t.Errorf("RecentEbookPaths = %v, want [/lib/new.epub /lib/old.epub]", got)
+	}
+	if got, _ := files.RecentEbookPaths(ctx, 1); len(got) != 1 {
+		t.Errorf("limit 1 returned %v", got)
+	}
+}
+
 func TestBookFileRepo_DuplicatePathIgnored(t *testing.T) {
 	database, _, book := openTestDB(t)
 	ctx := context.Background()

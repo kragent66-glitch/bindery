@@ -63,7 +63,7 @@ function CalibreSection({
   saving: string | null
 }) {
   const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string; detail?: string; warning?: string } | null>(null)
   const [saveError, setSaveError] = useState<{ key: string; msg: string } | null>(null)
   const [libraryPathSaveResult, libraryPathSave] = useSaveResult()
   const [binaryPathSaveResult, binaryPathSave] = useSaveResult()
@@ -196,7 +196,15 @@ function CalibreSection({
       const r = await api.testCalibre()
       const prefix = isPlugin ? '✓ Plugin reachable' : '✓ calibredb reachable'
       const detail = r.version || r.message
-      setTestResult({ ok: true, msg: detail ? `${prefix} — ${detail}` : prefix })
+      setTestResult({
+        ok: true,
+        msg: detail ? `${prefix} — ${detail}` : prefix,
+        // The version wins the headline, which used to hide what the path
+        // probe found. Show it underneath whenever a book was checked, or
+        // when the probe says only the root was (#2831).
+        detail: r.version && r.message && r.message !== 'plugin reachable' ? r.message : undefined,
+        warning: r.warning || undefined,
+      })
       // Mirror into bridgeReachable so the Push-all button flips to enabled
       // on a successful manual test, without waiting for the silent probe
       // to re-fire (which only triggers on mode/url/key *changes*).
@@ -204,7 +212,9 @@ function CalibreSection({
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'Test failed'
       const prefix = isPlugin ? '✗ Could not reach plugin' : '✗ calibredb unreachable'
-      setTestResult({ ok: false, msg: `${prefix} — ${reason}` })
+      const body = (err as { body?: { warning?: unknown } } | null)?.body
+      const warning = typeof body?.warning === 'string' && body.warning ? body.warning : undefined
+      setTestResult({ ok: false, msg: `${prefix} — ${reason}`, warning })
       if (isPlugin) setBridgeReachable(false)
     } finally {
       setTesting(false)
@@ -391,6 +401,16 @@ function CalibreSection({
                 <span className={testResult.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-600 dark:text-red-400'}>
                   {testResult.msg}
                 </span>
+              )}
+              {testResult?.detail && (
+                <p data-testid="calibre-test-detail" className="text-slate-600 dark:text-zinc-400 mt-1 break-all">
+                  {testResult.detail}
+                </p>
+              )}
+              {testResult?.warning && (
+                <p data-testid="calibre-test-warning" className="text-amber-600 dark:text-amber-400 mt-1">
+                  {testResult.warning}
+                </p>
               )}
             </div>
             <button

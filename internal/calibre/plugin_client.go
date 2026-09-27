@@ -461,9 +461,79 @@ func (h pluginHealth) Degraded() (bool, string) {
 
 // HealthState is what Test needs to know beyond "it answered".
 type HealthState struct {
-	Version  string
-	Degraded bool
-	Reason   string
+	Version string
+	// PluginVersion is the bridge's own version as it reported it, e.g.
+	// "0.6.2". Empty when the plugin did not send one.
+	PluginVersion string
+	Degraded      bool
+	Reason        string
+}
+
+// RecommendedBridgeVersion is the oldest calibre-bridge Test connection stops
+// warning about. 0.6.1 opens long network share paths and 0.6.2 stops a
+// failed add from leaving an empty book behind (#2831).
+const RecommendedBridgeVersion = "0.6.2"
+
+// BridgeUpgradeWarning returns an operator facing warning when version is
+// older than RecommendedBridgeVersion, and "" otherwise. A version that does
+// not parse gets no warning: guessing would nag people running a build the
+// comparison does not understand.
+func BridgeUpgradeWarning(version string) string {
+	have, ok := parseBridgeVersion(version)
+	if !ok {
+		return ""
+	}
+	want, _ := parseBridgeVersion(RecommendedBridgeVersion)
+	if compareBridgeVersions(have, want) >= 0 {
+		return ""
+	}
+	return fmt.Sprintf("Bindery Bridge %s is older than %s. Update the Calibre plugin: 0.6.1 fixes pushes to long network share paths, and 0.6.2 fixes the empty book a failed add can leave in Calibre.",
+		strings.TrimSpace(version), RecommendedBridgeVersion)
+}
+
+// parseBridgeVersion reads "0.6.1", "v0.6.1" or "0.6.1-rc1" into its numeric
+// parts. Anything from the first character that is neither a digit nor a dot
+// is a pre-release or build suffix and is ignored.
+func parseBridgeVersion(v string) ([]int, bool) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if i := strings.IndexFunc(v, func(r rune) bool { return (r < '0' || r > '9') && r != '.' }); i >= 0 {
+		v = v[:i]
+	}
+	if v == "" {
+		return nil, false
+	}
+	parts := strings.Split(v, ".")
+	out := make([]int, 0, len(parts))
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
+}
+
+// compareBridgeVersions compares numerically, part by part, treating a
+// missing part as zero so "0.7" equals "0.7.0". A string comparison would put
+// "0.10.0" before "0.6.2".
+func compareBridgeVersions(a, b []int) int {
+	for i := 0; i < len(a) || i < len(b); i++ {
+		var x, y int
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x < y {
+			return -1
+		}
+		if x > y {
+			return 1
+		}
+	}
+	return 0
 }
 
 // HealthDetail is Health with the degraded state attached.
@@ -475,9 +545,10 @@ func (c *PluginClient) HealthDetail(ctx context.Context) (HealthState, error) {
 	c.cacheCapabilities(h)
 	degraded, reason := h.Degraded()
 	return HealthState{
-		Version:  fmt.Sprintf("calibredb plugin v%s (Calibre %s)", h.PluginVersion, h.CalibreVersion),
-		Degraded: degraded,
-		Reason:   reason,
+		Version:       fmt.Sprintf("calibredb plugin v%s (Calibre %s)", h.PluginVersion, h.CalibreVersion),
+		PluginVersion: strings.TrimSpace(h.PluginVersion),
+		Degraded:      degraded,
+		Reason:        reason,
 	}, nil
 }
 

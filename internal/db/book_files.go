@@ -177,3 +177,30 @@ func (r *BookFileRepo) ListAllPaths(ctx context.Context) ([]string, error) {
 	}
 	return paths, rows.Err()
 }
+
+// RecentEbookPaths returns up to limit ebook paths, newest first. The Calibre
+// Test connection walks them for one that exists on Bindery's side and asks
+// the plugin to open it through the push remap, because the library root on
+// its own is an exact prefix match that never exercises the remap's join
+// (#2831).
+func (r *BookFileRepo) RecentEbookPaths(ctx context.Context, limit int) ([]string, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT path FROM book_files WHERE format = 'ebook' ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("book_files recent ebook paths: %w", err)
+	}
+	defer rows.Close()
+
+	var paths []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("book_files scan recent ebook path: %w", err)
+		}
+		paths = append(paths, p)
+	}
+	return paths, rows.Err()
+}

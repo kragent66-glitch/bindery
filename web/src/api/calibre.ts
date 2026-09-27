@@ -16,6 +16,12 @@ export interface CalibreTestResult {
   ok: string
   version: string
   message: string
+  // sample is the path of the real book the plugin was asked to open,
+  // after the push path remap (#2831). Absent when no book was probed.
+  sample?: string
+  // warning names an outdated Bindery Bridge. Also present on a failed
+  // test's error body.
+  warning?: string
 }
 
 // CalibreImportStats summarises one completed library import. Present

@@ -766,7 +766,8 @@ func main() {
 	prowlarrHandler := api.NewProwlarrHandler(prowlarrRepo, indexerRepo).WithSettings(settingsRepo)
 	calibreHandler := api.NewCalibreHandler(settingsRepo).
 		WithLifetimeCtx(appCtx).
-		WithLibraryRoot(cfg.LibraryDir)
+		WithLibraryRoot(cfg.LibraryDir).
+		WithBookFiles(db.NewBookFileRepo(database))
 	grimmoryHandler := api.NewGrimmoryHandler(settingsRepo).WithVersion(version)
 	grimmorySyncer := grimmory.NewSyncer(bookRepo, grimmoryPusher).WithJobs(bgJobs) // drain mid-upload syncs on shutdown (#1458)
 	grimmorySyncHandler := api.NewGrimmorySyncHandler(grimmorySyncer, grimmoryLoadPushCfg).
