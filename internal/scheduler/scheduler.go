@@ -34,6 +34,13 @@ type CalibreSyncer interface {
 	RunSync(ctx context.Context)
 }
 
+// CalibreDeliverer runs one pass of the Calibre delivery queue (#2832).
+// Implemented by *calibre.Deliverer. A pass returns at once when another is
+// already running, so the tick and an import's kick never overlap.
+type CalibreDeliverer interface {
+	RunDeliveries(ctx context.Context)
+}
+
 // bookSearcher is the narrow interface the scheduler uses for indexer
 // searches. *indexer.Searcher satisfies it; the interface keeps the scheduler
 // testable without real network calls.
@@ -349,6 +356,20 @@ func (s *Scheduler) WithStoragePaths(downloadDir, audiobookDownloadDir string) {
 // every 24 hours when Calibre is configured. Must be called before Start.
 func (s *Scheduler) WithCalibreSyncer(syncer CalibreSyncer) {
 	s.calibreSyncer = syncer
+}
+
+// WithCalibreDeliverer registers the Calibre delivery job, every minute
+// under the name calibre-deliver. A pass with Calibre off, an empty queue or
+// an unreachable Calibre does nothing, so the short interval costs one local
+// query when idle. It is what delivers a book imported while Calibre was
+// closed once Calibre is back. A nil deliverer registers nothing.
+func (s *Scheduler) WithCalibreDeliverer(d CalibreDeliverer) {
+	if d == nil {
+		return
+	}
+	s.cron.AddFunc("@every 1m", runJob("calibre-deliver", func() {
+		d.RunDeliveries(s.ctx())
+	}))
 }
 
 // WithRecommender registers a recommendation engine that runs every 24 hours.

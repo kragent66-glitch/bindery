@@ -2,7 +2,6 @@ package importer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/vavallee/bindery/internal/calibre"
-	"github.com/vavallee/bindery/internal/covers"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -532,162 +530,59 @@ func (s *Scanner) dropPlaceAudiobook(ctx context.Context, downloadPath string, b
 	return dropPlaceFile(ctx, source, filepath.Join(destDir, filepath.Base(source)), linkMode)
 }
 
-// pushToCalibre mirrors a just-imported book into Calibre via calibredb add.
-// Failures are logged and swallowed: Calibre sync is best effort and must
-// never roll back an otherwise good Bindery import.
-func (s *Scanner) pushToCalibre(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum, path, mediaType string) {
-	if s.calibreMode == nil || book == nil {
-		return
+// enqueueCalibreDelivery queues one just-imported ebook file for the Calibre
+// delivery worker (#2832). It used to push inline, per file, inside the
+// import: a closed Calibre cost up to thirty seconds per file and the book
+// was then missed for good, with one WARN line as the only record. Now the
+// import only writes a ledger row and the worker delivers it, retrying with
+// backoff until Calibre is reachable. It reports whether a row was queued,
+// so the caller knows to kick the worker once the loop is done.
+//
+// Only ebook files are queued. The Calibre hand off takes one ebook file:
+// the plugin derives the format from the extension and rejects a folder, and
+// calibredb scans a folder against Calibre's BOOK_EXTENSIONS, which carry no
+// audio format.
+func (s *Scanner) enqueueCalibreDelivery(ctx context.Context, book *models.Book, dl *models.Download, edition *models.Edition, path string) bool {
+	if s.calibreQueue == nil || s.calibreMode == nil || book == nil {
+		return false
 	}
 	mode := s.calibreMode()
 	if mode != calibre.ModeCalibredb && mode != calibre.ModePlugin {
-		return
+		return false
 	}
-	if s.calibreAdderFor == nil {
-		slog.Debug("calibre: no adder resolver, skipping", "mode", mode, "bookId", book.ID)
-		return
-	}
-	adder := s.calibreAdderFor(mode)
-	if adder == nil {
-		slog.Debug("calibre: adder is nil, skipping", "mode", mode, "bookId", book.ID)
-		return
-	}
-	if mediaType != models.MediaTypeEbook {
-		// The Calibre write integration is ebook only. An audiobook import
-		// hands over a folder, and neither target can do anything with one:
-		// the plugin derives the format from the file extension and rejects a
-		// folder outright, and `calibredb add` scans the folder against
-		// Calibre's own BOOK_EXTENSIONS, which carries no audio format, so it
-		// finds nothing and prints no added id. Bindery used to send it
-		// anyway, which in plugin mode cost two rejected requests and one
-		// misleading "add failed" warning per audiobook import.
-		slog.Debug("calibre: skipping a non ebook import, the Calibre hand off takes one ebook file",
-			"mode", mode, "bookId", book.ID, "mediaType", mediaType, "path", path)
-		return
-	}
-	meta := s.calibreMetadata(ctx, book, author, edition, seriesTitle, seriesNum, adder)
-	s.pushCalibreAdd(ctx, book, meta, path, mode, adder)
-}
-
-// pushCalibreAdd invokes the resolved adder (calibredb CLI or plugin HTTP
-// client) and persists the resulting calibre_id. Failures are best effort:
-// logged and swallowed so Bindery's own import stays good.
-func (s *Scanner) pushCalibreAdd(ctx context.Context, book *models.Book, meta calibre.Metadata, path string, mode calibre.Mode, adder calibreAdder) {
-	id, err := adder.Add(ctx, path, meta)
+	files, err := s.books.ListFiles(ctx, book.ID)
 	if err != nil {
-		if errors.Is(err, calibre.ErrDisabled) {
-			// The adder is now built from the same settings read that
-			// produced mode, so the two can only disagree because of a bug.
-			// It used to be the normal consequence of a boot time client
-			// outliving a settings change, and it returned silently.
-			slog.Warn("calibre: the adder reports the integration disabled while the configured mode is on; this is a wiring bug, please report it",
-				"mode", mode, "bookId", book.ID, "path", path)
-			return
+		slog.Warn("calibre: could not queue the delivery, listing the book's files failed", "bookId", book.ID, "path", path, "error", err)
+		return false
+	}
+	clean := filepath.Clean(path)
+	var fileID int64
+	for _, f := range files {
+		if f.Format == models.MediaTypeEbook && filepath.Clean(f.Path) == clean {
+			fileID = f.ID
+			break
 		}
-		if errors.Is(err, calibre.ErrAlreadyInCalibre) {
-			slog.Info("calibre: book already in library", "mode", mode, "bookId", book.ID, "path", path, "calibreId", id)
-			if id > 0 {
-				s.reconcileExistingCalibreBook(ctx, book, meta, id, mode, adder)
-			}
-			return
-		}
-		slog.Warn("calibre: add failed, continuing", "mode", mode, "bookId", book.ID, "path", path, "error", err)
-		return
 	}
-	if err := s.books.SetCalibreID(ctx, book.ID, id); err != nil {
-		slog.Warn("calibre: persist calibre_id failed", "bookId", book.ID, "calibreId", id, "error", err)
-		return
+	if fileID == 0 {
+		slog.Warn("calibre: could not queue the delivery, the file is not tracked under this book", "bookId", book.ID, "path", path)
+		return false
 	}
-	slog.Info("calibre: book mirrored", "mode", mode, "bookId", book.ID, "calibreId", id, "path", path)
-}
-
-// reconcileExistingCalibreBook handles a 409. It always records the linkage.
-// It only rewrites the Calibre row's metadata when Bindery already had that
-// exact id recorded, which means Bindery created the row itself and is
-// correcting its own earlier push.
-//
-// The first time Bindery meets a row it did not create, it writes nothing.
-// That row may be one the user curated in Calibre, and the protocol gives no
-// way to ask whether it was edited, so the safe reading of an unclaimed 409 is
-// "this is somebody else's row, link to it and leave it alone".
-func (s *Scanner) reconcileExistingCalibreBook(ctx context.Context, book *models.Book, meta calibre.Metadata, id int64, mode calibre.Mode, adder calibreAdder) {
-	owned := book.CalibreID != nil && *book.CalibreID == id
-	if perr := s.books.SetCalibreID(ctx, book.ID, id); perr != nil {
-		slog.Warn("calibre: persist calibre_id failed", "bookId", book.ID, "calibreId", id, "error", perr)
+	// The edition the download was grabbed for, when there was one. Without
+	// it the worker matches an edition by format at delivery time.
+	var editionID *int64
+	if dl != nil && dl.EditionID != nil && edition != nil && edition.ID == *dl.EditionID {
+		id := edition.ID
+		editionID = &id
 	}
-	if !owned || meta.IsEmpty() {
-		return
-	}
-	updater, ok := adder.(calibreMetadataUpdater)
-	if !ok || !updater.SupportsMetadataUpdate(ctx) {
-		return
-	}
-	fields, err := updater.UpdateMetadata(ctx, id, meta)
+	queued, err := s.calibreQueue.Enqueue(ctx, book.ID, fileID, editionID, path)
 	if err != nil {
-		slog.Warn("calibre: metadata update failed, continuing", "mode", mode, "bookId", book.ID, "calibreId", id, "error", err)
-		return
+		slog.Warn("calibre: could not queue the delivery", "bookId", book.ID, "path", path, "error", err)
+		return false
 	}
-	if len(fields) == 0 {
-		slog.Debug("calibre: nothing to fill on a book Bindery had already pushed", "mode", mode, "bookId", book.ID, "calibreId", id)
-		return
+	if queued {
+		slog.Debug("calibre: delivery queued", "mode", mode, "bookId", book.ID, "path", path)
 	}
-	slog.Info("calibre: filled empty fields on a book Bindery had already pushed",
-		"mode", mode, "bookId", book.ID, "calibreId", id, "fields", strings.Join(fields, ","))
-}
-
-// calibreMetadata builds the payload for one hand off. Everything except the
-// cover comes from calibre.BuildMetadata, which the bulk "Push all to Calibre"
-// job shares, so the two paths cannot drift apart again.
-func (s *Scanner) calibreMetadata(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum string, adder calibreAdder) calibre.Metadata {
-	if book == nil {
-		return calibre.Metadata{}
-	}
-	meta := calibre.BuildMetadata(calibre.MetadataSource{
-		Book:        book,
-		Author:      author,
-		Edition:     edition,
-		SeriesTitle: seriesTitle,
-		SeriesIndex: seriesNum,
-	})
-	meta.CoverPath = s.calibreCoverPath(ctx, book, calibre.CoverSourceFor(book, edition), adder)
-	return meta
-}
-
-// calibreCoverPath turns the book's cover reference or URL into a path the
-// target can open, or an empty string when there is nothing to send.
-//
-// The cover used to be gated on calibredb mode, so a plugin-mode book only
-// ever showed whatever artwork was embedded in the file. It is now sent in
-// both modes, subject to the target saying it can apply one. The plugin
-// client puts the path through the operator's push path remap, the same as
-// the book file, because a cover path is just as subject to the cross
-// container mount mismatch the remap exists to fix.
-func (s *Scanner) calibreCoverPath(ctx context.Context, book *models.Book, imageURL string, adder calibreAdder) string {
-	if strings.TrimSpace(imageURL) == "" {
-		return ""
-	}
-	if capable, ok := adder.(calibreCoverCapable); ok && !capable.SupportsCover(ctx) {
-		return ""
-	}
-	if covers.IsRef(imageURL) {
-		// A cover Bindery stored itself (#2564). A reference is not a
-		// filesystem path, so it has to be resolved before it goes anywhere.
-		// MaterializeCover only knows how to fetch URLs.
-		if s.coverStore == nil {
-			return ""
-		}
-		coverPath, _, ok := s.coverStore.Resolve(imageURL)
-		if !ok {
-			return ""
-		}
-		return coverPath
-	}
-	coverPath, err := calibre.MaterializeCover(ctx, s.calibreCoverCacheDir, imageURL)
-	if err != nil {
-		slog.Debug("calibre: cover materialization skipped", "bookId", book.ID, "error", err)
-		return ""
-	}
-	return coverPath
+	return queued
 }
 
 func firstString(values ...*string) string {

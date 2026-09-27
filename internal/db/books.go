@@ -1207,6 +1207,22 @@ func (r *BookRepo) SetCalibreID(ctx context.Context, id, calibreID int64) error 
 	return err
 }
 
+// SetCalibreIDIfUnset stores calibreID only when the book has none yet, and
+// reports whether it did. The Calibre delivery worker (#2832) uses it: it may
+// fill books.calibre_id from a delivery into the source library, but it never
+// replaces an id something else already recorded.
+func (r *BookRepo) SetCalibreIDIfUnset(ctx context.Context, id, calibreID int64) (bool, error) {
+	res, err := r.db.ExecContext(ctx, "UPDATE books SET calibre_id=? WHERE id=? AND calibre_id IS NULL", calibreID, id)
+	if err != nil {
+		return false, fmt.Errorf("set calibre_id if unset for book %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("set calibre_id if unset rows for book %d: %w", id, err)
+	}
+	return n > 0, nil
+}
+
 // GetByCalibreID returns the Bindery book row that currently points at the
 // given Calibre book id, or nil if none. The library import flow uses this
 // as its primary idempotency key — a second import pass sees the existing

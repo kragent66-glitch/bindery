@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/vavallee/bindery/internal/calibre"
-	"github.com/vavallee/bindery/internal/covers"
 	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/decision"
 	"github.com/vavallee/bindery/internal/importer/formatsniff"
@@ -37,28 +36,11 @@ type grimmoryPusher interface {
 	PushOnImport(ctx context.Context, bookID int64, title, filePath string)
 }
 
-// calibreAdder mirrors a just-imported file into Calibre via calibredb or the
-// Bindery Bridge plugin. The scanner only invokes it when Calibre mode is on.
-// An alias rather than a second declaration of the same method set, so the
-// resolver main.go passes in satisfies this without a wrapper.
-type calibreAdder = calibre.Adder
-
-// calibreCoverCapable is implemented by an adder that can say whether a cover
-// path will be used. Only the plugin client implements it, because only the
-// plugin has a capability list; calibredb always takes `--cover`, so an adder
-// that does not implement this is assumed to accept one. Asking before
-// resolving matters: materialising a remote cover is a network fetch, and
-// doing it for a plugin that would drop the field is pure waste.
-type calibreCoverCapable interface {
-	SupportsCover(ctx context.Context) bool
-}
-
-// calibreMetadataUpdater is implemented by an adder that can write to a
-// Calibre row that already exists (PATCH /v1/books/{id}). It is what turns a
-// 409 from a dead end into a correction.
-type calibreMetadataUpdater interface {
-	SupportsMetadataUpdate(ctx context.Context) bool
-	UpdateMetadata(ctx context.Context, id int64, meta calibre.Metadata) ([]string, error)
+// calibreDeliveryQueue queues a just-imported ebook file for Calibre and
+// wakes the worker that delivers it (#2832). *calibre.Deliverer implements it.
+type calibreDeliveryQueue interface {
+	Enqueue(ctx context.Context, bookID, bookFileID int64, editionID *int64, path string) (bool, error)
+	Kick()
 }
 
 // absNotifier is called after a successful audiobook import to trigger an
@@ -89,25 +71,20 @@ const (
 
 // Scanner checks for completed downloads and imports them into the library.
 type Scanner struct {
-	downloads            *db.DownloadRepo
-	clients              *db.DownloadClientRepo
-	books                *db.BookRepo
-	authors              *db.AuthorRepo
-	editions             *db.EditionRepo
-	history              *db.HistoryRepo
-	rootFolders          *db.RootFolderRepo
-	series               *db.SeriesRepo
-	renamer              *Renamer
-	remapper             *Remapper
-	calibreAdderFor      func(calibre.Mode) calibreAdder
-	grimmory             grimmoryPusher
-	calibreMode          func() calibre.Mode
-	calibreCoverCacheDir string
-	// coverStore resolves bindery-cover: references (a Calibre library's
-	// own cover, #2564) to the file on disk so a push to calibredb can hand
-	// it over without an HTTP fetch that the SSRF policy would refuse.
-	coverStore *covers.Store
-	settings   *db.SettingsRepo
+	downloads    *db.DownloadRepo
+	clients      *db.DownloadClientRepo
+	books        *db.BookRepo
+	authors      *db.AuthorRepo
+	editions     *db.EditionRepo
+	history      *db.HistoryRepo
+	rootFolders  *db.RootFolderRepo
+	series       *db.SeriesRepo
+	renamer      *Renamer
+	remapper     *Remapper
+	calibreQueue calibreDeliveryQueue
+	grimmory     grimmoryPusher
+	calibreMode  func() calibre.Mode
+	settings     *db.SettingsRepo
 	// qualityProfiles and blocklist back the post-download format check
 	// (#1782). Both nil disables it entirely, which is what every caller that
 	// has not been wired up gets.
@@ -306,29 +283,12 @@ func (s *Scanner) effectiveRootForFormat(ctx context.Context, author *models.Aut
 	return s.effectiveLibraryDir(ctx, author)
 }
 
-// WithCalibre attaches the Calibre integration with one fixed adder. The mode
-// resolver is still consulted on every import, but the adder is pinned, so a
-// mode change that would need a different client has no effect. Production
-// wiring uses WithCalibreResolver; this form is for tests and for a caller
-// that has already resolved which client it wants.
-func (s *Scanner) WithCalibre(mode func() calibre.Mode, adder calibreAdder) *Scanner {
-	return s.WithCalibreResolver(mode, func(calibre.Mode) calibreAdder { return adder })
-}
-
-// WithCalibreResolver attaches the Calibre integration with an adder built
-// per push from the current settings. Both the mode and the client are
-// resolved at push time, so switching mode in the UI, or correcting
-// plugin_url, plugin_api_key or push_path_remap, takes effect on the next
-// import rather than on the next restart.
-//
-// This used to be a single instance built once at boot from the boot-time
-// mode, while the scanner was handed a live mode resolver. The two disagreed
-// the moment anyone touched the settings: booting with mode=off and then
-// selecting plugin mode left the scanner calling calibredb's Add, which
-// returned ErrDisabled and was swallowed without a log line (#1355).
-func (s *Scanner) WithCalibreResolver(mode func() calibre.Mode, resolve func(calibre.Mode) calibreAdder) *Scanner {
+// WithCalibreDeliveries attaches the Calibre delivery queue (#2832). mode is
+// read on every import: with the integration off nothing is queued. Imports
+// never talk to Calibre themselves; they queue the file and kick the worker.
+func (s *Scanner) WithCalibreDeliveries(mode func() calibre.Mode, q calibreDeliveryQueue) *Scanner {
 	s.calibreMode = mode
-	s.calibreAdderFor = resolve
+	s.calibreQueue = q
 	return s
 }
 
@@ -338,21 +298,6 @@ func (s *Scanner) WithCalibreResolver(mode func() calibre.Mode, resolve func(cal
 // failure never blocks or fails the underlying import.
 func (s *Scanner) WithGrimmory(p grimmoryPusher) *Scanner {
 	s.grimmory = p
-	return s
-}
-
-// WithCalibreCoverCache configures a writable cache directory for remote cover
-// images that need to be materialized before calibredb can consume them.
-func (s *Scanner) WithCalibreCoverCache(dir string) *Scanner {
-	s.calibreCoverCacheDir = dir
-	return s
-}
-
-// WithCoverStore attaches the store that backs bindery-cover: references
-// (#2564), so a book whose cover came from a Calibre library import can be
-// pushed back to calibredb with that cover.
-func (s *Scanner) WithCoverStore(store *covers.Store) *Scanner {
-	s.coverStore = store
 	return s
 }
 
@@ -2060,7 +2005,8 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 			return dl.Title
 		}(), "path", destDir)
 
-		s.pushToCalibre(ctx, book, author, edition, seriesTitle, seriesNum, destDir, models.MediaTypeAudiobook)
+		// No Calibre delivery for an audiobook: the Calibre hand off takes
+		// one ebook file (see enqueueCalibreDelivery).
 		s.pushToABS(ctx)
 		s.writeOPFSidecar(ctx, destDir, []string{audiobookRoot}, book, author, edition, seriesTitle, seriesNum)
 
@@ -2123,6 +2069,7 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 	// failure when the author's RootFolderID is on a separate mount (#1254).
 	ebookRoot := s.effectiveLibraryDir(ctx, author)
 	ebookMode := s.resolveImportMode(configuredMode, downloadPath, ebookRoot)
+	calibreQueued := false
 	for _, srcFile := range bookFiles {
 		if book == nil {
 			// Try to match from filename
@@ -2236,13 +2183,22 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 		// landed. The terminal state is decided once, after the loop.
 		slog.Info("book imported", "title", book.Title, "path", destPath)
 
-		s.pushToCalibre(ctx, book, author, edition, seriesTitle, seriesNum, destPath, models.MediaTypeEbook)
+		if s.enqueueCalibreDelivery(ctx, book, dl, edition, destPath) {
+			calibreQueued = true
+		}
 		s.pushToCWA(ctx, destPath)
 		s.pushToGrimmory(ctx, book, destPath)
 
 		// NOTE: the bookImported history event is deliberately NOT written here
 		// (#2764). It is written once after the loop, beside the notification,
 		// for the reason stated there.
+	}
+
+	// Wake the Calibre delivery worker once every file of this download is
+	// queued. It delivers in the background, so the import never waits on
+	// Calibre; if Calibre is closed the rows wait for the next pass.
+	if calibreQueued {
+		s.calibreQueue.Kick()
 	}
 
 	// Reconcile the book's language with the file that just landed (#1160,

@@ -241,9 +241,33 @@ func (c *PluginClient) addWithRetry(ctx context.Context, filePath string, meta M
 		return result.ID, ErrAlreadyInCalibre
 	}
 	if resp.StatusCode >= 400 {
-		return 0, fmt.Errorf("plugin client: server error %d: %s", resp.StatusCode, result.message())
+		return 0, &PluginError{Status: resp.StatusCode, Code: result.Code, Detail: result.message()}
 	}
 	return result.ID, nil
+}
+
+// PluginError is a rejection the plugin answered with: it was reached, read
+// the request and said no. Code is the machine readable code a 0.6.0 or newer
+// plugin sends (bad_format, path_forbidden, path_not_found, ...) and is empty
+// from an older one. The delivery worker keys its retry policy on it.
+type PluginError struct {
+	Status int
+	Code   string
+	Detail string
+}
+
+func (e *PluginError) Error() string {
+	return fmt.Sprintf("plugin client: server error %d: %s", e.Status, e.Detail)
+}
+
+// PluginErrorCode returns the plugin's error code carried by err, or "" when
+// err is not a plugin rejection or the plugin sent no code.
+func PluginErrorCode(err error) string {
+	var pe *PluginError
+	if errors.As(err, &pe) {
+		return pe.Code
+	}
+	return ""
 }
 
 // shouldRetryLegacy decides whether a rejection is about the metadata object
@@ -467,6 +491,9 @@ type HealthState struct {
 	PluginVersion string
 	Degraded      bool
 	Reason        string
+	// Library is the Calibre library the plugin is serving, as the plugin
+	// sees it. The delivery worker records it as the target a book went to.
+	Library string
 }
 
 // RecommendedBridgeVersion is the oldest calibre-bridge Test connection stops
@@ -549,6 +576,7 @@ func (c *PluginClient) HealthDetail(ctx context.Context) (HealthState, error) {
 		PluginVersion: strings.TrimSpace(h.PluginVersion),
 		Degraded:      degraded,
 		Reason:        reason,
+		Library:       strings.TrimSpace(h.Library),
 	}, nil
 }
 

@@ -1031,11 +1031,11 @@ folder. Fix the book in Bindery rather than the plugin: check its **Files**,
 use **Forget this file** on the wrong entry and import the right ebook. In the
 case this came from, the folder held an audiobook of a different book.
 
-**Books imported while Calibre was closed never reached it.**
-Expected for now. The plugin runs inside Calibre, so nothing receives the push
-while Calibre is closed, and Bindery does not retry it later. Open Calibre and
-run **Push all to Calibre**; books already there are skipped. Automatic retry
-is tracked in [#2832](https://github.com/vavallee/bindery/issues/2832).
+**Books imported while Calibre was closed have not reached it yet.**
+They are waiting. Bindery queues every imported ebook and delivers it once
+Calibre is running and the plugin answers, within about a minute. A book
+Calibre keeps rejecting is retried with growing gaps and marked failed after 8
+attempts; the log line `calibre delivery: add failed, will retry` says why.
 
 **Audiobooks never appear in Calibre.**
 Expected. The Calibre write integration sends ebooks only, and **Push all to

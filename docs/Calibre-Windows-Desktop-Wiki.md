@@ -137,7 +137,7 @@ Reading Bindery's library on an e-reader directly over OPDS is not covered here 
 
 ## What to expect day to day
 
-- **Calibre must be open for pushes to land.** A book imported while Calibre is closed is not retried automatically today; run **Push all to Calibre** again after you open Calibre and it picks up whatever was missed. A retry queue is tracked in [#2832](https://github.com/vavallee/bindery/issues/2832), and this step goes away when it lands.
+- **Books imported while Calibre is closed wait for it.** Bindery queues every imported ebook and delivers it once the plugin answers, within about a minute of Calibre running again. Nothing to do on your side. A book Calibre keeps rejecting is retried with growing gaps and marked failed after 8 attempts; see [Deliveries are queued and retried](Calibre-Integration-Wiki.md#deliveries-are-queued-and-retried).
 - **Ebooks only.** Audiobooks are never sent to Calibre. Use Audiobookshelf for those.
 - **Every book exists twice on disk.** Calibre copies each file into its own library folder, so the Bindery copy on the share and the Calibre copy both stay. That is what keeps Calibre's own edits and conversions away from Bindery's files.
 - **Never point Calibre's Auto-add folder at the Bindery library.** Auto-add removes the files it adds, so it would empty Bindery's library into Calibre's.
@@ -152,7 +152,7 @@ Reading Bindery's library on an e-reader directly over OPDS is not covered here 
 
 **Test connection passes but pushes still fail.** Read the reason in the Failed table. A path error there usually means the remap covers the library root but the book sits under a different root folder; add a pair for that root.
 
-**Books imported while Calibre was closed are missing.** Expected today; run **Push all to Calibre** after opening Calibre (see [What to expect day to day](#what-to-expect-day-to-day)).
+**Books imported while Calibre was closed are missing.** Leave Calibre open for a minute: queued books are delivered once the plugin answers. If they still do not arrive, look for `calibre delivery: add failed, will retry` in the Bindery log, which names the reason Calibre gave (see [What to expect day to day](#what-to-expect-day-to-day)).
 
 **The plugin stopped answering after a Windows update or a network change.** Windows may have moved the network to a different profile. Rerun the checks in [step 4](#4-let-the-bindery-host-through-the-firewall).
 

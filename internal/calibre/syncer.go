@@ -136,6 +136,7 @@ type Syncer struct {
 	authors   AuthorGetter
 	editions  EditionLister
 	series    SeriesGetter
+	covers    CoverSource
 	newClient func(cfg Config) pluginPusher
 
 	mu       sync.Mutex
@@ -168,6 +169,13 @@ func (s *Syncer) WithMetadata(authors AuthorGetter, editions EditionLister) *Syn
 // series and series index a live import sends.
 func (s *Syncer) WithSeries(series SeriesGetter) *Syncer {
 	s.series = series
+	return s
+}
+
+// WithCovers lets the bulk push send each book's cover, resolved the same way
+// the delivery worker resolves it. The bulk push used to send none at all.
+func (s *Syncer) WithCovers(src CoverSource) *Syncer {
+	s.covers = src
 	return s
 }
 
@@ -347,7 +355,7 @@ func (s *Syncer) run(ctx context.Context, cfg Config) {
 		}
 		b := &eligible[i]
 		path := pushPath(b)
-		meta, err := s.metadataForBook(ctx, b, path, sameLibrary)
+		meta, err := s.metadataForBook(ctx, b, path, sameLibrary, client)
 		if err != nil {
 			recordFailure(b, path, err.Error())
 			continue
@@ -404,7 +412,7 @@ func pushPath(b *models.Book) string {
 	return b.FilePath
 }
 
-func (s *Syncer) metadataForBook(ctx context.Context, b *models.Book, path string, sameLibrary bool) (Metadata, error) {
+func (s *Syncer) metadataForBook(ctx context.Context, b *models.Book, path string, sameLibrary bool, client pluginPusher) (Metadata, error) {
 	edition, err := s.editionForPath(ctx, b, path)
 	if err != nil {
 		return Metadata{}, err
@@ -418,7 +426,7 @@ func (s *Syncer) metadataForBook(ctx context.Context, b *models.Book, path strin
 		delete(identifiers, "calibre")
 	}
 	seriesTitle, seriesIndex := s.primarySeries(ctx, b)
-	return BuildMetadata(MetadataSource{
+	meta := BuildMetadata(MetadataSource{
 		Book:        b,
 		Authors:     authors,
 		AuthorSort:  authorSort,
@@ -426,7 +434,9 @@ func (s *Syncer) metadataForBook(ctx context.Context, b *models.Book, path strin
 		SeriesTitle: seriesTitle,
 		SeriesIndex: seriesIndex,
 		Identifiers: identifiers,
-	}), nil
+	})
+	meta.CoverPath = s.covers.PathFor(ctx, CoverSourceFor(b, edition), client)
+	return meta, nil
 }
 
 // primarySeries mirrors the importer's lookup. A failure is not worth failing
@@ -505,8 +515,16 @@ func (s *Syncer) editionForPath(ctx context.Context, b *models.Book, path string
 	if err != nil {
 		return nil, err
 	}
+	return editionForFile(editions, b, path), nil
+}
+
+// editionForFile picks the edition that describes the file at path: one whose
+// format matches the file's extension, preferring the book's selected edition
+// among those, then the selected edition, then the first. nil when there are
+// no editions.
+func editionForFile(editions []models.Edition, b *models.Book, path string) *models.Edition {
 	if len(editions) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	ext := strings.TrimPrefix(filepath.Ext(path), ".")
@@ -518,25 +536,25 @@ func (s *Syncer) editionForPath(ctx context.Context, b *models.Book, path string
 				continue
 			}
 			if b.SelectedEditionID != nil && editions[i].ID == *b.SelectedEditionID {
-				return &editions[i], nil
+				return &editions[i]
 			}
 			if firstFormatMatch == nil {
 				firstFormatMatch = &editions[i]
 			}
 		}
 		if firstFormatMatch != nil {
-			return firstFormatMatch, nil
+			return firstFormatMatch
 		}
 	}
 
 	if b.SelectedEditionID != nil {
 		for i := range editions {
 			if editions[i].ID == *b.SelectedEditionID {
-				return &editions[i], nil
+				return &editions[i]
 			}
 		}
 	}
-	return &editions[0], nil
+	return &editions[0]
 }
 
 func (s *Syncer) persistCalibreID(ctx context.Context, b *models.Book, id int64, sameLibrary bool) error {
@@ -561,11 +579,14 @@ func sameCalibreLibrary(ctx context.Context, cfg Config, client pluginPusher) bo
 		slog.Warn("calibre sync: target library identity unavailable; treating plugin target as separate from import source", "error", err)
 		return false
 	}
-	target = cleanLibraryPath(target)
-	if target == "" {
-		return false
-	}
-	return source == target
+	return sameLibraryPath(source, target)
+}
+
+// sameLibraryPath reports whether two library paths name the same library.
+// An empty path on either side is unknown, never a match.
+func sameLibraryPath(a, b string) bool {
+	a, b = cleanLibraryPath(a), cleanLibraryPath(b)
+	return a != "" && a == b
 }
 
 func cleanLibraryPath(path string) string {
