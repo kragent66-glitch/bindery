@@ -96,6 +96,16 @@ func TestEnumerateImportUnits_SeriesVersusDiscSet(t *testing.T) {
 			want: []string{"Dune"},
 		},
 		{
+			name: "Pt and Ch abbreviations are one split recording",
+			files: []string{
+				"Frank Herbert/Dune/Pt 1/01.mp3",
+				"Frank Herbert/Dune/Pt 2/01.mp3",
+				"Frank Herbert/Children of Dune/Ch01/01.mp3",
+				"Frank Herbert/Children of Dune/Ch02/01.mp3",
+			},
+			want: []string{"Children of Dune", "Dune"},
+		},
+		{
 			name: "a lone CD1 folder is still that book",
 			files: []string{
 				"Frank Herbert/Dune/CD1/01.mp3",
