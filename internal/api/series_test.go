@@ -4500,3 +4500,75 @@ func TestHardcoverDiffRealisticSeriesNeverStarves(t *testing.T) {
 		})
 	}
 }
+
+// TestBoundCopyOfNeedsTheHolderToResembleTheBook pins the second half of the
+// copy test in boundCopyOf: equal title numbers are not enough, the book that
+// holds the entry must also score against this local at least as well as the
+// entry does. Without it every pair of titles without numbers reads as a
+// copy. Here the holder took "Words of Radiance" by its catalogue id although
+// its own title is "Oathbringer", so a local titled "Words of Radiance" is a
+// different row, not a second copy of the holder, and must stay free to fall
+// through to its next best entry.
+func TestBoundCopyOfNeedsTheHolderToResembleTheBook(t *testing.T) {
+	cat := func(fid, title string) metadata.SeriesCatalogBook {
+		return metadata.SeriesCatalogBook{ForeignID: fid, Title: title, Book: models.Book{ForeignID: fid, Title: title}}
+	}
+	books := []metadata.SeriesCatalogBook{cat("hc:words-of-radiance", "Words of Radiance")}
+	row := func(id int64, fid, title string) models.SeriesBook {
+		return models.SeriesBook{SeriesID: 1, BookID: id, Book: &models.Book{ID: id, ForeignID: fid, Title: title}}
+	}
+	local := row(2, "", "Words of Radiance")
+
+	t.Run("holder titled differently is not a twin", func(t *testing.T) {
+		locals := []models.SeriesBook{row(1, "hc:words-of-radiance", "Oathbringer"), local}
+		if entry, _, _ := boundCopyOf(local, locals, books, map[int]int{0: 0}, 0); entry != -1 {
+			t.Errorf("boundCopyOf = entry %d, want -1: %q is not a copy of %q", entry, local.Book.Title, locals[0].Book.Title)
+		}
+	})
+	t.Run("holder with the same title is a twin", func(t *testing.T) {
+		locals := []models.SeriesBook{row(1, "hc:words-of-radiance", "Words of Radiance"), local}
+		if entry, twin, _ := boundCopyOf(local, locals, books, map[int]int{0: 0}, 0); entry != 0 || twin != 0 {
+			t.Errorf("boundCopyOf = entry %d twin %d, want entry 0 held by local 0", entry, twin)
+		}
+	})
+}
+
+// TestHardcoverDiffTitleMatchesBindBestScoreFirst pins the ordering half of
+// the #2410 title pass: title matched locals bind in order of their best
+// score, not library order. In library order, reversed, a bare "He Who
+// Fights with Monsters 12" row reached the umbrella entry before volume 1
+// did and the two swapped. These series have no known misbinding left, so
+// every bound row must sit on its own entry in both orders. The cases with
+// known misbinds are listed in docs/Hardcover-Series-Wiki.md and excluded.
+func TestHardcoverDiffTitleMatchesBindBestScoreFirst(t *testing.T) {
+	clean := func(name string) bool {
+		return strings.Contains(name, "/with positions") ||
+			strings.HasPrefix(name, "He Who Fights with Monsters") ||
+			strings.HasPrefix(name, "Stormlight")
+	}
+	checked := 0
+	for _, c := range realisticDiffCases() {
+		if !clean(c.name) {
+			continue
+		}
+		for _, reversed := range []bool{false, true} {
+			order := "library order"
+			if reversed {
+				order = "reversed library order"
+			}
+			t.Run(c.name+"/"+order, func(t *testing.T) {
+				diff := buildHardcoverDiff(context.Background(), nil, 0, c.series(reversed), nil, c.catalog)
+				bound, _, _ := realisticDiffOutcome(c, diff)
+				for _, l := range c.locals {
+					if fid, ok := bound[l.id]; ok && fid != l.owns {
+						t.Errorf("local %d %q bound to %s, want %s (bindings %v)", l.id, l.title, fid, l.owns, bound)
+					}
+				}
+			})
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no realistic cases matched; the case names changed")
+	}
+}
