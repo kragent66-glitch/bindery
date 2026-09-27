@@ -612,3 +612,24 @@ func regrabOwnedBook(t *testing.T, database *sql.DB, books *db.BookRepo, slug st
 	book.OwnerUserID = owner
 	return book
 }
+
+// TestRegrabbableIsBlocksRegrabNegated holds the manual grab's gate to the
+// shared predicate. regrabbable spells the two halves out separately for
+// their reasoning, and its godoc says it is models.Download.BlocksRegrab
+// negated; nothing else in production calls BlocksRegrab, so without this
+// the two could drift and TestBlocksRegrab would keep passing against a
+// predicate the manual grab no longer applies (#2710).
+func TestRegrabbableIsBlocksRegrabNegated(t *testing.T) {
+	bookID := int64(7)
+	for _, s := range models.AllStates() {
+		for _, withBook := range []bool{true, false} {
+			d := &models.Download{Status: s}
+			if withBook {
+				d.BookID = &bookID
+			}
+			if got, want := regrabbable(d), !d.BlocksRegrab(); got != want {
+				t.Errorf("state %q, book %v: regrabbable = %v, !BlocksRegrab = %v", s, withBook, got, want)
+			}
+		}
+	}
+}
