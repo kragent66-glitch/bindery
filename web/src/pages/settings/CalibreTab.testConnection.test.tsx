@@ -17,6 +17,8 @@ vi.mock('../../api/client', () => ({
     calibreSyncStart: vi.fn(),
     calibreRunRollback: vi.fn(),
     calibreRunRollbackPreview: vi.fn(),
+    calibreDeliverySummary: vi.fn(),
+    calibreDeliveries: vi.fn(),
   },
 }))
 
@@ -40,6 +42,8 @@ describe('CalibreTab Test connection', () => {
     mocked.calibreImportStatus.mockResolvedValue({ running: false })
     mocked.calibreSyncStatus.mockResolvedValue({ running: false })
     mocked.calibreRuns.mockResolvedValue([])
+    mocked.calibreDeliverySummary.mockResolvedValue({ pending: 0, delivered: 0, failed: 0, skipped: 0, mode: 'plugin', target: {} })
+    mocked.calibreDeliveries.mockResolvedValue({ items: [], total: 0 })
   })
 
   it('shows the book the probe checked and the bridge warning', async () => {

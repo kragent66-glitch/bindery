@@ -473,7 +473,8 @@ func main() {
 	// pending, so a book imported while Calibre is closed arrives once it is
 	// back. The jobs group drains an in-flight pass before the database
 	// closes.
-	calibreDeliverer := calibre.NewDeliverer(db.NewCalibreDeliveryRepo(database), bookRepo,
+	calibreDeliveryRepo := db.NewCalibreDeliveryRepo(database)
+	calibreDeliverer := calibre.NewDeliverer(calibreDeliveryRepo, bookRepo,
 		modeResolver, calibreLoadConfig, calibreAdders.For).
 		WithMetadata(authorRepo, editionRepo, seriesRepo).
 		WithCovers(calibreCovers).
@@ -795,10 +796,11 @@ func main() {
 		return api.LoadCalibreConfig(appCtx, settingsRepo)
 	})
 	calibreRunsHandler := api.NewCalibreRunsHandler(calibreImporter)
-	calibreSyncer := calibre.NewSyncer(bookRepo).
-		WithMetadata(authorRepo, editionRepo).
-		WithSeries(seriesRepo).
-		WithCovers(calibreCovers)
+	// Push all queues books for the delivery worker (#2832) and reads its
+	// progress back from the ledger; the worker does the sending.
+	calibreSyncer := calibre.NewSyncer(bookRepo, calibreDeliveryRepo, calibreDeliverer).WithJobs(bgJobs)
+	calibreDeliveryHandler := api.NewCalibreDeliveryHandler(calibreDeliveryRepo, calibreDeliverer, bookRepo,
+		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) })
 	calibreSyncHandler := api.NewCalibreSyncHandler(
 		calibreSyncer,
 		func() calibre.Config { return api.LoadCalibreConfig(appCtx, settingsRepo) },
@@ -1205,7 +1207,7 @@ func main() {
 
 		// Calibre integration (probe + library import + bulk push) — all
 		// admin-only. See registerCalibreIntegrationRoutes.
-		registerCalibreIntegrationRoutes(r, calibreHandler, calibreImportHandler, calibreSyncHandler)
+		registerCalibreIntegrationRoutes(r, calibreHandler, calibreImportHandler, calibreSyncHandler, calibreDeliveryHandler)
 
 		// Calibre import run history + rollback (#643). Admin-only — a bad
 		// rollback can delete authors/books wholesale, so the destructive

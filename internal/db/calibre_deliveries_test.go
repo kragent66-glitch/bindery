@@ -417,3 +417,57 @@ func TestCalibreDeliveryCascades(t *testing.T) {
 		t.Fatal("Enqueue for a missing book file must fail the foreign key")
 	}
 }
+
+// TestCalibreDeliveryListAllByBookAndWithBooks covers the reads Push all and
+// the settings queue view use.
+func TestCalibreDeliveryListAllByBookAndWithBooks(t *testing.T) {
+	ctx := context.Background()
+	f := newDeliveryFixture(t, 2)
+	other := seedBook(t, f.books, seedAuthor(t, NewAuthorRepo(f.db), "OL2A", "Second Author").ID, "OL2W", "Other").ID
+	otherFile := f.addFile(t, other, "/lib/other.epub")
+
+	first := f.enqueue(t, 0)
+	f.clock = f.clock.Add(time.Minute)
+	f.enqueue(t, 1)
+	if _, err := f.repo.Enqueue(ctx, other, otherFile, nil, "/lib/other.epub", "epub"); err != nil {
+		t.Fatal(err)
+	}
+	f.clock = f.clock.Add(time.Minute)
+	if err := f.repo.MarkFailed(ctx, first.ID, "bad_format", "nope", f.clock, true); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := f.repo.ListAll(ctx)
+	if err != nil || len(all) != 3 || all[0].ID != first.ID {
+		t.Fatalf("ListAll = %d rows, %v; want 3 oldest first", len(all), err)
+	}
+	mine, err := f.repo.ListByBook(ctx, f.book)
+	if err != nil || len(mine) != 2 {
+		t.Fatalf("ListByBook = %d rows, %v; want 2", len(mine), err)
+	}
+
+	items, err := f.repo.ListWithBooks(ctx, models.CalibreDeliveryFailed, 10, 0)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("ListWithBooks failed = %d, %v; want 1", len(items), err)
+	}
+	if items[0].ID != first.ID || items[0].BookTitle != "Book" || items[0].AuthorName != "Author" || items[0].LastErrorCode != "bad_format" {
+		t.Errorf("item = %+v", items[0])
+	}
+	items, err = f.repo.ListWithBooks(ctx, "", 10, 0)
+	if err != nil || len(items) != 3 || items[0].ID != first.ID {
+		t.Fatalf("ListWithBooks all = %d, %v; want 3 most recently updated first", len(items), err)
+	}
+	names := map[string]bool{}
+	for _, it := range items {
+		names[it.AuthorName] = true
+	}
+	if !names["Second Author"] {
+		t.Errorf("author names = %v", names)
+	}
+	if page, err := f.repo.ListWithBooks(ctx, "", 1, 1); err != nil || len(page) != 1 || page[0].ID == first.ID {
+		t.Errorf("second page = %+v, %v", page, err)
+	}
+	if empty, err := f.repo.ListWithBooks(ctx, models.CalibreDeliveryDelivered, 10, 0); err != nil || empty == nil || len(empty) != 0 {
+		t.Errorf("empty list = %#v, %v; want a non-nil empty slice", empty, err)
+	}
+}

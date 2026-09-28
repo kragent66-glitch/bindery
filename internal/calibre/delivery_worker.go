@@ -130,6 +130,61 @@ type Deliverer struct {
 	now      func() time.Time
 
 	mu sync.Mutex
+
+	healthMu sync.Mutex
+	health   DeliveryHealth
+}
+
+// DeliveryHealth is what the worker last learned about the push target, for
+// the settings queue view. It is only as fresh as the last pass that had
+// something to deliver: an idle queue does not probe Calibre, so CheckedAt
+// can be old while nothing is waiting.
+type DeliveryHealth struct {
+	// LastPassAt is when a pass last looked at the queue.
+	LastPassAt *time.Time `json:"lastPassAt,omitempty"`
+	// CheckedAt is when the worker last learned whether Calibre answers.
+	CheckedAt *time.Time `json:"checkedAt,omitempty"`
+	// Reachable is nil until the worker has had a reason to find out.
+	Reachable *bool `json:"reachable,omitempty"`
+	// LastError is why Calibre could not be reached, when it could not.
+	LastError string `json:"lastError,omitempty"`
+}
+
+// Health returns a copy of what the worker last learned about the target.
+func (d *Deliverer) Health() DeliveryHealth {
+	d.healthMu.Lock()
+	defer d.healthMu.Unlock()
+	h := d.health
+	if h.LastPassAt != nil {
+		t := *h.LastPassAt
+		h.LastPassAt = &t
+	}
+	if h.CheckedAt != nil {
+		t := *h.CheckedAt
+		h.CheckedAt = &t
+	}
+	if h.Reachable != nil {
+		v := *h.Reachable
+		h.Reachable = &v
+	}
+	return h
+}
+
+func (d *Deliverer) notePass() {
+	now := d.now().UTC()
+	d.healthMu.Lock()
+	d.health.LastPassAt = &now
+	d.healthMu.Unlock()
+}
+
+// noteReachable records whether Calibre answered, and why not when it did not.
+func (d *Deliverer) noteReachable(ok bool, cause string) {
+	now := d.now().UTC()
+	d.healthMu.Lock()
+	d.health.CheckedAt = &now
+	d.health.Reachable = &ok
+	d.health.LastError = cause
+	d.healthMu.Unlock()
 }
 
 // NewDeliverer builds a worker. mode and config are read at the start of each
@@ -235,6 +290,7 @@ func (d *Deliverer) pass(ctx context.Context) {
 	}
 	// The due query is a local read, so it goes first: an idle queue must
 	// not cost a request to the Calibre host every minute.
+	d.notePass()
 	rows, err := d.store.DueBatch(ctx, d.now(), deliveryBatchSize)
 	if err != nil {
 		slog.Warn("calibre delivery: reading the queue failed", "error", err)
@@ -259,12 +315,15 @@ func (d *Deliverer) pass(ctx context.Context) {
 			// Calibre is closed or the host is down. That is not an
 			// attempt, so no row is touched; the next tick asks again.
 			slog.Debug("calibre delivery: bridge unreachable, waiting", "pending", len(rows), "error", herr)
+			d.noteReachable(false, herr.Error())
 			return
 		}
 		if state.Degraded {
 			slog.Debug("calibre delivery: bridge degraded, waiting", "pending", len(rows), "reason", state.Reason)
+			d.noteReachable(false, "bridge degraded: "+state.Reason)
 			return
 		}
+		d.noteReachable(true, "")
 		target.library = state.Library
 	}
 
@@ -338,6 +397,9 @@ func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, ta
 	// cancelled ctx while the add was in flight. Losing it would only cost a
 	// 409 on the next start, but there is no reason to lose it.
 	record := context.WithoutCancel(ctx)
+	if addErr == nil || errors.Is(addErr, ErrAlreadyInCalibre) {
+		d.noteReachable(true, "")
+	}
 	switch {
 	case addErr == nil:
 		if err := d.store.MarkDelivered(record, row.ID, id, DeliveryOutcomeAdded, target.library); err != nil {
@@ -369,6 +431,9 @@ func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, ta
 		// Calibre went away mid batch. Not the book's fault and not an
 		// attempt: leave the row and stop the pass.
 		slog.Debug("calibre delivery: Calibre became unreachable, stopping the pass", "bookId", book.ID, "error", addErr)
+		if ctx.Err() == nil {
+			d.noteReachable(false, addErr.Error())
+		}
 		return deliveryStop
 	default:
 		return d.fail(ctx, row, book, PluginErrorCode(addErr), addErr)

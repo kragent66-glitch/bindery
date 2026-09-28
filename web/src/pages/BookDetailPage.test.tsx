@@ -58,6 +58,7 @@ vi.mock('../api/client', async importOriginal => {
       toggleExcluded: vi.fn(),
       enrichAudiobook: vi.fn(),
       listAuthorSeries: vi.fn(),
+      bookCalibreState: vi.fn().mockResolvedValue({ state: 'off' }),
       setPrimarySeriesForBook: vi.fn(),
       removeBookFromSeries: vi.fn(),
     },

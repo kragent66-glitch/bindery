@@ -84,7 +84,12 @@ export interface CalibreSyncSkip {
 
 // CalibreSyncProgress is the polled shape for /calibre/sync/status.
 export interface CalibreSyncProgress {
+  // running stays true while any book the run queued is still waiting for
+  // Calibre, which lasts as long as Calibre is closed.
   running: boolean
+  // queueing is Push all itself walking the library. Only this part blocks a
+  // second Push all.
+  queueing?: boolean
   startedAt?: string
   finishedAt?: string
   message?: string
@@ -141,6 +146,67 @@ export interface CalibreRollbackResult {
   finishedAt: string
 }
 
+// CalibreDeliveryState is where one ebook file stands in the Calibre delivery
+// queue (#2832).
+export type CalibreDeliveryState = 'pending' | 'delivered' | 'failed' | 'skipped'
+
+// CalibreDeliveryHealth is what the delivery worker last learned about
+// Calibre. It only refreshes while something is waiting.
+export interface CalibreDeliveryHealth {
+  lastPassAt?: string
+  checkedAt?: string
+  reachable?: boolean
+  lastError?: string
+}
+
+// CalibreDeliverySummary is GET /calibre/deliveries/summary. Admin only.
+export interface CalibreDeliverySummary {
+  pending: number
+  delivered: number
+  failed: number
+  skipped: number
+  lastDeliveredAt?: string
+  mode: CalibreMode
+  target: CalibreDeliveryHealth
+}
+
+// CalibreDelivery is one queue row with the book's title and author.
+export interface CalibreDelivery {
+  id: number
+  bookId: number
+  bookFileId: number
+  filePath: string
+  format: string
+  state: CalibreDeliveryState
+  outcome: string
+  attempts: number
+  lastError: string
+  lastErrorCode: string
+  calibreId?: number
+  updatedAt: string
+  deliveredAt?: string
+  bookTitle: string
+  authorName: string
+}
+
+export interface CalibreDeliveryList {
+  items: CalibreDelivery[]
+  total: number
+}
+
+// BookCalibreState is GET /book/{id}/calibre. Everyone who can see the book
+// gets state; the other fields are only sent to admins. 'off' means the
+// integration is off and 'none' that the book was never queued.
+export interface BookCalibreState {
+  state: CalibreDeliveryState | 'off' | 'none'
+  outcome?: string
+  lastError?: string
+  lastErrorCode?: string
+  attempts?: number
+  calibreId?: number
+  deliveredAt?: string
+}
+
 export const calibreApi = {
   // Calibre
   testCalibre: () => request<CalibreTestResult>('/calibre/test', { method: 'POST' }),
@@ -148,6 +214,24 @@ export const calibreApi = {
   calibreImportStatus: () => request<CalibreImportProgress>('/calibre/import/status'),
   calibreSyncStart: () => request<CalibreSyncProgress>('/calibre/sync', { method: 'POST' }),
   calibreSyncStatus: () => request<CalibreSyncProgress>('/calibre/sync/status'),
+  calibreDeliverySummary: () => request<CalibreDeliverySummary>('/calibre/deliveries/summary'),
+  calibreDeliveries: (state: CalibreDeliveryState | '' = '', limit = 50, offset = 0) =>
+    request<CalibreDeliveryList>(
+      `/calibre/deliveries?state=${encodeURIComponent(state)}&limit=${limit}&offset=${offset}`,
+    ),
+  calibreDeliveryRetry: (state: 'failed' | 'skipped' | '' = 'failed') =>
+    request<{ requeued: number }>('/calibre/deliveries/retry', {
+      method: 'POST',
+      body: JSON.stringify({ state }),
+    }),
+  calibreDeliveryClearPending: () =>
+    request<{ cleared: number }>('/calibre/deliveries?state=pending', { method: 'DELETE' }),
+  calibreDeliveryReset: () =>
+    request<{ removed: number }>('/calibre/deliveries/reset', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true }),
+    }),
+  bookCalibreState: (bookId: number) => request<BookCalibreState>(`/book/${bookId}/calibre`),
   calibreRuns: (limit = 10) => request<CalibreImportRun[]>(`/calibre/runs?limit=${limit}`),
   calibreRunRollbackPreview: (runId: number) =>
     request<CalibreRollbackResult>(`/calibre/runs/${runId}/rollback/preview`),

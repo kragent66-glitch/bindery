@@ -10,6 +10,7 @@ import Section from '../components/Section'
 import Switch from '../components/Switch'
 import { btn, btnSize, dangerLink } from '../components/buttons'
 import MediaBadge from '../components/MediaBadge'
+import CalibreDeliveryChip from '../components/CalibreDeliveryChip'
 import { bookStatusBadge } from '../components/bookStatus'
 import RebindModal from '../components/RebindModal'
 import RenameFilesModal from '../components/RenameFilesModal'
@@ -867,6 +868,7 @@ function BookDetailPageInner() {
                 {t('bookDetail.excludedBadge')}
               </span>
             )}
+            <CalibreDeliveryChip bookId={book.id} />
             {publishedDate && (
               <>
                 <span aria-hidden className="text-slate-400 dark:text-zinc-600">·</span>

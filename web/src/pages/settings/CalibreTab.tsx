@@ -10,6 +10,7 @@ import {
 } from '../../api/client'
 import Toggle from './Toggle'
 import SaveButton from './SaveButton'
+import CalibreDeliveryPanel from './CalibreDeliveryPanel'
 import { useSaveResult } from './useSaveResult'
 
 export default function CalibreTab() {
@@ -116,10 +117,11 @@ function CalibreSection({
     api.calibreImportStatus().then(setImportProgress).catch(() => {})
     api.calibreSyncStatus().then(p => {
       setSyncProgress(p)
-      // If a sync is already running when the tab mounts, surface the
-      // modal so the user can watch it finish instead of wondering what
-      // the disabled button is doing.
-      if (p.running) setSyncModalOpen(true)
+      // If Push all is still queueing when the tab mounts, surface the
+      // modal so the user can watch it finish. Books merely waiting for
+      // Calibre do not reopen it: that can last as long as Calibre stays
+      // closed, and the delivery queue section shows it anyway.
+      if (p.queueing) setSyncModalOpen(true)
     }).catch(() => {})
     refreshRuns()
   }, [refreshRuns])
@@ -158,14 +160,17 @@ function CalibreSection({
     return () => clearInterval(id)
   }, [importProgress?.running])
 
-  // Poll while a bulk sync is running. 2s matches the task spec.
+  // Poll while a bulk sync is running: every 2s while the modal is open or
+  // the run is still queueing, and slowly while books merely wait for
+  // Calibre with the modal closed.
+  const syncFast = syncModalOpen || !!syncProgress?.queueing
   useEffect(() => {
     if (!syncProgress?.running) return
     const id = setInterval(() => {
       api.calibreSyncStatus().then(setSyncProgress).catch(() => {})
-    }, 2000)
+    }, syncFast ? 2000 : 15000)
     return () => clearInterval(id)
-  }, [syncProgress?.running])
+  }, [syncProgress?.running, syncFast])
 
   const startImport = async () => {
     setImportError(null)
@@ -423,30 +428,35 @@ function CalibreSection({
           </div>
         )}
 
-        {/* Bulk push: Bindery → Calibre (plugin only). Pushes every imported
-            book's on-disk file to the plugin; 409 is treated as idempotent. */}
+        {/* Bulk push: Bindery → Calibre (plugin only). Queues every imported
+            book the delivery queue does not already hold; the delivery
+            worker sends them, so Calibre does not have to be open now. */}
         {mode === 'plugin' && (
           <div className="pt-3 border-t border-slate-200 dark:border-zinc-800">
             <div className="flex items-center justify-between gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-800 dark:text-zinc-200">Push all to Calibre</label>
                 <p className="text-xs text-slate-600 dark:text-zinc-500 mt-0.5">
-                  Send every imported book in Bindery to the Calibre Bridge plugin. Books already in Calibre are skipped (idempotent).
+                  Queue every imported book for the Calibre Bridge plugin. Books already delivered are not sent again, and queued books go out as soon as Calibre is reachable.
                 </p>
                 {bridgeReachable === false && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Bridge not reachable — check plugin URL / API key above.</p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Bridge not reachable right now. Books you push will wait in the queue until it is.</p>
                 )}
               </div>
               <button
                 onClick={startSync}
-                disabled={syncProgress?.running || bridgeReachable !== true}
+                disabled={!!syncProgress?.queueing || !pluginURL}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 rounded text-sm font-medium disabled:opacity-50 flex-shrink-0"
-                title={bridgeReachable !== true ? 'Enable plugin mode and verify the bridge is reachable first' : ''}
+                title={!pluginURL ? 'Set the plugin URL first' : ''}
               >
-                {syncProgress?.running ? 'Pushing…' : 'Push all to Calibre'}
+                {syncProgress?.queueing ? 'Queueing…' : 'Push all to Calibre'}
               </button>
             </div>
           </div>
+        )}
+
+        {(mode === 'calibredb' || mode === 'plugin') && (
+          <CalibreDeliveryPanel refreshKey={`${syncProgress?.running}-${syncProgress?.stats?.processed}`} />
         )}
 
         {/* Library import (read side): Calibre → Bindery */}
@@ -875,8 +885,9 @@ function CalibreRollbackModal({
 }
 
 // CalibreSyncModal renders the live progress of a bulk "Push all to
-// Calibre" job. Stays open while running; once finished, the user
-// dismisses it explicitly so they can read the per-book error and skip lists.
+// Calibre" job, read from the delivery queue. It can be closed at any time:
+// the queue keeps delivering without it. Once finished, the user dismisses it
+// explicitly so they can read the per-book error and skip lists.
 // Exported for its own test.
 export function CalibreSyncModal({
   progress,
@@ -899,9 +910,8 @@ export function CalibreSyncModal({
           <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">Push all to Calibre</h3>
           <button
             onClick={onClose}
-            disabled={running}
             className="text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-40"
-            title={running ? 'Wait for the push to finish' : 'Close'}
+            title={running ? 'Close. Queued books keep going out in the background.' : 'Close'}
           >
             ✕
           </button>
@@ -998,12 +1008,14 @@ export function CalibreSyncModal({
           )}
         </div>
         <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-800 flex justify-end">
+          {/* Closable while running: after the queueing, the run waits on
+              Calibre, which can take as long as Calibre stays closed. The
+              delivery queue carries on without the modal. */}
           <button
             onClick={onClose}
-            disabled={running}
             className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-sm font-medium disabled:opacity-50 text-white"
           >
-            {running ? 'Running…' : 'Close'}
+            {running ? 'Close and keep going' : 'Close'}
           </button>
         </div>
       </div>

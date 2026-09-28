@@ -40,6 +40,12 @@ const calibreDeliveryColumns = `id, book_id, book_file_id, edition_id, file_path
 	outcome, attempts, last_error, last_error_code, calibre_id, target_library,
 	next_attempt_at, created_at, updated_at, delivered_at`
 
+// prefixedCalibreDeliveryColumns is calibreDeliveryColumns qualified with
+// the alias d, for queries that join other tables.
+const prefixedCalibreDeliveryColumns = `d.id, d.book_id, d.book_file_id, d.edition_id, d.file_path, d.format, d.state,
+	d.outcome, d.attempts, d.last_error, d.last_error_code, d.calibre_id, d.target_library,
+	d.next_attempt_at, d.created_at, d.updated_at, d.delivered_at`
+
 // normalizeCalibreFormat stores a format as the ledger expects it: the file
 // extension, lower case, without the dot.
 func normalizeCalibreFormat(format string) string {
@@ -236,6 +242,57 @@ func (r *CalibreDeliveryRepo) List(ctx context.Context, state models.CalibreDeli
 	return scanCalibreDeliveries(rows)
 }
 
+// ListAll returns every row, oldest first. The ledger holds one row per
+// ebook file, so it is about the size of the library. Push all reads it once
+// to see what is already recorded, and its status reads it on each poll.
+func (r *CalibreDeliveryRepo) ListAll(ctx context.Context) ([]models.CalibreDelivery, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+calibreDeliveryColumns+` FROM calibre_deliveries ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("calibre deliveries list all: %w", err)
+	}
+	return scanCalibreDeliveries(rows)
+}
+
+// ListByBook returns the rows for one book, oldest first.
+func (r *CalibreDeliveryRepo) ListByBook(ctx context.Context, bookID int64) ([]models.CalibreDelivery, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+calibreDeliveryColumns+` FROM calibre_deliveries
+		WHERE book_id = ?
+		ORDER BY id`, bookID)
+	if err != nil {
+		return nil, fmt.Errorf("calibre deliveries by book: %w", err)
+	}
+	return scanCalibreDeliveries(rows)
+}
+
+// ListWithBooks is List with each row's book title and author name, for the
+// settings queue view. An empty state lists every row.
+func (r *CalibreDeliveryRepo) ListWithBooks(ctx context.Context, state models.CalibreDeliveryState, limit, offset int) ([]models.CalibreDeliveryListItem, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+prefixedCalibreDeliveryColumns+`, COALESCE(b.title, ''), COALESCE(a.name, '')
+		FROM calibre_deliveries d
+		LEFT JOIN books   b ON b.id = d.book_id
+		LEFT JOIN authors a ON a.id = b.author_id
+		WHERE (? = '' OR d.state = ?)
+		ORDER BY d.updated_at DESC, d.id DESC
+		LIMIT ? OFFSET ?`, string(state), string(state), limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("calibre deliveries list with books: %w", err)
+	}
+	defer rows.Close()
+	out := []models.CalibreDeliveryListItem{}
+	for rows.Next() {
+		var item models.CalibreDeliveryListItem
+		d, err := scanCalibreDelivery(rows, &item.BookTitle, &item.AuthorName)
+		if err != nil {
+			return nil, err
+		}
+		item.CalibreDelivery = d
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
 // DeliveredByCalibreID returns the delivered rows that point at calibreID in
 // the push target, oldest first. Bindery owns a Calibre record exactly when
 // one of these exists for the current target library. Callers compare
@@ -276,31 +333,42 @@ func scanCalibreDeliveries(rows *sql.Rows) ([]models.CalibreDelivery, error) {
 	defer rows.Close()
 	var out []models.CalibreDelivery
 	for rows.Next() {
-		var d models.CalibreDelivery
-		var state string
-		var edition, calibreID sql.NullInt64
-		var next, created, updated, delivered sql.NullString
-		if err := rows.Scan(&d.ID, &d.BookID, &d.BookFileID, &edition, &d.FilePath, &d.Format, &state,
-			&d.Outcome, &d.Attempts, &d.LastError, &d.LastErrorCode, &calibreID, &d.TargetLibrary,
-			&next, &created, &updated, &delivered); err != nil {
-			return nil, fmt.Errorf("scan calibre delivery: %w", err)
-		}
-		d.State = models.CalibreDeliveryState(state)
-		if edition.Valid {
-			v := edition.Int64
-			d.EditionID = &v
-		}
-		if calibreID.Valid {
-			v := calibreID.Int64
-			d.CalibreID = &v
-		}
-		d.NextAttemptAt = parseFlexibleTimeValue(next, "calibre_deliveries.next_attempt_at")
-		d.CreatedAt = parseFlexibleTimeValue(created, "calibre_deliveries.created_at")
-		d.UpdatedAt = parseFlexibleTimeValue(updated, "calibre_deliveries.updated_at")
-		if t, err := parseFlexibleTime(delivered); err == nil {
-			d.DeliveredAt = t
+		d, err := scanCalibreDelivery(rows)
+		if err != nil {
+			return nil, err
 		}
 		out = append(out, d)
 	}
 	return out, rows.Err()
+}
+
+// scanCalibreDelivery reads calibreDeliveryColumns, then any extra columns
+// the query selected after them into extra.
+func scanCalibreDelivery(rows *sql.Rows, extra ...any) (models.CalibreDelivery, error) {
+	var d models.CalibreDelivery
+	var state string
+	var edition, calibreID sql.NullInt64
+	var next, created, updated, delivered sql.NullString
+	dest := []any{&d.ID, &d.BookID, &d.BookFileID, &edition, &d.FilePath, &d.Format, &state,
+		&d.Outcome, &d.Attempts, &d.LastError, &d.LastErrorCode, &calibreID, &d.TargetLibrary,
+		&next, &created, &updated, &delivered}
+	if err := rows.Scan(append(dest, extra...)...); err != nil {
+		return d, fmt.Errorf("scan calibre delivery: %w", err)
+	}
+	d.State = models.CalibreDeliveryState(state)
+	if edition.Valid {
+		v := edition.Int64
+		d.EditionID = &v
+	}
+	if calibreID.Valid {
+		v := calibreID.Int64
+		d.CalibreID = &v
+	}
+	d.NextAttemptAt = parseFlexibleTimeValue(next, "calibre_deliveries.next_attempt_at")
+	d.CreatedAt = parseFlexibleTimeValue(created, "calibre_deliveries.created_at")
+	d.UpdatedAt = parseFlexibleTimeValue(updated, "calibre_deliveries.updated_at")
+	if t, err := parseFlexibleTime(delivered); err == nil {
+		d.DeliveredAt = t
+	}
+	return d, nil
 }

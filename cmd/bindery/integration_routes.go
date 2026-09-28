@@ -87,7 +87,13 @@ type calibreJobHandler interface {
 // imported book out to the external plugin. The status polls are grouped in for
 // consistency since only an admin can start the jobs, and to match the
 // abs/import and calibre-rollback boundaries.
-func registerCalibreIntegrationRoutes(r chi.Router, probe calibreProbeHandler, imp, sync calibreJobHandler) {
+//
+// The delivery queue (#2832) is admin only too: its rows carry file paths and
+// Calibre's error text, and its actions re-send, drop or forget deliveries.
+// The one route outside the group is the per book state, which any user who
+// can see the book may read; the handler checks ownership and strips
+// everything but the state for non-admins.
+func registerCalibreIntegrationRoutes(r chi.Router, probe calibreProbeHandler, imp, sync calibreJobHandler, deliveries calibreDeliveryRouteHandler) {
 	r.Group(func(r chi.Router) {
 		r.Use(auth.RequireAdmin)
 		r.Post("/calibre/test", probe.Test)
@@ -95,5 +101,21 @@ func registerCalibreIntegrationRoutes(r chi.Router, probe calibreProbeHandler, i
 		r.Get("/calibre/import/status", imp.Status)
 		r.Post("/calibre/sync", sync.Start)
 		r.Get("/calibre/sync/status", sync.Status)
+		r.Get("/calibre/deliveries/summary", deliveries.Summary)
+		r.Get("/calibre/deliveries", deliveries.List)
+		r.Delete("/calibre/deliveries", deliveries.Clear)
+		r.Post("/calibre/deliveries/retry", deliveries.Retry)
+		r.Post("/calibre/deliveries/reset", deliveries.Reset)
 	})
+	r.Get("/book/{id}/calibre", deliveries.BookState)
+}
+
+// calibreDeliveryRouteHandler is the delivery queue surface.
+type calibreDeliveryRouteHandler interface {
+	Summary(http.ResponseWriter, *http.Request)
+	List(http.ResponseWriter, *http.Request)
+	Clear(http.ResponseWriter, *http.Request)
+	Retry(http.ResponseWriter, *http.Request)
+	Reset(http.ResponseWriter, *http.Request)
+	BookState(http.ResponseWriter, *http.Request)
 }

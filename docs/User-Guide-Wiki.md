@@ -1015,14 +1015,16 @@ Check the share opens in Explorer on that PC
 **Pushing to Calibre fails with `[Errno 22] Invalid argument`.**
 The path starts with `\\?\\\` and is over about 200 characters: Calibre
 builds an invalid long path for a network share. Bindery Bridge 0.6.1 works
-around it. Upgrade the plugin, restart Calibre, and run **Push all to
-Calibre** again
+around it. Upgrade the plugin, restart Calibre, and click **Retry failed**
+under **Delivery queue** on the Calibre tab
 ([troubleshooting](Calibre-Windows-Desktop-Wiki.md#troubleshooting)).
 
 **Push all says a book is already in Calibre, but it has no file there.**
 An earlier failed add left an empty record, and the next push matched it.
 Bindery Bridge 0.6.2 removes the record when an add fails and attaches the
-file on the next push. Upgrade, restart Calibre, push again
+file on the next push. Upgrade and restart Calibre. Bindery has recorded
+those books as delivered, so click **Reset delivery state** on the Calibre
+tab and then run **Push all to Calibre**
 ([troubleshooting](Calibre-Windows-Desktop-Wiki.md#troubleshooting)).
 
 **Calibre says `Cannot determine book format from extension` with a folder.**
@@ -1035,7 +1037,10 @@ case this came from, the folder held an audiobook of a different book.
 They are waiting. Bindery queues every imported ebook and delivers it once
 Calibre is running and the plugin answers, within about a minute. A book
 Calibre keeps rejecting is retried with growing gaps and marked failed after 8
-attempts; the log line `calibre delivery: add failed, will retry` says why.
+attempts. The **Delivery queue** section of the Calibre tab shows how many are
+waiting, whether Calibre could be reached, and each failed book with its
+error; the book's own page shows **Waiting for Calibre**, **In Calibre** or
+**Calibre failed**.
 
 **Audiobooks never appear in Calibre.**
 Expected. The Calibre write integration sends ebooks only, and **Push all to

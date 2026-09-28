@@ -114,16 +114,18 @@ The message says "container" whatever Calibre runs in. On Windows read it as "th
 
 ## 8. Push your existing library
 
-**Push all to Calibre** appears under the test button in plugin mode once the test has reached the plugin. It sends every imported, monitored book that has an ebook file. The progress window has four tiles:
+**Push all to Calibre** appears under the test button in plugin mode. It puts every imported, monitored book that has an ebook file into Bindery's delivery queue, and the queue sends them to the plugin. A book the queue already holds is left alone, so a book delivered earlier is never sent twice. Calibre does not have to be open when you click it: queued books wait and go out once the plugin answers. The progress window reads the queue and has four tiles:
 
 | Tile | Meaning |
 |---|---|
 | **Pushed** | Added to Calibre in this run |
-| **Already in Calibre** | Matched a book Calibre already had, and was left alone |
+| **Already in Calibre** | Matched a book Calibre already had, or was delivered by Bindery before this run, and was left alone |
 | **Failed** | Calibre refused it; the table under the tiles gives the reason for each (see [Troubleshooting](#troubleshooting)) |
-| **Skipped** | Imported books the run left out, each with a reason: `not monitored`, `no file on disk`, or `audiobook only with no ebook`. Books not yet imported are not listed, since they have no file to send |
+| **Skipped** | Imported books the run left out, each with a reason: `not monitored`, `no file on disk`, `audiobook only with no ebook` or `ebook file not tracked`. Books not yet imported are not listed, since they have no file to send |
 
-Running it again is safe and is the recovery step for almost everything on this page: books already in Calibre are skipped, and only the rest are tried. The first run on the real setup pushed 1,540 books, found 337 already in Calibre and failed 17. All 17 were fixed by plugin 0.6.1 and 0.6.2, and a second run picked them up.
+While books are still waiting the window says how many, and you can close it; the queue keeps going. The same numbers stay on the Calibre tab under **Delivery queue**: waiting, delivered and failed counts, when the last book was delivered, and whether Calibre was reachable the last time Bindery had something to send. The **Failed deliveries** table below it lists every failed book with its code, Calibre's error, the attempts and the last try.
+
+A failed book is not retried by running Push all again. Fix the cause, then click **Retry failed** under the queue: that is the recovery step for almost everything on this page. The first run on the real setup pushed 1,540 books, found 337 already in Calibre and failed 17. All 17 were fixed by plugin 0.6.1 and 0.6.2, and retrying them picked them up.
 
 ## 9. Get books onto a Kobo
 
@@ -144,15 +146,15 @@ Reading Bindery's library on an e-reader directly over OPDS is not covered here 
 
 ## Troubleshooting
 
-**`[Errno 22] Invalid argument` on a path that starts with `\\?\\\`.** The share path is long, over about 200 characters, and Calibre builds an invalid long path form for a network path. Fixed in plugin 0.6.1. Upgrade the plugin, restart Calibre and run **Push all to Calibre** again.
+**`[Errno 22] Invalid argument` on a path that starts with `\\?\\\`.** The share path is long, over about 200 characters, and Calibre builds an invalid long path form for a network path. Fixed in plugin 0.6.1. Upgrade the plugin, restart Calibre and click **Retry failed** on the Calibre tab.
 
-**Push all says "Already in Calibre" but the Calibre record has no file.** An earlier failed add left an empty record behind, and the next push matched it. Plugin 0.6.2 removes the record when an add fails, and attaches the file to an existing empty record on the next push. Upgrade, restart Calibre and push again.
+**Push all says "Already in Calibre" but the Calibre record has no file.** An earlier failed add left an empty record behind, and the next push matched it. Plugin 0.6.2 removes the record when an add fails, and attaches the file to an existing empty record on the next push. Upgrade and restart Calibre. Bindery has recorded those books as delivered, so Push all on its own will not send them again: click **Reset delivery state** on the Calibre tab, confirm, then run **Push all to Calibre**. With plugin 0.6.0 or later that is safe, because every book Calibre already has comes back as already in Calibre instead of being added twice.
 
 **`Cannot determine book format from extension` with a folder path.** Bindery recorded a folder as the book's ebook file, and the plugin cannot add a folder. In the real case the folder held an audiobook of a different book, so the fix is in Bindery, not the plugin: open the book, look at its **Files**, use **Forget this file** on the wrong entry, and import the right ebook.
 
-**Test connection passes but pushes still fail.** Read the reason in the Failed table. A path error there usually means the remap covers the library root but the book sits under a different root folder; add a pair for that root.
+**Test connection passes but pushes still fail.** Read the reason in the **Failed deliveries** table on the Calibre tab (or the Failed table in the Push all window). A path error there usually means the remap covers the library root but the book sits under a different root folder; add a pair for that root, then click **Retry failed**.
 
-**Books imported while Calibre was closed are missing.** Leave Calibre open for a minute: queued books are delivered once the plugin answers. If they still do not arrive, look for `calibre delivery: add failed, will retry` in the Bindery log, which names the reason Calibre gave (see [What to expect day to day](#what-to-expect-day-to-day)).
+**Books imported while Calibre was closed are missing.** Leave Calibre open for a minute: queued books are delivered once the plugin answers. The **Delivery queue** line on the Calibre tab shows how many are still waiting and, when the plugin could not be reached, the error Bindery got. A book's own page shows **Waiting for Calibre**, **In Calibre** or **Calibre failed**. If a book shows as failed, its reason is in the **Failed deliveries** table (see [What to expect day to day](#what-to-expect-day-to-day)).
 
 **The plugin stopped answering after a Windows update or a network change.** Windows may have moved the network to a different profile. Rerun the checks in [step 4](#4-let-the-bindery-host-through-the-firewall).
 

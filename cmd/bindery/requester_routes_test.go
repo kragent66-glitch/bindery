@@ -64,6 +64,10 @@ func (s universalStub) AutoLinkHardcover(w http.ResponseWriter, _ *http.Request)
 func (s universalStub) PutHardcoverLink(w http.ResponseWriter, _ *http.Request)      { s.h(w) }
 func (s universalStub) DeleteHardcoverLink(w http.ResponseWriter, _ *http.Request)   { s.h(w) }
 func (s universalStub) HardcoverDiff(w http.ResponseWriter, _ *http.Request)         { s.h(w) }
+func (s universalStub) Clear(w http.ResponseWriter, _ *http.Request)                 { s.h(w) }
+func (s universalStub) Retry(w http.ResponseWriter, _ *http.Request)                 { s.h(w) }
+func (s universalStub) Reset(w http.ResponseWriter, _ *http.Request)                 { s.h(w) }
+func (s universalStub) BookState(w http.ResponseWriter, _ *http.Request)             { s.h(w) }
 func (s universalStub) ListMine(w http.ResponseWriter, _ *http.Request)              { s.h(w) }
 func (s universalStub) Withdraw(w http.ResponseWriter, _ *http.Request)              { s.h(w) }
 func (s universalStub) Library(w http.ResponseWriter, _ *http.Request)               { s.h(w) }
@@ -93,7 +97,7 @@ func registerEnumerableRoutes(r chi.Router) {
 	registerSeriesRoutes(r, s)
 	registerGrimmoryRoutes(r, s)
 	registerGrimmorySyncRoutes(r, s)
-	registerCalibreIntegrationRoutes(r, s, s, s)
+	registerCalibreIntegrationRoutes(r, s, s, s, s)
 	registerMigrateRoutes(r, s)
 	registerRequestRoutes(r, s)
 	registerAdoptionRoutes(r, s)

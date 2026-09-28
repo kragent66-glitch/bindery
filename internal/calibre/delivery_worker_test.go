@@ -227,6 +227,33 @@ func TestDeliverer_UnreachableBridgeLeavesRowsUntouched(t *testing.T) {
 	}
 }
 
+// TestDeliverer_HealthRecordsWhatThePassLearned feeds the settings queue view:
+// nothing known before a pass, unreachable with the reason after a failed
+// probe, reachable again once a delivery lands.
+func TestDeliverer_HealthRecordsWhatThePassLearned(t *testing.T) {
+	bridge := &fakeBridge{healthErr: errors.New("connection refused"), add: added(1)}
+	f := newWorkerFixture(t, ModePlugin, bridge)
+	if h := f.d.Health(); h.LastPassAt != nil || h.Reachable != nil {
+		t.Fatalf("health before any pass = %+v, want nothing known", h)
+	}
+	f.addFile(t, "a.epub")
+
+	f.d.RunDeliveries(f.ctx)
+	h := f.d.Health()
+	if h.LastPassAt == nil || h.CheckedAt == nil || h.Reachable == nil || *h.Reachable || h.LastError != "connection refused" {
+		t.Fatalf("health after a refused probe = %+v", h)
+	}
+
+	bridge.mu.Lock()
+	bridge.healthErr = nil
+	bridge.mu.Unlock()
+	f.d.RunDeliveries(f.ctx)
+	h = f.d.Health()
+	if h.Reachable == nil || !*h.Reachable || h.LastError != "" {
+		t.Errorf("health after a delivery = %+v, want reachable with no error", h)
+	}
+}
+
 func TestDeliverer_EmptyQueueDoesNotProbe(t *testing.T) {
 	bridge := &fakeBridge{}
 	f := newWorkerFixture(t, ModePlugin, bridge)

@@ -54,3 +54,11 @@ type CalibreDeliverySummary struct {
 	Skipped         int        `json:"skipped"`
 	LastDeliveredAt *time.Time `json:"lastDeliveredAt,omitempty"`
 }
+
+// CalibreDeliveryListItem is a ledger row with the names the settings queue
+// view shows next to it.
+type CalibreDeliveryListItem struct {
+	CalibreDelivery
+	BookTitle  string `json:"bookTitle"`
+	AuthorName string `json:"authorName"`
+}

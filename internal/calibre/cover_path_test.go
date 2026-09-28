@@ -8,10 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/vavallee/bindery/internal/covers"
-	"github.com/vavallee/bindery/internal/models"
 )
 
 type coverTarget struct{ ok bool }
@@ -70,34 +68,5 @@ func TestCoverSource_StoredCoverResolvesFromTheStore(t *testing.T) {
 	}
 	if got := (CoverSource{CacheDir: t.TempDir()}).PathFor(ctx, ref, coverTarget{ok: true}); got != "" {
 		t.Errorf("no store gave %q, want none", got)
-	}
-}
-
-// The bulk push never sent a cover. It now resolves one the same way the
-// delivery worker does.
-func TestSyncer_SendsTheCover(t *testing.T) {
-	store := covers.NewStore(t.TempDir())
-	src := filepath.Join(t.TempDir(), "cover.jpg")
-	if err := os.WriteFile(src, testJPEG(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ref, err := store.Put(src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want, _, _ := store.Resolve(ref)
-
-	books := &fakeBookLister{books: []models.Book{{ID: 1, Title: "Dune", FilePath: "/l/dune.epub", ImageURL: ref}}}
-	pusher := &fakePusher{calls: map[string]func() (int64, error){
-		"/l/dune.epub": func() (int64, error) { return 1, nil },
-	}}
-	s := NewSyncer(books).WithCovers(CoverSource{Store: store})
-	s.newClient = func(Config) pluginPusher { return pusher }
-	if err := s.Start(context.Background(), Config{}, ModePlugin); err != nil {
-		t.Fatal(err)
-	}
-	waitUntil(t, 2*time.Second, func() bool { return !s.Running() })
-	if got := pusher.meta("/l/dune.epub").CoverPath; got != want || want == "" {
-		t.Fatalf("bulk push cover = %q, want %q", got, want)
 	}
 }

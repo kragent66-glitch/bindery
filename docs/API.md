@@ -189,6 +189,7 @@ POST   /api/v1/book/{id}/rebind                   re-link to a different metadat
 POST   /api/v1/book/{id}/enrich-audiobook         pull narrator/duration/cover from Audnex
 POST   /api/v1/book/{id}/search                   manual indexer search
 GET    /api/v1/book/{id}/file                     download the imported file (auth required; `?path=…` serves one specific tracked file, for a book holding several of a format; `?format=ebook|audiobook` picks the format on dual-format books; `?path=` wins when both are sent)
+GET    /api/v1/book/{id}/calibre                  where the book stands in the Calibre delivery queue (see Calibre below)
 ```
 
 ### Series
@@ -636,6 +637,86 @@ server root (e.g. `https://ntfy.sh`). Bindery then POSTs the JSON body with a
 `topic` field to the root, which ntfy renders natively. Without a topic it POSTs
 to the URL as-is, so a topic URL would show the raw JSON — use the topic field
 or ntfy message-templating headers (`X-Title`, `X-Message`) instead.
+
+### Calibre
+
+```
+POST   /api/v1/calibre/test                       probe calibredb or the Bindery Bridge plugin (admin)
+POST   /api/v1/calibre/import                     start a library import from Calibre (admin)
+GET    /api/v1/calibre/import/status              library import progress (admin)
+POST   /api/v1/calibre/sync                       Push all: queue every eligible book for delivery (admin, plugin mode)
+GET    /api/v1/calibre/sync/status                progress of the last Push all, read from the delivery queue (admin)
+GET    /api/v1/calibre/deliveries/summary         queue counts, last delivery, whether Calibre was reachable (admin)
+GET    /api/v1/calibre/deliveries                 queue rows with book title and author (admin; `?state=&limit=&offset=`)
+POST   /api/v1/calibre/deliveries/retry           put failed or skipped rows back in the queue (admin)
+DELETE /api/v1/calibre/deliveries?state=pending   drop every waiting row (admin)
+POST   /api/v1/calibre/deliveries/reset           forget every delivery, for a new Calibre library (admin; needs {"confirm": true})
+GET    /api/v1/book/{id}/calibre                  one book's delivery state (anyone who can see the book)
+```
+
+Every ebook Bindery sends to Calibre goes through a delivery queue (#2832),
+one row per ebook file. A row is `pending` (waiting, or retrying after an
+error), `delivered`, `failed` (gave up; only a retry puts it back) or
+`skipped` (the book or file went away before it could be sent). Imports queue
+their file, and a worker delivers every minute and straight after an import,
+so a book imported while Calibre is closed goes out once Calibre is back. A
+Calibre that cannot be reached is not counted as an attempt.
+
+**Push all** (`POST /calibre/sync`) queues each imported, monitored book's
+ebook file unless one of the book's ebook files is already in the queue, in
+any state. A delivered book is never queued again and a failed one is not
+rearmed; use retry for that. The response is `202` with the same progress
+shape `GET /calibre/sync/status` returns: `running` stays true while any book
+the run queued is still waiting, and the counts come from the queue
+(`pushed` is newly added by Calibre, `alreadyInCalibre` includes books
+delivered before the run, `failed` holds failures with their error, `skipped`
+holds books the run left out and why). It still needs plugin mode: calibredb
+has no "already in the library" answer, so a bulk run there would turn every
+book the library already holds into a failure. A second Push all while the
+first is still queueing is a `409`.
+
+`GET /calibre/deliveries/summary`:
+
+```json
+{
+  "pending": 3, "delivered": 412, "failed": 1, "skipped": 0,
+  "lastDeliveredAt": "2026-09-27T11:02:13Z",
+  "mode": "plugin",
+  "target": {
+    "lastPassAt": "2026-09-27T12:01:00Z",
+    "checkedAt": "2026-09-27T12:01:00Z",
+    "reachable": false,
+    "lastError": "Get \"http://calibre:8099/v1/health\": dial tcp: connection refused"
+  }
+}
+```
+
+`target` is what the worker last learned. It only refreshes while something is
+waiting, so with an empty queue `checkedAt` can be old.
+
+`GET /calibre/deliveries` returns `{items, total}`. `state` is `pending`,
+`delivered`, `failed`, `skipped` or empty for all; `limit` defaults to 50 and
+caps at 500. Each item is the queue row (`filePath`, `format`, `state`,
+`outcome`, `attempts`, `lastError`, `lastErrorCode`, `calibreId`, `updatedAt`,
+`deliveredAt`) plus `bookTitle` and `authorName`.
+
+`POST /calibre/deliveries/retry` takes `{"state": "failed"}`, `"skipped"` or
+`""` for both, resets their attempts and returns `{"requeued": N}`. `DELETE
+/calibre/deliveries` only accepts `state=pending` and returns `{"cleared": N}`;
+the record of what was delivered is never cleared this way, because it is what
+stops a book being sent twice. `POST /calibre/deliveries/reset` deletes every
+row and returns `{"removed": N}`. It is for pointing Bindery at a different
+Calibre library, where the old records would claim books are in a library
+they never reached. Nothing is sent to the new library until Push all or an
+import queues it.
+
+`GET /book/{id}/calibre` answers `{"state": ...}` with `off` when the
+integration is off, `none` when the book was never queued, or the state of
+the row that speaks for the book (delivered first, then pending, failed,
+skipped). Admins also get `outcome`, `lastError`, `lastErrorCode`,
+`attempts`, `calibreId` and `deliveredAt`; other users get the state only,
+since the error text can name server paths. A book the caller cannot see is a
+`404`, as with `GET /book/{id}`.
 
 ### Settings
 

@@ -789,6 +789,45 @@
         "cancel": "Cancel",
         "error": "Rollback failed: {{error}}",
         "appliedSummary": "Rollback complete — {{deleted}} deleted, {{unlinked}} link(s) removed, {{skipped}} skipped, {{failed}} failures."
+      },
+      "deliveries": {
+        "heading": "Delivery queue",
+        "description": "Every ebook Bindery sends to Calibre goes through this queue. When Calibre is closed or unreachable, books wait here and go out once it is back.",
+        "loading": "Loading the queue…",
+        "loadFailed": "Could not load the delivery queue: {{error}}",
+        "waiting": "Waiting {{count}}",
+        "delivered": "Delivered {{count}}",
+        "failed": "Failed {{count}}",
+        "lastDelivered": "Last delivered {{time}}",
+        "neverDelivered": "Nothing delivered yet",
+        "reachable": "Calibre reachable",
+        "unreachable": "Calibre not reachable",
+        "unreachableWithError": "Calibre not reachable: {{error}}",
+        "reachableUnknown": "Calibre not checked yet",
+        "checkedAt": "checked {{time}}",
+        "failedHeading": "Failed deliveries",
+        "failedEmpty": "Nothing has failed.",
+        "failedMore": "Showing {{shown}} of {{total}}.",
+        "colTitle": "Title",
+        "colAuthor": "Author",
+        "colCode": "Code",
+        "colError": "Error",
+        "colAttempts": "Attempts",
+        "colLastTry": "Last try",
+        "retryFailed": "Retry failed",
+        "retrying": "Retrying…",
+        "retried": "{{count}} queued again.",
+        "clearWaiting": "Clear waiting",
+        "clearing": "Clearing…",
+        "cleared": "{{count}} removed from the queue.",
+        "reset": "Reset delivery state",
+        "resetTitle": "Reset delivery state?",
+        "resetBody": "Use this when you point Bindery at a different Calibre library. Bindery forgets every delivery it recorded, so books it sent to the old library are no longer marked as in Calibre. Nothing is sent to the new library until you run Push all or import new books.",
+        "resetConfirm": "Reset",
+        "resetting": "Resetting…",
+        "resetDone": "Delivery state reset. {{count}} records removed.",
+        "cancel": "Cancel",
+        "actionFailed": "That did not work: {{error}}"
       }
     },
     "indexers": {
@@ -1844,6 +1883,11 @@
       "removeBody2": "It does not delete the book, its files, or the series itself.",
       "setPrimaryFailed": "Could not change the series used for naming",
       "removeFailed": "Could not remove the book from that series"
+    },
+    "calibreChip": {
+      "pending": "Waiting for Calibre",
+      "delivered": "In Calibre",
+      "failed": "Calibre failed"
     }
   },
   "bookRebind": {
