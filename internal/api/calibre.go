@@ -36,7 +36,22 @@ const (
 	// different points every push fails with "No such file or directory"
 	// (#1346, Unraid setups mostly). Empty = no translation.
 	SettingCalibrePushPathRemap = "calibre.push_path_remap"
+	// SettingCalibrePluginTransport is which side opens the connection in
+	// plugin mode (#2833): "push" (Bindery posts to the plugin, the default)
+	// or "pull" (the plugin fetches from /bridge/v1 and the push worker
+	// stands down).
+	SettingCalibrePluginTransport = "calibre.plugin_transport"
 )
+
+// LoadCalibreTransport returns the configured plugin transport; anything but
+// "pull" reads as push. See LoadCalibreConfig for the ctx policy.
+func LoadCalibreTransport(ctx context.Context, settings *db.SettingsRepo) calibre.Transport {
+	s, _ := settings.Get(ctx, SettingCalibrePluginTransport)
+	if s == nil {
+		return calibre.TransportPush
+	}
+	return calibre.ParseTransport(s.Value)
+}
 
 // SettingCWAIngestPath is the directory bindery copies finished ebook
 // imports into so a sibling Calibre-Web-Automated container can pick them

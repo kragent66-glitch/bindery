@@ -110,6 +110,40 @@ func registerCalibreIntegrationRoutes(r chi.Router, probe calibreProbeHandler, i
 	r.Get("/book/{id}/calibre", deliveries.BookState)
 }
 
+// calibreBridgeRouteHandler is the /bridge/v1 surface (#2833).
+type calibreBridgeRouteHandler interface {
+	Authenticate(http.Handler) http.Handler
+	RequirePull(http.Handler) http.Handler
+	Hello(http.ResponseWriter, *http.Request)
+	List(http.ResponseWriter, *http.Request)
+	File(http.ResponseWriter, *http.Request)
+	Cover(http.ResponseWriter, *http.Request)
+	Ack(http.ResponseWriter, *http.Request)
+	Nack(http.ResponseWriter, *http.Request)
+}
+
+// registerCalibreBridgeRoutes mounts /bridge/v1 at the router root, where the
+// Calibre plugin pulls its deliveries. Every route needs the plugin API key
+// as a Bearer token (Authenticate), in every auth mode. hello answers in
+// push too, so the plugin can say Bindery is not in pull mode; the delivery
+// routes answer 409 unless Calibre is in plugin mode with the pull
+// transport. No session, CSRF or global API key middleware applies: the
+// plugin key is the only credential these routes accept.
+func registerCalibreBridgeRoutes(r chi.Router, h calibreBridgeRouteHandler) {
+	r.Route("/bridge/v1", func(r chi.Router) {
+		r.Use(h.Authenticate)
+		r.Get("/hello", h.Hello)
+		r.Group(func(r chi.Router) {
+			r.Use(h.RequirePull)
+			r.Get("/deliveries", h.List)
+			r.Get("/deliveries/{id}/file", h.File)
+			r.Get("/deliveries/{id}/cover", h.Cover)
+			r.Post("/deliveries/{id}/ack", h.Ack)
+			r.Post("/deliveries/{id}/nack", h.Nack)
+		})
+	})
+}
+
 // calibreDeliveryRouteHandler is the delivery queue surface.
 type calibreDeliveryRouteHandler interface {
 	Summary(http.ResponseWriter, *http.Request)

@@ -63,6 +63,7 @@ function CalibreSection({
   saveSetting: (key: string) => Promise<string | null>
   saving: string | null
 }) {
+  const { t } = useTranslation()
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string; detail?: string; warning?: string } | null>(null)
   const [saveError, setSaveError] = useState<{ key: string; msg: string } | null>(null)
@@ -103,6 +104,10 @@ function CalibreSection({
       : legacyEnabled
       ? 'calibredb'
       : 'off'
+  // Pull (#2833) only applies in plugin mode: the plugin connects to
+  // Bindery, so there is no plugin URL to reach and no path to remap.
+  const transport: 'push' | 'pull' = settings['calibre.plugin_transport'] === 'pull' ? 'pull' : 'push'
+  const pulling = mode === 'plugin' && transport === 'pull'
   const libraryImportEnabled = (settings['calibre.library_import_enabled'] ?? 'false').toLowerCase() === 'true'
   const syncOnStartup = (settings['calibre.sync_on_startup'] ?? 'false').toLowerCase() === 'true'
   const lastImportAt = settings['calibre.last_import_at'] ?? ''
@@ -140,7 +145,7 @@ function CalibreSection({
   const pluginURL = settings['calibre.plugin_url'] ?? ''
   const pluginKey = settings['calibre.plugin_api_key'] ?? ''
   useEffect(() => {
-    if (mode !== 'plugin' || !pluginURL) {
+    if (mode !== 'plugin' || pulling || !pluginURL) {
       setBridgeReachable(null)
       return
     }
@@ -149,7 +154,7 @@ function CalibreSection({
       .then(() => { if (!cancelled) setBridgeReachable(true) })
       .catch(() => { if (!cancelled) setBridgeReachable(false) })
     return () => { cancelled = true }
-  }, [mode, pluginURL, pluginKey])
+  }, [mode, pulling, pluginURL, pluginKey])
 
   // Poll while an import is running.
   useEffect(() => {
@@ -193,9 +198,39 @@ function CalibreSection({
     }
   }
 
+  // In pull there is nothing to probe: the plugin connects to Bindery. The
+  // useful answer is when it last did.
+  const reportLastCheckIn = async () => {
+    try {
+      const s = await api.calibreDeliverySummary()
+      const seen = s.pull?.lastSeen
+      if (!seen) {
+        setTestResult({ ok: false, msg: t('settings.calibre.transport.testNeverCheckedIn') })
+        return
+      }
+      const time = new Date(seen).toLocaleString()
+      setTestResult({
+        ok: true,
+        msg: s.pull?.pluginVersion
+          ? t('settings.calibre.transport.testLastCheckInVersion', { time, version: s.pull.pluginVersion })
+          : t('settings.calibre.transport.testLastCheckIn', { time }),
+      })
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        msg: t('settings.calibre.transport.testFailed', { error: err instanceof Error ? err.message : String(err) }),
+      })
+    }
+  }
+
   const runTest = async () => {
     setTesting(true)
     setTestResult(null)
+    if (pulling) {
+      await reportLastCheckIn()
+      setTesting(false)
+      return
+    }
     const isPlugin = mode === 'plugin'
     try {
       const r = await api.testCalibre()
@@ -229,6 +264,12 @@ function CalibreSection({
   const setMode = async (next: 'off' | 'calibredb' | 'plugin') => {
     setSettings(s => ({ ...s, 'calibre.mode': next }))
     await api.setSetting('calibre.mode', next).catch(console.error)
+  }
+
+  const setTransport = async (next: 'push' | 'pull') => {
+    setTestResult(null)
+    setSettings(s => ({ ...s, 'calibre.plugin_transport': next }))
+    await api.setSetting('calibre.plugin_transport', next).catch(console.error)
   }
 
   return (
@@ -275,7 +316,7 @@ function CalibreSection({
             {([
               { v: 'off',       label: 'Off',           desc: 'No Calibre call on import. The file lands in the Bindery library only.' },
               { v: 'calibredb', label: 'calibredb CLI', desc: 'Run calibredb add --with-library after each import. Calibre copies the file into its own library, so it exists twice. Needs calibredb inside the Bindery container or process; the official distroless image does not ship it.' },
-              { v: 'plugin',    label: 'Calibre Bridge plugin', desc: 'POST each import to the Bindery Bridge plugin running inside Calibre, in another container or host. Only the path and metadata are sent, not the file, so both containers must see the Bindery library at the same path, or set a push path remap below.' },
+              { v: 'plugin',    label: 'Calibre Bridge plugin', desc: 'Hand each import to the Bindery Bridge plugin running inside Calibre, in another container or host. With the push transport only the path and metadata are sent, so Calibre must see the Bindery library; with pull the plugin downloads each book from Bindery itself.' },
             ] as const).map(opt => (
               <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
                 <input
@@ -319,6 +360,33 @@ function CalibreSection({
         )}
 
         {mode === 'plugin' && (
+          <div data-testid="calibre-transport">
+            <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">{t('settings.calibre.transport.label')}</label>
+            <div className="space-y-1.5">
+              {([
+                { v: 'push', label: t('settings.calibre.transport.push'), desc: t('settings.calibre.transport.pushDesc') },
+                { v: 'pull', label: t('settings.calibre.transport.pull'), desc: t('settings.calibre.transport.pullDesc') },
+              ] as const).map(opt => (
+                <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="calibre-transport"
+                    value={opt.v}
+                    checked={transport === opt.v}
+                    onChange={() => setTransport(opt.v)}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="text-sm text-slate-800 dark:text-zinc-200">{opt.label}</div>
+                    <div className="text-xs text-slate-600 dark:text-zinc-500">{opt.desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {mode === 'plugin' && !pulling && (
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">Plugin URL</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
@@ -347,7 +415,9 @@ function CalibreSection({
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">API key</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
-              Bearer token configured in the plugin&rsquo;s Calibre Preferences dialog.
+              {pulling
+                ? t('settings.calibre.transport.apiKeyPullHelp')
+                : <>Bearer token configured in the plugin&rsquo;s Calibre Preferences dialog.</>}
             </p>
             <div className="flex gap-2">
               <input
@@ -369,7 +439,7 @@ function CalibreSection({
           </div>
         )}
 
-        {mode === 'plugin' && (
+        {mode === 'plugin' && !pulling && (
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">Push path remap</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
@@ -445,9 +515,9 @@ function CalibreSection({
               </div>
               <button
                 onClick={startSync}
-                disabled={!!syncProgress?.queueing || !pluginURL}
+                disabled={!!syncProgress?.queueing || (!pulling && !pluginURL)}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 rounded text-sm font-medium disabled:opacity-50 flex-shrink-0"
-                title={!pluginURL ? 'Set the plugin URL first' : ''}
+                title={!pulling && !pluginURL ? 'Set the plugin URL first' : ''}
               >
                 {syncProgress?.queueing ? 'Queueing…' : 'Push all to Calibre'}
               </button>

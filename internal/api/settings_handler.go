@@ -732,6 +732,15 @@ func validateSettingValue(key, value string) error {
 		if !calibre.Mode(value).Valid() {
 			return fmt.Errorf("calibre.mode %q is not one of: off, calibredb, plugin", value)
 		}
+	case SettingCalibrePluginTransport:
+		// Empty reads as push. Anything else must be canonical, so a typo
+		// cannot quietly leave both the push worker and the bridge idle.
+		if value == "" {
+			return nil
+		}
+		if !calibre.Transport(value).Valid() {
+			return fmt.Errorf("calibre.plugin_transport %q is not one of: push, pull", value)
+		}
 	case SettingDefaultMediaType:
 		// Empty falls back to ebook at read time; only validate non-empty
 		// writes so a typo in the UI can't silently disable the default.

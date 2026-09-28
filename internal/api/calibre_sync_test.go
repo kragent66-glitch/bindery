@@ -59,6 +59,19 @@ func TestCalibreSync_StartRefusesWithoutThePlugin(t *testing.T) {
 	}
 }
 
+// In pull (#2833) the plugin connects to Bindery, so Push all does not need
+// a plugin URL.
+func TestCalibreSync_PullNeedsNoPluginURL(t *testing.T) {
+	s := &stubSyncer{}
+	rec := httptest.NewRecorder()
+	newSyncHandler(s, calibre.ModePlugin, "").
+		WithTransport(func() calibre.Transport { return calibre.TransportPull }).
+		Start(rec, httptest.NewRequest(http.MethodPost, "/calibre/sync", nil))
+	if rec.Code != http.StatusAccepted || s.started != 1 {
+		t.Fatalf("status = %d, started = %d, want 202 and a start", rec.Code, s.started)
+	}
+}
+
 func TestCalibreSync_StartWhileQueueingIsAConflict(t *testing.T) {
 	s := &stubSyncer{startErr: calibre.ErrSyncAlreadyRunning}
 	rec := httptest.NewRecorder()

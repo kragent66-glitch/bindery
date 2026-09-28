@@ -29,6 +29,7 @@ type calibreDeliveryStore interface {
 type calibreDeliveryWorker interface {
 	Kick()
 	Health() calibre.DeliveryHealth
+	PullContact() calibre.PullContact
 }
 
 // calibreBookGetter loads a book for the per book state, so ownership can be
@@ -45,10 +46,18 @@ type CalibreDeliveryHandler struct {
 	worker calibreDeliveryWorker
 	books  calibreBookGetter
 	mode   func() calibre.Mode
+	// transport is nil in tests that predate pull; it then reads as push.
+	transport func() calibre.Transport
 }
 
 func NewCalibreDeliveryHandler(store calibreDeliveryStore, worker calibreDeliveryWorker, books calibreBookGetter, mode func() calibre.Mode) *CalibreDeliveryHandler {
 	return &CalibreDeliveryHandler{store: store, worker: worker, books: books, mode: mode}
+}
+
+// WithTransport lets the summary report the plugin transport (#2833).
+func (h *CalibreDeliveryHandler) WithTransport(t func() calibre.Transport) *CalibreDeliveryHandler {
+	h.transport = t
+	return h
 }
 
 // calibreDeliverySummaryResponse is GET /calibre/deliveries/summary: the
@@ -57,6 +66,11 @@ type calibreDeliverySummaryResponse struct {
 	models.CalibreDeliverySummary
 	Mode   calibre.Mode           `json:"mode"`
 	Target calibre.DeliveryHealth `json:"target"`
+	// Transport is the plugin transport. In pull, Target stays empty: the
+	// push worker does not probe, and Pull says when the plugin last
+	// checked in instead.
+	Transport calibre.Transport   `json:"transport"`
+	Pull      calibre.PullContact `json:"pull"`
 }
 
 // Summary is GET /api/v1/calibre/deliveries/summary. Admin only.
@@ -66,10 +80,16 @@ func (h *CalibreDeliveryHandler) Summary(w http.ResponseWriter, r *http.Request)
 		writeServerError(w, r, err)
 		return
 	}
+	transport := calibre.TransportPush
+	if h.transport != nil {
+		transport = h.transport()
+	}
 	writeJSON(w, http.StatusOK, calibreDeliverySummaryResponse{
 		CalibreDeliverySummary: s,
 		Mode:                   h.mode(),
 		Target:                 h.worker.Health(),
+		Transport:              transport,
+		Pull:                   h.worker.PullContact(),
 	})
 }
 

@@ -96,6 +96,13 @@ export default function CalibreDeliveryPanel({ refreshKey }: { refreshKey?: unkn
   } else {
     reach = { text: t('settings.calibre.deliveries.reachableUnknown'), tone: 'text-slate-500 dark:text-zinc-500' }
   }
+  // In pull (#2833) Bindery never probes Calibre; the plugin checks in.
+  const pulling = summary?.mode === 'plugin' && summary?.transport === 'pull'
+  if (pulling) {
+    reach = summary?.pull?.lastSeen
+      ? { text: t('settings.calibre.deliveries.lastCheckIn', { time: when(summary.pull.lastSeen) }), tone: 'text-emerald-600 dark:text-emerald-400' }
+      : { text: t('settings.calibre.deliveries.neverCheckedIn'), tone: 'text-amber-600 dark:text-amber-400' }
+  }
 
   const items = failed?.items ?? []
   const btn = 'px-3 py-1.5 rounded text-sm font-medium disabled:opacity-50 flex-shrink-0'
@@ -136,7 +143,7 @@ export default function CalibreDeliveryPanel({ refreshKey }: { refreshKey?: unkn
           <span aria-hidden className="text-slate-400 dark:text-zinc-600">·</span>
           <span data-testid="calibre-delivery-reachability" className={`break-all ${reach.tone}`}>
             {reach.text}
-            {target?.checkedAt && (
+            {!pulling && target?.checkedAt && (
               <span className="text-slate-500 dark:text-zinc-500">
                 {' '}({t('settings.calibre.deliveries.checkedAt', { time: when(target.checkedAt) })})
               </span>

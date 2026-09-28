@@ -29,6 +29,8 @@ Non-browser clients (curl, scripts, mobile apps) authenticating via API key do *
 
 The API key lives in **Settings → General → Security**. Regenerating it invalidates every existing consumer.
 
+The Calibre bridge routes under `/bridge/v1` are outside all of this: they take only the Calibre plugin key as a Bearer token, in every auth mode. See [Calibre bridge (pull)](#calibre-bridge-pull).
+
 ## Endpoint catalogue (selection)
 
 ### Authors
@@ -687,12 +689,21 @@ first is still queueing is a `409`.
     "checkedAt": "2026-09-27T12:01:00Z",
     "reachable": false,
     "lastError": "Get \"http://calibre:8099/v1/health\": dial tcp: connection refused"
-  }
+  },
+  "transport": "push",
+  "pull": {}
 }
 ```
 
 `target` is what the worker last learned. It only refreshes while something is
 waiting, so with an empty queue `checkedAt` can be old.
+
+`transport` is `calibre.plugin_transport` (`push` or `pull`). In pull the
+worker never contacts Calibre, so `target` stays empty and `pull` says when
+the plugin last reached the bridge routes: `lastSeen`, `pluginVersion`,
+`capabilities`, `remoteAddr`, and `library`, the Calibre library it last
+acknowledged a delivery into. It is kept in memory, so it is empty after a
+restart until the plugin checks in again.
 
 `GET /calibre/deliveries` returns `{items, total}`. `state` is `pending`,
 `delivered`, `failed`, `skipped` or empty for all; `limit` defaults to 50 and
@@ -717,6 +728,116 @@ skipped). Admins also get `outcome`, `lastError`, `lastErrorCode`,
 `attempts`, `calibreId` and `deliveredAt`; other users get the state only,
 since the error text can name server paths. A book the caller cannot see is a
 `404`, as with `GET /book/{id}`.
+
+### Calibre bridge (pull)
+
+With `calibre.mode` set to `plugin` and `calibre.plugin_transport` set to
+`pull` (#2833), the Calibre Bridge plugin (0.8.0 or later) connects out to
+Bindery instead of Bindery connecting to it. The plugin lists the due
+deliveries, downloads each file, adds it to Calibre and acknowledges it. The
+push worker stands down in pull, so a book is never sent both ways.
+
+```
+GET    /bridge/v1/hello                    Bindery version, protocol, page size, transport
+GET    /bridge/v1/deliveries               due deliveries (`?limit=&cursor=`)
+GET    /bridge/v1/deliveries/{id}/file     the book file
+GET    /bridge/v1/deliveries/{id}/cover    the cover image
+POST   /bridge/v1/deliveries/{id}/ack      the plugin added it
+POST   /bridge/v1/deliveries/{id}/nack     the plugin could not add it
+```
+
+These routes sit at the root like `/opds`, outside `/api/v1`, and under
+`BINDERY_URL_BASE` when one is set.
+
+**Authentication.** Every route needs `Authorization: Bearer <key>`, where the
+key is `calibre.plugin_api_key`, the same key push mode sends to the plugin.
+It is required in every auth mode, including Disabled and Local only. The
+global API key, `X-Api-Key`, `?apikey=` and session cookies are not accepted
+here, and the plugin key is accepted nowhere else. A stored key that is empty
+or shorter than 16 characters refuses every request. Failed attempts are
+counted per client address on a limiter of their own, separate from the
+login limiter, so a plugin with a stale key cannot lock the admin out of the
+web UI; past the limit the answer is `429` with `Retry-After`.
+
+The plugin sends `X-Bridge-Version: <plugin version>` and
+`X-Bridge-Capabilities: <comma separated>` (for example
+`book_metadata,cover,add_format`) on every request. Bindery records the last
+contact for the settings page.
+
+Errors are JSON `{"error": "...", "code": "..."}`:
+
+| Status | code | When |
+|---|---|---|
+| 400 | `invalid_request` | bad id, limit, cursor or body |
+| 401 | `unauthorized` | missing or wrong key, or no usable key stored |
+| 403 | `path_forbidden` | the delivery's file is outside the library roots, or not a regular file |
+| 404 | `not_found` | no such pending delivery, the file is gone, or no cover |
+| 409 | `not_in_pull_mode` | a delivery route while mode is not `plugin` or transport is not `pull` |
+| 409 | `not_pending` | ack or nack of a row that already failed, was skipped, or was delivered to another Calibre id |
+| 429 | `rate_limited` | too many failed attempts from this address |
+
+`GET /bridge/v1/hello` answers in push too, so the plugin can report that
+Bindery is not in pull mode:
+
+```json
+{"binderyVersion": "v1.39.0", "protocol": 1, "maxBatch": 20, "transport": "pull"}
+```
+
+`GET /bridge/v1/deliveries` returns the pending rows that are due, a page at
+a time. `limit` defaults to 20 and caps at 50; `cursor` is opaque, and an
+empty `nextCursor` means there is nothing further. `pending` counts every due
+row, not just this page.
+
+```json
+{
+  "deliveries": [
+    {"id": 812, "bookId": 97, "format": "epub", "sizeBytes": 482113,
+     "action": "add", "hasCover": true,
+     "metadata": {"title": "Emma", "authors": ["Jane Austen"],
+                  "identifiers": {"bindery": "97", "isbn": "9780141439587"}}}
+  ],
+  "nextCursor": "97",
+  "pending": 3
+}
+```
+
+`metadata` is the object push mode sends in `POST /v1/books`, without
+`coverPath`. Pages hold whole books and list each book's preferred format
+first (epub, kepub, azw3, mobi, pdf, then the rest), like the push worker.
+`action` is `add` for the first file of a book, and `add_format` for a file of
+a book that already has a delivered file. A book's other files are held back
+until its first is acknowledged, then listed as `add_format`. A plugin that
+does not advertise `add_format` is never offered one: those rows are skipped
+with the same reason push uses, and put back in the queue the next time the
+plugin lists with `add_format` advertised.
+
+`GET /bridge/v1/deliveries/{id}/file` streams the file recorded on the row
+with `Content-Type: application/octet-stream`, `Content-Length` and
+`Content-Disposition: attachment; filename="book.<ext>"`. Range requests
+work. The path must be inside a library root, the same allow list as the
+download route, and must be a regular file. A file that has gone is a `404`
+and the row is skipped. Only pending rows are served.
+
+`GET /bridge/v1/deliveries/{id}/cover` returns the cover image with its
+content type, or `404`.
+
+`POST /bridge/v1/deliveries/{id}/ack` takes
+`{"calibreId": 1234, "outcome": "added" | "already" | "format_added",
+"coverApplied": true, "library": "C:\\Users\\me\\Calibre Library"}` and
+answers `204`. The row is marked delivered against the reported library, and
+`books.calibre_id` follows the push rule: it is filled only when the book has
+none, did not come from a Calibre import, and either no library path is set
+or the library is that one. Sending the same ack again is a `204`.
+
+`POST /bridge/v1/deliveries/{id}/nack` takes `{"code": "calibre_busy",
+"error": "database is locked", "retryable": true}` and answers `204`. It
+counts one attempt. `retryable: false`, or a `bad_format` or
+`path_forbidden` code, fails the row for good; otherwise it backs off on the
+push schedule (1 minute, 5 minutes, 15 minutes, 1 hour, 6 hours, 24 hours)
+and gives up after 8 attempts.
+
+The delivery queue is not per user: it is the install's one Calibre target,
+and every route here is as privileged as an admin reading the queue.
 
 ### Settings
 

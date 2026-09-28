@@ -168,6 +168,22 @@ export interface CalibreDeliverySummary {
   lastDeliveredAt?: string
   mode: CalibreMode
   target: CalibreDeliveryHealth
+  // transport and pull are #2833. Older servers send neither.
+  transport?: CalibreTransport
+  pull?: CalibrePullContact
+}
+
+// CalibreTransport is which side connects in plugin mode (#2833).
+export type CalibreTransport = 'push' | 'pull'
+
+// CalibrePullContact is what Bindery last heard from a pulling plugin. It is
+// kept in memory, so it is empty after a restart until the plugin checks in.
+export interface CalibrePullContact {
+  lastSeen?: string
+  pluginVersion?: string
+  capabilities?: string[]
+  remoteAddr?: string
+  library?: string
 }
 
 // CalibreDelivery is one queue row with the book's title and author.

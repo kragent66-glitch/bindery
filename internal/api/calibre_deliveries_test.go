@@ -20,6 +20,7 @@ type fakeDeliveryWorker struct {
 	mu     sync.Mutex
 	kicks  int
 	health calibre.DeliveryHealth
+	pull   calibre.PullContact
 }
 
 func (f *fakeDeliveryWorker) Kick() {
@@ -29,6 +30,8 @@ func (f *fakeDeliveryWorker) Kick() {
 }
 
 func (f *fakeDeliveryWorker) Health() calibre.DeliveryHealth { return f.health }
+
+func (f *fakeDeliveryWorker) PullContact() calibre.PullContact { return f.pull }
 
 type deliveryFixture struct {
 	ctx    context.Context

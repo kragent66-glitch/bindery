@@ -352,6 +352,11 @@ func TestValidateSettingValue_KnownKeysUnchanged(t *testing.T) {
 		{"primary provider accepts empty", SettingMetadataPrimaryProvider, "", false},
 		{"primary provider rejects goodreads", SettingMetadataPrimaryProvider, "goodreads", true},
 
+		{"plugin transport accepts push", SettingCalibrePluginTransport, "push", false},
+		{"plugin transport accepts pull", SettingCalibrePluginTransport, "pull", false},
+		{"plugin transport accepts empty", SettingCalibrePluginTransport, "", false},
+		{"plugin transport rejects poll", SettingCalibrePluginTransport, "poll", true},
+
 		{"push path remap accepts a pair", SettingCalibrePushPathRemap, "/books:/library", false},
 		{"push path remap accepts empty", SettingCalibrePushPathRemap, "", false},
 		{"push path remap rejects a malformed pair", SettingCalibrePushPathRemap, "/books", true},
@@ -438,6 +443,7 @@ var webSettingKeys = []string{
 	"calibre.library_path",
 	"calibre.mode",
 	"calibre.plugin_api_key",
+	"calibre.plugin_transport",
 	"calibre.plugin_url",
 	"calibre.push_path_remap",
 	"calibre.sync_on_startup",

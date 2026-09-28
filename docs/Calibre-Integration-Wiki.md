@@ -80,6 +80,38 @@ Bindery retries a 503 (the library is mid swap) with exponential backoff to abou
 
 **Metadata updates are deliberately narrow.** Bindery asks the bridge to update a Calibre row only when its delivery records show it delivered that exact Calibre id for this book into this library before, meaning it created the row itself. The first time a push meets a row Bindery did not create, it records the link and writes nothing, because that row may be one you curated by hand. The bridge is also fill only on its side: it writes fields the row has left empty and never overwrites or clears one.
 
+### Pull mode: Calibre fetches books from Bindery
+
+Everything above describes the push transport, where Bindery connects to the plugin and hands it a file path. Pull reverses the direction: the plugin connects out to Bindery, downloads each queued book over HTTP(S) into a temporary file, adds it to Calibre, and tells Bindery how it went. It needs **Calibre Bridge 0.8.0 or later**.
+
+**When to use it.** Calibre runs somewhere Bindery cannot easily reach or share files with: a desktop PC on another network, a laptop that comes and goes, a machine behind a router you do not control. Pull removes, in one go:
+
+- the shared drive, because the file travels over HTTP instead of being opened by path
+- the **Push path remap**, for the same reason
+- the inbound firewall rule on the Calibre machine, because Calibre only makes outgoing connections
+- a fixed address for the Calibre machine, because Bindery never has to find it
+
+What it still needs is a Bindery URL the Calibre machine can reach, ideally over HTTPS if it crosses anything but your own network.
+
+**Setting it up.**
+
+1. On the Calibre tab, set **Write integration** to **Calibre Bridge plugin** and **Transport** to **Pull: Calibre fetches books from Bindery**. Plugin URL and Push path remap disappear; they are not used.
+2. Set **API key** to a random string of at least 16 characters. Bindery refuses every pull request while the key is empty or shorter.
+3. In Calibre, open the plugin's Bindery settings and enter Bindery's URL (including `BINDERY_URL_BASE` if you use one) and the same key.
+
+The plugin then checks in on its own. **Test connection** does not probe anything in pull mode; it reports when Calibre last checked in and with which plugin version, and so does the **Delivery queue** line. "Has not checked in since Bindery started" means the plugin has not reached Bindery: check the URL and key in the plugin and that Calibre is open. The check in time is held in memory, so it is blank after a Bindery restart until the plugin's next request.
+
+**What stays the same.** Books go through the same delivery queue, with the same retries and backoff, the same preferred format order, the same rule that a second format needs `add_format` (0.7.0 and later have it), and the same **Push all to Calibre**, **Retry failed** and **Reset delivery state**. While pull is on, Bindery's own delivery worker stands down, so a book is never sent both ways. A book's second format is offered to the plugin once its first has been acknowledged, usually on the plugin's next check.
+
+**About the key.** In pull mode the key works in both directions: the plugin sends it to Bindery on every request, and with it anyone can list and download every book waiting in the queue. So:
+
+- A plugin pointed at the wrong or a hostile URL hands that server your key. Only enter a Bindery URL you trust, and prefer HTTPS.
+- The key is not the Bindery API key and is not accepted anywhere else in Bindery; the Bindery API key and a browser session are not accepted on the pull routes either. It is required in every auth mode, including Disabled and Local only.
+- Repeated wrong keys from one address are rate limited on their own counter, so a plugin with an old key cannot lock you out of the web UI.
+- To rotate it, change it in Bindery and in the plugin.
+
+The routes are documented in [API.md](API.md#calibre-bridge-pull).
+
 ## Topology 2: mirror into the CWA ingest folder
 
 Set **Ingest folder path** under the Calibre-Web-Automated heading on the Calibre tab to the folder CWA watches (CWA's docs use `/cwa-book-ingest`), mounted into both containers at that path. After every successful ebook import Bindery copies the imported file there. CWA picks it up, files it into its own library, and deletes the ingest copy. What the code does, exactly:

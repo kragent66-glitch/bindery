@@ -309,6 +309,12 @@ var settingDescriptors = []SettingDescriptor{
 		State:       SettingStateActive,
 	},
 	{
+		Key: SettingCalibrePluginTransport, Type: SettingTypeEnum, Default: "push",
+		Values:      []string{"push", "pull"},
+		Description: "In plugin mode, which side connects: push has Bindery send books to the plugin, pull has the plugin fetch them from Bindery's /bridge/v1 routes using the plugin API key.",
+		State:       SettingStateActive,
+	},
+	{
 		Key: SettingCalibrePushPathRemap, Type: SettingTypeString, Default: "",
 		Description: "Path rewrites applied before pushing to Calibre, in from:to[,from:to] form, for when Bindery and Calibre mount the library at different paths.",
 		State:       SettingStateActive,

@@ -478,7 +478,10 @@ func main() {
 		modeResolver, calibreLoadConfig, calibreAdders.For).
 		WithMetadata(authorRepo, editionRepo, seriesRepo).
 		WithCovers(calibreCovers).
-		WithJobs(bgJobs)
+		WithJobs(bgJobs).
+		// In pull (#2833) the plugin fetches from /bridge/v1 and the
+		// push pass stands down.
+		WithTransport(func() calibre.Transport { return api.LoadCalibreTransport(appCtx, settingsRepo) })
 	importScanner.WithCalibreDeliveries(modeResolver, calibreDeliverer)
 	// Rows written by importers older than #2564 hold the library's host
 	// path in editions.image_url; rewrite them into servable references now
@@ -800,12 +803,13 @@ func main() {
 	// progress back from the ledger; the worker does the sending.
 	calibreSyncer := calibre.NewSyncer(bookRepo, calibreDeliveryRepo, calibreDeliverer).WithJobs(bgJobs)
 	calibreDeliveryHandler := api.NewCalibreDeliveryHandler(calibreDeliveryRepo, calibreDeliverer, bookRepo,
-		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) })
+		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) }).
+		WithTransport(func() calibre.Transport { return api.LoadCalibreTransport(appCtx, settingsRepo) })
 	calibreSyncHandler := api.NewCalibreSyncHandler(
 		calibreSyncer,
 		func() calibre.Config { return api.LoadCalibreConfig(appCtx, settingsRepo) },
 		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) },
-	)
+	).WithTransport(func() calibre.Transport { return api.LoadCalibreTransport(appCtx, settingsRepo) })
 	// Requester requests: approval adds through authorHandler's add cores.
 	requestHandler := api.NewRequestHandler(db.NewRequestRepo(database), bookRepo, authorRepo, settingsRepo, userRepo, metaAgg, authorHandler).
 		WithNotifier(notif)
@@ -1257,6 +1261,17 @@ func main() {
 		r.Get("/book/{id}", opdsHandler.Book)
 		r.Get("/book/{id}/file", opdsHandler.DownloadFile)
 	})
+
+	// Calibre bridge pull routes (#2833): the Calibre plugin connects out to
+	// Bindery and fetches its deliveries. Like /opds it sits at the root,
+	// inside trustedProxyMiddleware and outside the /api/v1 session and CSRF
+	// stack, because its only credential is the plugin API key as a Bearer
+	// token. Its failures count on a limiter of their own, so a plugin with
+	// a stale key cannot lock the admin out of the login form.
+	bridgeWindow := time.Duration(cfg.RateLimitWindowMinutes) * time.Minute
+	bridgeLimiter := auth.NewLoginLimiter(cfg.RateLimitMaxFailures, bridgeWindow)
+	calibreBridgeHandler := api.NewCalibreBridgeHandler(calibreDeliverer, fileHandler, settingsRepo, bridgeLimiter, bridgeWindow, version)
+	registerCalibreBridgeRoutes(r, calibreBridgeHandler)
 
 	// Serve embedded frontend
 	distFS, err := fs.Sub(webui.DistFS, "dist")

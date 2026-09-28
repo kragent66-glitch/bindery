@@ -15,6 +15,8 @@ type CalibreSyncHandler struct {
 	syncer   syncerAPI
 	loadCfg  func() calibre.Config
 	loadMode func() calibre.Mode
+	// loadTransport is nil in tests that predate pull (#2833); nil is push.
+	loadTransport func() calibre.Transport
 }
 
 // syncerAPI is the subset of *calibre.Syncer the API touches so tests can
@@ -26,6 +28,13 @@ type syncerAPI interface {
 
 func NewCalibreSyncHandler(s syncerAPI, loadCfg func() calibre.Config, loadMode func() calibre.Mode) *CalibreSyncHandler {
 	return &CalibreSyncHandler{syncer: s, loadCfg: loadCfg, loadMode: loadMode}
+}
+
+// WithTransport lets Start tell pull from push: in pull the plugin fetches
+// from Bindery, so there is no plugin URL to require.
+func (h *CalibreSyncHandler) WithTransport(t func() calibre.Transport) *CalibreSyncHandler {
+	h.loadTransport = t
+	return h
 }
 
 // Start is POST /api/v1/calibre/sync. It checks that plugin mode is selected
@@ -40,8 +49,9 @@ func (h *CalibreSyncHandler) Start(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "calibre mode is not 'plugin' — bulk sync only targets the Bindery Bridge plugin"})
 		return
 	}
+	pulling := h.loadTransport != nil && h.loadTransport() == calibre.TransportPull
 	cfg := h.loadCfg()
-	if cfg.PluginURL == "" {
+	if cfg.PluginURL == "" && !pulling {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "calibre plugin_url is empty"})
 		return
 	}

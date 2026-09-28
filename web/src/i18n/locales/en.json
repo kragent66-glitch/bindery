@@ -758,6 +758,18 @@
       }
     },
     "calibre": {
+      "transport": {
+        "label": "Transport",
+        "push": "Push: Bindery sends books to Calibre",
+        "pushDesc": "Bindery connects to the plugin's HTTP server and hands it each file's path. Calibre must see the Bindery library, at the same path or through a push path remap, and accept a connection from Bindery.",
+        "pull": "Pull: Calibre fetches books from Bindery",
+        "pullDesc": "The plugin connects out to Bindery, downloads each queued book and adds it. No shared drive, path remap, inbound firewall rule or fixed address for the Calibre machine. Needs Calibre Bridge 0.8.0 or later.",
+        "apiKeyPullHelp": "Enter this same key, together with Bindery's URL, in the plugin's Bindery settings inside Calibre. The plugin sends it to authenticate, so use at least 16 characters and only point the plugin at a Bindery you trust.",
+        "testLastCheckIn": "Calibre last checked in {{time}}",
+        "testLastCheckInVersion": "Calibre last checked in {{time}}, plugin {{version}}",
+        "testNeverCheckedIn": "Calibre has not checked in since Bindery started. Check the Bindery URL and key in the plugin, and that Calibre is open.",
+        "testFailed": "Could not read the delivery queue: {{error}}"
+      },
       "runs": {
         "heading": "Recent imports",
         "description": "Bindery tracks every live import so you can preview and undo it. Files on disk are never touched — only the metadata rows Bindery created or modified.",
@@ -827,7 +839,9 @@
         "resetting": "Resetting…",
         "resetDone": "Delivery state reset. {{count}} records removed.",
         "cancel": "Cancel",
-        "actionFailed": "That did not work: {{error}}"
+        "actionFailed": "That did not work: {{error}}",
+        "lastCheckIn": "Calibre last checked in {{time}}",
+        "neverCheckedIn": "Calibre has not checked in since Bindery started"
       }
     },
     "indexers": {

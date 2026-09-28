@@ -31,6 +31,10 @@ type DeliveryStore interface {
 	ListByBook(ctx context.Context, bookID int64) ([]models.CalibreDelivery, error)
 	RearmSkipped(ctx context.Context, reason string) (int64, error)
 	HasSkipped(ctx context.Context, reason string) (bool, error)
+	// The pull transport (#2833) reads rows by id and pages the queue by book.
+	Get(ctx context.Context, id int64) (*models.CalibreDelivery, error)
+	DueBooksAfter(ctx context.Context, now time.Time, afterBookID int64, books int) ([]models.CalibreDelivery, error)
+	CountDue(ctx context.Context, now time.Time) (int, error)
 }
 
 // DeliveryBooks is the subset of *db.BookRepo the worker uses.
@@ -161,6 +165,13 @@ type Deliverer struct {
 
 	healthMu sync.Mutex
 	health   DeliveryHealth
+
+	// transport is read at the start of each pass; nil means push. In pull
+	// the plugin fetches from the queue itself, so the pass stands down.
+	transport func() Transport
+
+	pullMu sync.Mutex
+	pull   pullState
 }
 
 // DeliveryHealth is what the worker last learned about the push target, for
@@ -312,11 +323,20 @@ type deliveryTarget struct {
 	// addFormat is true when the bridge advertised add_format at the start
 	// of the pass. Never true for calibredb.
 	addFormat bool
+	// anyLibrary is the pull transport before the plugin has said which
+	// library it adds to; see libraryMatches.
+	anyLibrary bool
 }
 
 func (d *Deliverer) pass(ctx context.Context) {
 	mode := d.mode()
 	if mode != ModePlugin && mode != ModeCalibredb {
+		return
+	}
+	if mode == ModePlugin && d.pulling() {
+		// The plugin connects in and takes rows off the queue itself
+		// (#2833). Probing or delivering here as well would send a book
+		// twice, and there may be no plugin URL to reach at all.
 		return
 	}
 	// The due query is a local read, so it goes first: an idle queue must
@@ -392,26 +412,41 @@ func (d *Deliverer) pass(ctx context.Context) {
 	}
 }
 
-// deliver sends one row and records how it went.
-func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, target deliveryTarget) deliveryResult {
+// resolvedDelivery is a row that is ready to go: its book, the file as the
+// book tracks it now, the file's size, and whether it is a second format of
+// a book the target already holds.
+type resolvedDelivery struct {
+	book      *models.Book
+	path      string
+	size      int64
+	secondary bool
+}
+
+// resolveDelivery loads what a row needs before it can be sent, by push or by
+// pull, and applies the rules both share: a row whose book or file is gone is
+// skipped, a file that cannot be read fails, and a second format is held back
+// with DeliverySkipNeedsAddFormat unless the target can add one. ok is false
+// when the row was dealt with here; the result then says how.
+func (d *Deliverer) resolveDelivery(ctx context.Context, row *models.CalibreDelivery, target deliveryTarget) (resolvedDelivery, deliveryResult, bool) {
+	var out resolvedDelivery
 	book, err := d.books.GetByID(ctx, row.BookID)
 	if err != nil {
 		if ctx.Err() != nil {
-			return deliveryStop
+			return out, deliveryStop, false
 		}
 		slog.Warn("calibre delivery: loading the book failed", "bookId", row.BookID, "error", err)
-		return deliveryUntouched
+		return out, deliveryUntouched, false
 	}
 	if book == nil {
-		return d.skip(ctx, row, deliverySkipBookGone)
+		return out, d.skip(ctx, row, deliverySkipBookGone), false
 	}
 	files, err := d.books.ListFiles(ctx, book.ID)
 	if err != nil {
 		if ctx.Err() != nil {
-			return deliveryStop
+			return out, deliveryStop, false
 		}
 		slog.Warn("calibre delivery: listing the book's files failed", "bookId", book.ID, "error", err)
-		return deliveryUntouched
+		return out, deliveryUntouched, false
 	}
 	path := ""
 	for _, f := range files {
@@ -421,43 +456,55 @@ func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, ta
 		}
 	}
 	if path == "" {
-		return d.skip(ctx, row, deliverySkipFileGone)
+		return out, d.skip(ctx, row, deliverySkipFileGone), false
 	}
-	if _, err := os.Stat(path); err != nil {
+	info, err := os.Stat(path)
+	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return d.skip(ctx, row, deliverySkipNoFile)
+			return out, d.skip(ctx, row, deliverySkipNoFile), false
 		}
-		return d.fail(ctx, row, book, "file_unreadable", err)
+		return out, d.fail(ctx, row, "file_unreadable", err), false
 	}
 
 	// A book Calibre already holds a file of gets this file as another
 	// format of the same record, which only a bridge with add_format can do.
 	// Without it the file would be refused as a duplicate at best, so it is
 	// held back with a reason that is re-armed once the bridge can.
-	secondary, err := d.hasDeliveredSibling(ctx, row, target.library)
+	secondary, err := d.hasDeliveredSibling(ctx, row, target)
 	if err != nil {
 		if ctx.Err() != nil {
-			return deliveryStop
+			return out, deliveryStop, false
 		}
 		slog.Warn("calibre delivery: reading the book's deliveries failed", "bookId", book.ID, "error", err)
-		return deliveryUntouched
+		return out, deliveryUntouched, false
 	}
 	if secondary && !target.addFormat {
-		return d.skip(ctx, row, DeliverySkipNeedsAddFormat)
+		return out, d.skip(ctx, row, DeliverySkipNeedsAddFormat), false
 	}
+	return resolvedDelivery{book: book, path: path, size: info.Size(), secondary: secondary}, 0, true
+}
 
-	meta := d.metadata(ctx, book, row, path, target)
+// deliver sends one row and records how it went.
+func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, target deliveryTarget) deliveryResult {
+	rd, res, ok := d.resolveDelivery(ctx, row, target)
+	if !ok {
+		return res
+	}
+	book, path, secondary := rd.book, rd.path, rd.secondary
+
+	meta, edition := d.metadata(ctx, book, row, path, target)
+	meta.CoverPath = d.covers.PathFor(ctx, CoverSourceFor(book, edition), target.adder)
 	// The plugin client is asked through AddWithOptions even for a first
 	// format, so a format_added answer is seen either way: 0.7.0 also gives
 	// it when a push repairs a row a failed add left empty.
-	var res AddResult
+	var added AddResult
 	var addErr error
 	if fa, ok := target.adder.(formatAdder); ok {
-		res, addErr = fa.AddWithOptions(ctx, path, meta, AddOptions{AddFormat: secondary})
+		added, addErr = fa.AddWithOptions(ctx, path, meta, AddOptions{AddFormat: secondary})
 	} else {
-		res.ID, addErr = target.adder.Add(ctx, path, meta)
+		added.ID, addErr = target.adder.Add(ctx, path, meta)
 	}
-	id := res.ID
+	id := added.ID
 	// Once Calibre has the book, the result is recorded even if shutdown
 	// cancelled ctx while the add was in flight. Losing it would only cost a
 	// 409 on the next start, but there is no reason to lose it.
@@ -468,23 +515,19 @@ func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, ta
 	switch {
 	case addErr == nil:
 		outcome := DeliveryOutcomeAdded
-		if res.FormatAdded {
+		if added.FormatAdded {
 			outcome = DeliveryOutcomeFormatAdded
 		}
-		if err := d.store.MarkDelivered(record, row.ID, id, outcome, target.library); err != nil {
+		if err := d.recordDelivered(record, row, book, id, outcome, target); err != nil {
 			return d.lostRow(row, err)
 		}
-		d.recordSourceID(record, book, id, target)
 		slog.Debug("calibre delivery: book added", "bookId", book.ID, "calibreId", id, "path", path, "outcome", outcome)
 		return deliveryDelivered
 	case errors.Is(addErr, ErrAlreadyInCalibre):
-		// Ownership is read from the ledger before this row joins it, so
-		// only an earlier delivery of this book to this id counts.
-		owned := id > 0 && d.owns(ctx, book.ID, id, target.library)
-		if err := d.store.MarkDelivered(record, row.ID, id, DeliveryOutcomeAlready, target.library); err != nil {
+		owned := d.ownsBeforeRecording(ctx, book.ID, id, target.library)
+		if err := d.recordDelivered(record, row, book, id, DeliveryOutcomeAlready, target); err != nil {
 			return d.lostRow(row, err)
 		}
-		d.recordSourceID(record, book, id, target)
 		slog.Info("calibre delivery: book already in Calibre", "bookId", book.ID, "calibreId", id, "owned", owned)
 		if owned {
 			d.refreshMetadata(ctx, book.ID, id, meta, target.adder)
@@ -505,25 +548,59 @@ func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, ta
 		}
 		return deliveryStop
 	default:
-		return d.fail(ctx, row, book, PluginErrorCode(addErr), addErr)
+		return d.fail(ctx, row, PluginErrorCode(addErr), addErr)
 	}
+}
+
+// ownsBeforeRecording is owns for an add Calibre answered "already there".
+// It has to run before the row is marked delivered: ownership is read from
+// the ledger, so only an earlier delivery of this book to this id counts.
+func (d *Deliverer) ownsBeforeRecording(ctx context.Context, bookID, calibreID int64, library string) bool {
+	return calibreID > 0 && d.owns(ctx, bookID, calibreID, library)
+}
+
+// recordDelivered marks the row delivered and applies the books.calibre_id
+// rule. Push and pull both finish a delivery through here.
+func (d *Deliverer) recordDelivered(ctx context.Context, row *models.CalibreDelivery, book *models.Book, calibreID int64, outcome string, target deliveryTarget) error {
+	if err := d.store.MarkDelivered(ctx, row.ID, calibreID, outcome, target.library); err != nil {
+		return err
+	}
+	if book != nil {
+		d.recordSourceID(ctx, book, calibreID, target)
+	}
+	return nil
 }
 
 // fail records one failed attempt with backoff, or gives up for good when the
 // error cannot be fixed by waiting or the row is out of attempts.
-func (d *Deliverer) fail(ctx context.Context, row *models.CalibreDelivery, book *models.Book, code string, cause error) deliveryResult {
-	attempts := row.Attempts + 1
-	next, terminal := nextDeliveryAttempt(d.now(), attempts)
-	if deliveryTerminalCodes[code] {
-		terminal = true
-	}
-	if err := d.store.MarkFailed(ctx, row.ID, code, cause.Error(), next, terminal); err != nil {
+func (d *Deliverer) fail(ctx context.Context, row *models.CalibreDelivery, code string, cause error) deliveryResult {
+	terminal, err := d.recordFailure(ctx, row, code, cause.Error(), false)
+	if err != nil {
 		return d.lostRow(row, err)
 	}
 	if terminal {
-		slog.Warn("calibre delivery: giving up on a book",
-			"bookId", book.ID, "path", row.FilePath, "code", code, "attempts", attempts, "error", cause)
 		return deliveryGaveUp
+	}
+	return deliveryFailed
+}
+
+// recordFailure writes one failed attempt: the backoff schedule decides when
+// the row comes due again, and a code no retry can fix, the last attempt, or
+// forceTerminal gives up instead. It reports whether the row gave up. Push
+// and pull both record failures through here.
+func (d *Deliverer) recordFailure(ctx context.Context, row *models.CalibreDelivery, code, msg string, forceTerminal bool) (bool, error) {
+	attempts := row.Attempts + 1
+	next, terminal := nextDeliveryAttempt(d.now(), attempts)
+	if forceTerminal || deliveryTerminalCodes[code] {
+		terminal = true
+	}
+	if err := d.store.MarkFailed(ctx, row.ID, code, msg, next, terminal); err != nil {
+		return false, err
+	}
+	if terminal {
+		slog.Warn("calibre delivery: giving up on a book",
+			"bookId", row.BookID, "path", row.FilePath, "code", code, "attempts", attempts, "error", msg)
+		return true, nil
 	}
 	// The first failure is a WARN so the cause is visible at the default
 	// log level long before the row gives up; the repeats are not.
@@ -532,8 +609,8 @@ func (d *Deliverer) fail(ctx context.Context, row *models.CalibreDelivery, book 
 		level = slog.LevelWarn
 	}
 	slog.Log(ctx, level, "calibre delivery: add failed, will retry",
-		"bookId", book.ID, "path", row.FilePath, "code", code, "attempts", attempts, "next", next, "error", cause)
-	return deliveryFailed
+		"bookId", row.BookID, "path", row.FilePath, "code", code, "attempts", attempts, "next", next, "error", msg)
+	return false, nil
 }
 
 func (d *Deliverer) skip(ctx context.Context, row *models.CalibreDelivery, reason string) deliveryResult {
@@ -566,11 +643,23 @@ func (d *Deliverer) owns(ctx context.Context, bookID, calibreID int64, library s
 		if r.BookID != bookID {
 			continue
 		}
-		if strings.TrimSpace(r.TargetLibrary) == "" || cleanLibraryPath(r.TargetLibrary) == cleanLibraryPath(library) {
+		if libraryMatches(r.TargetLibrary, library, false) {
 			return true
 		}
 	}
 	return false
+}
+
+// libraryMatches reports whether a delivered row recorded against recorded
+// counts for the target library. A backfilled row has no target recorded and
+// counts for any target. anyTarget is the pull transport before the plugin
+// has reported which library it adds to: then every delivered row counts,
+// because treating a second format as a first would make a duplicate record.
+func libraryMatches(recorded, library string, anyTarget bool) bool {
+	if anyTarget || strings.TrimSpace(recorded) == "" {
+		return true
+	}
+	return cleanLibraryPath(recorded) == cleanLibraryPath(library)
 }
 
 // refreshMetadata fills empty fields on a Calibre row Bindery created itself.
@@ -612,8 +701,10 @@ func (d *Deliverer) recordSourceID(ctx context.Context, book *models.Book, calib
 	}
 }
 
-// metadata builds the payload at delivery time, from the book as it is now.
-func (d *Deliverer) metadata(ctx context.Context, book *models.Book, row *models.CalibreDelivery, path string, target deliveryTarget) Metadata {
+// metadata builds the payload at delivery time, from the book as it is now,
+// and returns the edition it matched. The cover is left to the caller: push
+// resolves it to a path for the target, pull serves it on its own route.
+func (d *Deliverer) metadata(ctx context.Context, book *models.Book, row *models.CalibreDelivery, path string, target deliveryTarget) (Metadata, *models.Edition) {
 	edition := d.edition(ctx, book, row, path)
 	var author *models.Author
 	if d.authors != nil && book.AuthorID != 0 {
@@ -648,8 +739,7 @@ func (d *Deliverer) metadata(ctx context.Context, book *models.Book, row *models
 		SeriesIndex: seriesIndex,
 		Identifiers: identifiers,
 	})
-	meta.CoverPath = d.covers.PathFor(ctx, CoverSourceFor(book, edition), target.adder)
-	return meta
+	return meta, edition
 }
 
 // edition is the row's edition when it still exists, else one matched to the
@@ -677,7 +767,7 @@ func (d *Deliverer) edition(ctx context.Context, book *models.Book, row *models.
 // delivered to this target, which makes row a second format of a book
 // Calibre holds. A backfilled row has no target recorded and counts, the
 // same rule owns applies.
-func (d *Deliverer) hasDeliveredSibling(ctx context.Context, row *models.CalibreDelivery, library string) (bool, error) {
+func (d *Deliverer) hasDeliveredSibling(ctx context.Context, row *models.CalibreDelivery, target deliveryTarget) (bool, error) {
 	rows, err := d.store.ListByBook(ctx, row.BookID)
 	if err != nil {
 		return false, err
@@ -686,7 +776,7 @@ func (d *Deliverer) hasDeliveredSibling(ctx context.Context, row *models.Calibre
 		if r.ID == row.ID || r.BookFileID == row.BookFileID || r.State != models.CalibreDeliveryDelivered {
 			continue
 		}
-		if strings.TrimSpace(r.TargetLibrary) == "" || cleanLibraryPath(r.TargetLibrary) == cleanLibraryPath(library) {
+		if libraryMatches(r.TargetLibrary, target.library, target.anyLibrary) {
 			return true, nil
 		}
 	}

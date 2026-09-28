@@ -114,6 +114,41 @@ func (r *CalibreDeliveryRepo) DueBatch(ctx context.Context, now time.Time, limit
 	return scanCalibreDeliveries(rows)
 }
 
+// DueBooksAfter returns every due pending row of the first books distinct
+// books whose id is above afterBookID, ordered by book id and then row id.
+// It is the pull listing's page source (#2833): keyset paging on the book id
+// keeps each book's files on one page, so the preferred format of a book is
+// always listed with, and ahead of, its others, and a row acknowledged
+// between pages never shifts the next page the way an offset would.
+func (r *CalibreDeliveryRepo) DueBooksAfter(ctx context.Context, now time.Time, afterBookID int64, books int) ([]models.CalibreDelivery, error) {
+	due := calibreDeliveryTime(now)
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+calibreDeliveryColumns+` FROM calibre_deliveries
+		WHERE state = 'pending' AND next_attempt_at <= ?
+		  AND book_id IN (
+			SELECT DISTINCT book_id FROM calibre_deliveries
+			WHERE state = 'pending' AND next_attempt_at <= ? AND book_id > ?
+			ORDER BY book_id
+			LIMIT ?)
+		ORDER BY book_id, id`, due, due, afterBookID, books)
+	if err != nil {
+		return nil, fmt.Errorf("calibre deliveries due books: %w", err)
+	}
+	return scanCalibreDeliveries(rows)
+}
+
+// CountDue counts the pending rows whose next_attempt_at is at or before now.
+func (r *CalibreDeliveryRepo) CountDue(ctx context.Context, now time.Time) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM calibre_deliveries
+		WHERE state = 'pending' AND next_attempt_at <= ?`, calibreDeliveryTime(now)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("calibre deliveries count due: %w", err)
+	}
+	return n, nil
+}
+
 // MarkDelivered records a successful delivery. outcome says how it landed
 // (for example "added" or "linked"); targetLibrary identifies the library
 // calibreID belongs to. The last error is cleared.
