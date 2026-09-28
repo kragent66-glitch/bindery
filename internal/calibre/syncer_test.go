@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -175,15 +174,17 @@ func runPushAll(t *testing.T, s *Syncer) SyncProgress {
 }
 
 // TestSyncer_PushAllQueuesOnlyUndeliveredEligibleFiles is the core of #2832's
-// Push all: queue what the ledger does not hold, never re-queue a delivered
-// book, and never re-arm a failed one (that is Retry failed's job).
+// Push all: queue every ebook file the ledger does not hold, never re-queue a
+// delivered file, and never re-arm a failed one (that is Retry failed's job).
+// A book already in Calibre still gets its other formats queued: the worker
+// adds them to the same record.
 func TestSyncer_PushAllQueuesOnlyUndeliveredEligibleFiles(t *testing.T) {
 	books := &fakeBookLister{
 		books: []models.Book{
 			{ID: 1, Title: "New", Status: models.BookStatusImported, EbookFilePath: "/l/new.epub"},
 			{ID: 2, Title: "Delivered", Status: models.BookStatusImported, EbookFilePath: "/l/done.epub"},
-			// Two ebook files; the delivered row is on the one Push all
-			// would not pick. The book is in Calibre all the same.
+			// Two ebook files, one delivered. The other is queued so the
+			// worker can add it to the same Calibre record.
 			{ID: 3, Title: "Two Formats", Status: models.BookStatusImported, EbookFilePath: "/l/two.azw3"},
 			{ID: 4, Title: "Failed Before", Status: models.BookStatusImported, EbookFilePath: "/l/bad.epub"},
 		},
@@ -202,21 +203,21 @@ func TestSyncer_PushAllQueuesOnlyUndeliveredEligibleFiles(t *testing.T) {
 	p := runPushAll(t, s)
 
 	enqueued, kicks := queue.calls()
-	if len(enqueued) != 1 || enqueued[0] != 11 {
-		t.Fatalf("enqueued files = %v, want only [11]: a delivered or failed book must not be queued again", enqueued)
+	if len(enqueued) != 2 || enqueued[0] != 11 || enqueued[1] != 31 {
+		t.Fatalf("enqueued files = %v, want [11 31]: every untracked ebook file, and no delivered or failed one again", enqueued)
 	}
 	if kicks != 1 {
 		t.Errorf("kicks = %d, want 1", kicks)
 	}
 	rows, _ := ledger.ListAll(context.Background())
-	if len(rows) != 4 {
-		t.Errorf("ledger rows = %d, want 4 (one new)", len(rows))
+	if len(rows) != 5 {
+		t.Errorf("ledger rows = %d, want 5 (two new)", len(rows))
 	}
-	if p.Stats.Total != 4 {
-		t.Errorf("Total = %d, want 4", p.Stats.Total)
+	if p.Stats.Total != 5 {
+		t.Errorf("Total = %d, want 5 files", p.Stats.Total)
 	}
 	if p.Stats.AlreadyInCalibre != 2 {
-		t.Errorf("AlreadyInCalibre = %d, want 2 (books 2 and 3 were delivered before the run)", p.Stats.AlreadyInCalibre)
+		t.Errorf("AlreadyInCalibre = %d, want 2 (files 21 and 32 were delivered before the run)", p.Stats.AlreadyInCalibre)
 	}
 	if p.Stats.Pushed != 0 {
 		t.Errorf("Pushed = %d, want 0: a book delivered before the run was not pushed by it", p.Stats.Pushed)
@@ -225,7 +226,7 @@ func TestSyncer_PushAllQueuesOnlyUndeliveredEligibleFiles(t *testing.T) {
 		t.Errorf("failed = %d, errors = %+v, want book 4 with its last error", p.Stats.Failed, p.Errors)
 	}
 	if !p.Running || p.Stats.Processed != 3 {
-		t.Errorf("running = %v, processed = %d, want running with 3 of 4 processed", p.Running, p.Stats.Processed)
+		t.Errorf("running = %v, processed = %d, want running with 3 of 5 processed", p.Running, p.Stats.Processed)
 	}
 }
 
@@ -313,26 +314,41 @@ func TestSyncer_StatusIsComputedFromTheLedger(t *testing.T) {
 	}
 }
 
-// TestSyncer_PicksTheBooksEbookPath: with several ebook files and none in the
-// ledger, Push all queues the one the book reports as its ebook path, the
-// same pick migration 095 used for the backfill.
-func TestSyncer_PicksTheBooksEbookPath(t *testing.T) {
+// TestSyncer_QueuesEveryFormatInPreferenceOrder: every untracked ebook file
+// is queued, EPUB first so it makes the Calibre record, then KEPUB, AZW3,
+// MOBI, PDF and the rest by extension. A file the ledger holds in any state
+// is left alone.
+func TestSyncer_QueuesEveryFormatInPreferenceOrder(t *testing.T) {
 	books := &fakeBookLister{
 		books: []models.Book{
-			{ID: 1, Title: "Path", Status: models.BookStatusImported, EbookFilePath: "/l/p.epub"},
-			{ID: 2, Title: "Lowest", Status: models.BookStatusImported, FilePath: "/elsewhere/x.pdf"},
+			{ID: 1, Title: "Many", Status: models.BookStatusImported, EbookFilePath: "/l/m.pdf"},
+			{ID: 2, Title: "Recorded", Status: models.BookStatusImported, EbookFilePath: "/l/r.epub"},
 		},
 		files: map[int64][]models.BookFile{
-			1: {ebook(11, 1, "/l/p.azw3"), ebook(12, 1, "/l/p.epub")},
-			2: {ebook(22, 2, "/l/y.epub"), ebook(21, 2, "/l/x.epub")},
+			1: {
+				ebook(11, 1, "/l/m.pdf"), ebook(12, 1, "/l/m.mobi"), ebook(13, 1, "/l/m.epub"),
+				ebook(14, 1, "/l/m.cbz"), ebook(15, 1, "/l/m.azw3"), ebook(16, 1, "/l/m.kepub.epub"),
+				ebook(17, 1, "/l/m.azw"),
+			},
+			2: {ebook(21, 2, "/l/r.epub"), ebook(22, 2, "/l/r.pdf"), ebook(23, 2, "/l/r.mobi"), ebook(24, 2, "/l/r.azw3")},
 		},
 	}
-	s, _, queue := newTestSyncer(books)
+	s, ledger, queue := newTestSyncer(books)
+	ledger.add(models.CalibreDelivery{BookID: 2, BookFileID: 21, State: models.CalibreDeliveryPending})
+	ledger.add(models.CalibreDelivery{BookID: 2, BookFileID: 22, State: models.CalibreDeliverySkipped, Outcome: DeliverySkipNeedsAddFormat})
+	ledger.add(models.CalibreDelivery{BookID: 2, BookFileID: 23, State: models.CalibreDeliveryFailed})
+
 	runPushAll(t, s)
+
 	enqueued, _ := queue.calls()
-	sort.Slice(enqueued, func(i, j int) bool { return enqueued[i] < enqueued[j] })
-	if len(enqueued) != 2 || enqueued[0] != 12 || enqueued[1] != 21 {
-		t.Errorf("enqueued = %v, want [12 21]", enqueued)
+	want := []int64{13, 16, 15, 12, 11, 17, 14, 24}
+	if len(enqueued) != len(want) {
+		t.Fatalf("enqueued = %v, want %v", enqueued, want)
+	}
+	for i := range want {
+		if enqueued[i] != want[i] {
+			t.Fatalf("enqueued = %v, want %v", enqueued, want)
+		}
 	}
 }
 
@@ -558,3 +574,27 @@ func TestSyncer_EndToEndThroughTheWorker(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// A format the run added to an existing record was pushed by the run, not
+// already in Calibre.
+func TestSyncer_FormatAddedCountsAsPushed(t *testing.T) {
+	books := &fakeBookLister{
+		books: []models.Book{{ID: 1, Title: "Dune", Status: models.BookStatusImported, EbookFilePath: "/l/d.epub"}},
+		files: map[int64][]models.BookFile{1: {ebook(11, 1, "/l/d.epub"), ebook(12, 1, "/l/d.pdf")}},
+	}
+	s, ledger, _ := newTestSyncer(books)
+	runPushAll(t, s)
+	ledger.set(11, func(r *models.CalibreDelivery) {
+		r.State, r.Outcome = models.CalibreDeliveryDelivered, DeliveryOutcomeAdded
+	})
+	ledger.set(12, func(r *models.CalibreDelivery) {
+		r.State, r.Outcome = models.CalibreDeliveryDelivered, DeliveryOutcomeFormatAdded
+	})
+	p, err := s.Progress(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Stats.Pushed != 2 || p.Stats.AlreadyInCalibre != 0 {
+		t.Errorf("stats = %+v, want both files pushed", p.Stats)
+	}
+}

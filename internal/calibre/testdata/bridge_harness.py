@@ -103,17 +103,51 @@ class FakeNewAPI:
         self._next_id = 1
         self._by_identifier = {}
         self._books = {}
+        # The formats each row carries, upper case, as Calibre's formats()
+        # reports them. calibre-bridge 0.6.2 reads them to repair an empty
+        # row and 0.7.0 to add a second format (add_format).
+        self._formats = {}
 
     def add_books(self, entries, add_duplicates=False, run_hooks=True):
         ids = []
-        for mi, _formats in entries:
+        for mi, formats in entries:
             book_id = self._next_id
             self._next_id += 1
             for key, value in (getattr(mi, "identifiers", None) or {}).items():
                 self._by_identifier[(key, value)] = book_id
             self._books[book_id] = mi
+            self._formats[book_id] = {str(fmt).upper() for fmt in (formats or {})}
             ids.append(book_id)
         return ids, []
+
+    def formats(self, book_id, verify_formats=True):
+        return tuple(sorted(self._formats.get(book_id, ())))
+
+    def add_format(self, book_id, fmt, stream_or_path, replace=True, run_hooks=True, dbapi=None):
+        have = self._formats.setdefault(book_id, set())
+        fmt = str(fmt).upper()
+        if fmt in have and not replace:
+            return False
+        have.add(fmt)
+        return True
+
+    def field_for(self, name, book_id, default_value=None):
+        mi = self._books.get(book_id)
+        if mi is None:
+            return default_value
+        if name == "identifiers":
+            return dict(getattr(mi, "identifiers", None) or {})
+        return getattr(mi, name, default_value)
+
+    def remove_books(self, book_ids, permanent=False):
+        for book_id in book_ids:
+            self._books.pop(book_id, None)
+            self._formats.pop(book_id, None)
+            for key in [k for k, v in self._by_identifier.items() if v == book_id]:
+                del self._by_identifier[key]
+
+    def set_cover(self, book_id_data_map):
+        pass
 
     def search(self, query):
         match = IDENTIFIER_QUERY.match(query)

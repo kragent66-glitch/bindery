@@ -157,21 +157,30 @@ func TestImport_QueuesOneDeliveryPerEbookFileWithoutWaitingOnCalibre(t *testing.
 		t.Errorf("formats = %v, want epub and mobi in lower case", formats)
 	}
 
-	// The kick delivers them in the background once Calibre answers.
+	// The kick delivers them in the background once Calibre answers. The
+	// EPUB goes first and makes the record; calibredb cannot add a second
+	// format to it, so the MOBI is held back with the reason (#2832).
 	close(adder.gate)
 	deadline := time.Now().Add(10 * time.Second)
-	for adder.count() < 2 && time.Now().Before(deadline) {
+	for adder.count() < 1 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if stuck := group.Shutdown(10 * time.Second); len(stuck) != 0 {
 		t.Fatalf("delivery pass still running: %v", stuck)
 	}
-	if adder.count() != 2 {
-		t.Errorf("adds after the gate opened = %d, want 2", adder.count())
+	if adder.count() != 1 || filepath.Ext(adder.paths[0]) != ".epub" {
+		t.Errorf("adds after the gate opened = %v, want only the epub", adder.paths)
 	}
 	for _, r := range f.queued(t) {
-		if r.State != models.CalibreDeliveryDelivered {
-			t.Errorf("row %d state = %s, want delivered", r.ID, r.State)
+		switch r.Format {
+		case "epub":
+			if r.State != models.CalibreDeliveryDelivered {
+				t.Errorf("epub row state = %s, want delivered", r.State)
+			}
+		case "mobi":
+			if r.State != models.CalibreDeliverySkipped || r.Outcome != calibre.DeliverySkipNeedsAddFormat {
+				t.Errorf("mobi row = %s/%q, want skipped/%q", r.State, r.Outcome, calibre.DeliverySkipNeedsAddFormat)
+			}
 		}
 	}
 }

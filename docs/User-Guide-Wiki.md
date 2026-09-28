@@ -1042,6 +1042,14 @@ waiting, whether Calibre could be reached, and each failed book with its
 error; the book's own page shows **Waiting for Calibre**, **In Calibre** or
 **Calibre failed**.
 
+**Only one format of a book reached Calibre.**
+Bindery sends every ebook format of a book to the same Calibre record, which
+needs Bindery Bridge 0.7.0 or later. With an older plugin the first format
+arrives and the rest are skipped with the reason `bridge cannot add a second
+format; update the Calibre plugin to 0.7.0`. Update the plugin and restart
+Calibre; Bindery then delivers the skipped formats on its own
+([Calibre integration](Calibre-Integration-Wiki.md#deliveries-are-queued-and-retried)).
+
 **Audiobooks never appear in Calibre.**
 Expected. The Calibre write integration sends ebooks only, and **Push all to
 Calibre** lists an audiobook with no ebook under Skipped. Use Audiobookshelf

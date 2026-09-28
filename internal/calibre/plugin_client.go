@@ -39,6 +39,10 @@ const (
 	pluginCapabilityPathProbe      = "path_probe"
 	pluginCapabilityMetadataUpdate = "metadata_update"
 	pluginCapabilityErrorCodes     = "error_codes"
+	// pluginCapabilityAddFormat is calibre-bridge 0.7.0: POST /v1/books
+	// takes addFormat and can put a second file of the same Bindery book on
+	// the row the first file made, answering format_added (#2832).
+	pluginCapabilityAddFormat = "add_format"
 )
 
 // Machine readable error codes from calibre-bridge 0.6.0. A plugin older than
@@ -143,6 +147,36 @@ func (c *PluginClient) pushPathFor(filePath string) string {
 // Calibre book id. Retries a 503 (library swap in progress) on the
 // pluginRetryBackoff schedule; all other non-2xx statuses surface immediately.
 func (c *PluginClient) Add(ctx context.Context, filePath string, meta Metadata) (int64, error) {
+	res, err := c.AddWithOptions(ctx, filePath, meta, AddOptions{})
+	return res.ID, err
+}
+
+// AddOptions are the optional parts of a push.
+type AddOptions struct {
+	// AddFormat asks the plugin to put this file on the row an earlier push
+	// of the same Bindery book made, when that row lacks this format. It is
+	// only sent to a plugin that advertises add_format; to any other it is
+	// dropped and the push is exactly what Add sends.
+	AddFormat bool
+}
+
+// AddResult is what a push came to. ID is the Calibre book id, also set on
+// ErrAlreadyInCalibre when the plugin named the existing row. FormatAdded
+// is true when the file joined an existing row rather than making one.
+type AddResult struct {
+	ID          int64
+	FormatAdded bool
+}
+
+// AddWithOptions is Add with the optional request fields.
+func (c *PluginClient) AddWithOptions(ctx context.Context, filePath string, meta Metadata, opts AddOptions) (AddResult, error) {
+	addFormat := false
+	if opts.AddFormat {
+		// Only a plugin that says it understands addFormat gets it. A probe
+		// that fails drops it too: the push then behaves as it always has.
+		ok, err := c.hasCapability(ctx, pluginCapabilityAddFormat)
+		addFormat = err == nil && ok
+	}
 	legacyPayload := false
 	if !meta.empty() {
 		supported, err := c.hasCapability(ctx, pluginCapabilityBookMetadata)
@@ -164,7 +198,7 @@ func (c *PluginClient) Add(ctx context.Context, filePath string, meta Metadata) 
 	// Translate once, up front: addWithRetry recurses for the 503 and
 	// legacy-payload retries and must carry the already-translated paths.
 	meta.CoverPath = c.pushPathFor(meta.CoverPath)
-	return c.addWithRetry(ctx, c.pushPathFor(filePath), meta, 0, legacyPayload)
+	return c.addWithRetry(ctx, c.pushPathFor(filePath), meta, addFormat, 0, legacyPayload)
 }
 
 // pluginResult is the response envelope shared by every /v1/ endpoint.
@@ -179,6 +213,9 @@ type pluginResult struct {
 	// Code is the machine readable error code added in calibre-bridge 0.6.0.
 	// Empty from any older plugin.
 	Code string `json:"code"`
+	// FormatAdded is calibre-bridge 0.7.0: the file went onto a row that
+	// already existed. Absent, so false, on every other response.
+	FormatAdded bool `json:"format_added"`
 }
 
 // message renders the server's error for a Go error string, appending the
@@ -195,11 +232,11 @@ func (r pluginResult) message() string {
 	return "no error detail"
 }
 
-func (c *PluginClient) addWithRetry(ctx context.Context, filePath string, meta Metadata, attempt int, legacyPayload bool) (int64, error) {
-	body, _ := json.Marshal(pluginAddRequest{Path: filePath, Metadata: &meta, Legacy: legacyPayload})
+func (c *PluginClient) addWithRetry(ctx context.Context, filePath string, meta Metadata, addFormat bool, attempt int, legacyPayload bool) (AddResult, error) {
+	body, _ := json.Marshal(pluginAddRequest{Path: filePath, Metadata: &meta, AddFormat: addFormat, Legacy: legacyPayload})
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/books", bytes.NewReader(body))
 	if err != nil {
-		return 0, err
+		return AddResult{}, err
 	}
 	c.setHeaders(req, true)
 
@@ -208,42 +245,42 @@ func (c *PluginClient) addWithRetry(ctx context.Context, filePath string, meta M
 		// The plugin may have restarted at a different version; nothing the
 		// cache holds is trustworthy after a transport failure.
 		c.invalidateCapabilities()
-		return 0, fmt.Errorf("plugin client: %w", err)
+		return AddResult{}, fmt.Errorf("plugin client: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusServiceUnavailable && attempt < len(pluginRetryBackoff) {
 		select {
 		case <-ctx.Done():
-			return 0, ctx.Err()
+			return AddResult{}, ctx.Err()
 		case <-time.After(pluginRetryBackoff[attempt]):
 		}
-		return c.addWithRetry(ctx, filePath, meta, attempt+1, legacyPayload)
+		return c.addWithRetry(ctx, filePath, meta, addFormat, attempt+1, legacyPayload)
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		return 0, fmt.Errorf("plugin client: authentication failed, check api_key in Settings then Calibre")
+		return AddResult{}, fmt.Errorf("plugin client: authentication failed, check api_key in Settings then Calibre")
 	}
 
 	var result pluginResult
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil && resp.StatusCode < 400 {
-		return 0, fmt.Errorf("plugin client: decode response: %w", err)
+		return AddResult{}, fmt.Errorf("plugin client: decode response: %w", err)
 	}
 	if !legacyPayload && !meta.empty() && shouldRetryLegacy(resp.StatusCode, result) {
 		slog.Warn("plugin client: add rejected; retrying without the metadata object. Either the plugin cannot apply this metadata or it cannot open the file at the path Bindery sent, in which case set a push path remap in Settings then Calibre",
 			"status", resp.StatusCode, "code", result.Code, "error", result.Error, "path", filePath)
-		return c.addWithRetry(ctx, filePath, Metadata{}, attempt, true)
+		return c.addWithRetry(ctx, filePath, Metadata{}, addFormat, attempt, true)
 	}
 	if resp.StatusCode == http.StatusConflict {
 		// 409 means the book is already in the Calibre library. Surface the
 		// existing id (when the plugin includes it) so the caller can
 		// persist the linkage, but wrap ErrAlreadyInCalibre so idempotent
 		// callers can distinguish this from a real failure.
-		return result.ID, ErrAlreadyInCalibre
+		return AddResult{ID: result.ID}, ErrAlreadyInCalibre
 	}
 	if resp.StatusCode >= 400 {
-		return 0, &PluginError{Status: resp.StatusCode, Code: result.Code, Detail: result.message()}
+		return AddResult{}, &PluginError{Status: resp.StatusCode, Code: result.Code, Detail: result.message()}
 	}
-	return result.ID, nil
+	return AddResult{ID: result.ID, FormatAdded: result.FormatAdded}, nil
 }
 
 // PluginError is a rejection the plugin answered with: it was reached, read
@@ -316,19 +353,26 @@ func looksLikeFileError(msg string) bool {
 type pluginAddRequest struct {
 	Path     string    `json:"path"`
 	Metadata *Metadata `json:"metadata,omitempty"`
-	Legacy   bool      `json:"-"`
+	// AddFormat is sent only when true, so a push that does not ask for it
+	// is byte for byte what it was before add_format existed. It survives
+	// the legacy retry: that retry drops the metadata object, not the
+	// question of which row the file belongs on.
+	AddFormat bool `json:"-"`
+	Legacy    bool `json:"-"`
 }
 
 func (r pluginAddRequest) MarshalJSON() ([]byte, error) {
 	if r.Legacy || r.Metadata == nil || r.Metadata.empty() {
 		return json.Marshal(struct {
-			Path string `json:"path"`
-		}{Path: r.Path})
+			Path      string `json:"path"`
+			AddFormat bool   `json:"addFormat,omitempty"`
+		}{Path: r.Path, AddFormat: r.AddFormat})
 	}
 	return json.Marshal(struct {
-		Path     string   `json:"path"`
-		Metadata Metadata `json:"metadata"`
-	}{Path: r.Path, Metadata: *r.Metadata})
+		Path      string   `json:"path"`
+		Metadata  Metadata `json:"metadata"`
+		AddFormat bool     `json:"addFormat,omitempty"`
+	}{Path: r.Path, Metadata: *r.Metadata, AddFormat: r.AddFormat})
 }
 
 // UpdateMetadata applies meta to a Calibre row that already exists, via
@@ -595,6 +639,13 @@ func (c *PluginClient) SupportsPathProbe(ctx context.Context) bool {
 // SupportsMetadataUpdate reports whether PATCH /v1/books/{id} is available.
 func (c *PluginClient) SupportsMetadataUpdate(ctx context.Context) bool {
 	ok, err := c.hasCapability(ctx, pluginCapabilityMetadataUpdate)
+	return err == nil && ok
+}
+
+// SupportsAddFormat reports whether POST /v1/books takes addFormat, so a
+// second file of a Bindery book can join the row the first one made.
+func (c *PluginClient) SupportsAddFormat(ctx context.Context) bool {
+	ok, err := c.hasCapability(ctx, pluginCapabilityAddFormat)
 	return err == nil && ok
 }
 

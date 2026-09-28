@@ -70,8 +70,9 @@ const maxSyncErrors = 50
 const syncRemovedReason = "removed from the queue before it was delivered"
 
 // SyncStats summarises one Push all run, read from the delivery ledger.
-// Pushed counts the run's books that Calibre newly added; AlreadyInCalibre
-// counts the ones Calibre already had, including books delivered before this
+// Counts are per ebook file. Pushed counts the run's files Calibre newly took,
+// as a new record or as a format added to one; AlreadyInCalibre
+// counts the ones Calibre already had, including files delivered before this
 // run began; Failed counts the ones that failed for good (a retrying row is
 // still pending).
 type SyncStats struct {
@@ -149,7 +150,7 @@ type EditionLister interface {
 }
 
 // Syncer is "Push all to Calibre" (#2832). It no longer talks to Calibre: it
-// queues every eligible book's ebook file that the delivery ledger does not
+// queues every ebook file of every eligible book that the delivery ledger does not
 // already hold and kicks the delivery worker, which does the sending,
 // retrying and recording. Status is read back from the ledger, so what the
 // modal reports is what the worker actually did.
@@ -167,7 +168,8 @@ type Syncer struct {
 	run *syncRun
 }
 
-// trackedFile is one book the run follows through the ledger.
+// trackedFile is one ebook file the run follows through the ledger. A book
+// with several formats has one per file.
 type trackedFile struct {
 	bookID int64
 	title  string
@@ -342,21 +344,25 @@ func (s *Syncer) queueAll(ctx context.Context, run *syncRun) {
 			}
 			continue
 		}
-		// A book whose ebook is already in the ledger is not queued again.
-		// Above all a delivered one: sending a second format of the same
-		// book would add a duplicate record, and extra formats are the
-		// plugin's add_format job, not this one's.
-		if row, file, ok := recordedFile(ebooks, byFile); ok {
-			track(b, file, row.State == models.CalibreDeliveryDelivered)
-			continue
+		// Every ebook file is queued, in format preference order, so the
+		// preferred one makes the Calibre record and the worker adds the
+		// rest to it as further formats. A file the ledger already holds is
+		// never queued again, in any state: a delivered one is in Calibre,
+		// a pending one is queued, and a failed or skipped one waits for
+		// Retry.
+		sortEbooksByPreference(ebooks)
+		for _, file := range ebooks {
+			if row, ok := byFile[file.ID]; ok {
+				track(b, file, row.State == models.CalibreDeliveryDelivered)
+				continue
+			}
+			if _, err := s.queue.Enqueue(ctx, b.ID, file.ID, nil, file.Path); err != nil {
+				recordFailure(b, "queueing failed: "+err.Error())
+				continue
+			}
+			track(b, file, false)
+			queued++
 		}
-		file := pickPushFile(ebooks, pushPath(b))
-		if _, err := s.queue.Enqueue(ctx, b.ID, file.ID, nil, file.Path); err != nil {
-			recordFailure(b, "queueing failed: "+err.Error())
-			continue
-		}
-		track(b, file, false)
-		queued++
 	}
 
 	// Books that never reached the eligible list at all. ListByStatus filters
@@ -397,48 +403,19 @@ func (s *Syncer) queueAll(ctx context.Context, run *syncRun) {
 	}
 }
 
-// recordedFile returns the ledger row that speaks for a book, if any of its
-// ebook files has one: delivered first, then pending, failed and skipped.
-func recordedFile(ebooks []models.BookFile, byFile map[int64]models.CalibreDelivery) (models.CalibreDelivery, models.BookFile, bool) {
-	rank := map[models.CalibreDeliveryState]int{
-		models.CalibreDeliveryDelivered: 0,
-		models.CalibreDeliveryPending:   1,
-		models.CalibreDeliveryFailed:    2,
-		models.CalibreDeliverySkipped:   3,
-	}
-	var best models.CalibreDelivery
-	var bestFile models.BookFile
-	found := false
-	for _, f := range ebooks {
-		row, ok := byFile[f.ID]
-		if !ok {
-			continue
+// sortEbooksByPreference orders a book's ebook files the way they should
+// reach Calibre: by format preference, then by id within a format.
+func sortEbooksByPreference(ebooks []models.BookFile) {
+	sort.SliceStable(ebooks, func(i, j int) bool {
+		a, b := ebooks[i], ebooks[j]
+		if lessByFormatPreference(a.Path, b.Path) {
+			return true
 		}
-		if !found || rank[row.State] < rank[best.State] {
-			best, bestFile, found = row, f, true
+		if lessByFormatPreference(b.Path, a.Path) {
+			return false
 		}
-	}
-	return best, bestFile, found
-}
-
-// pickPushFile is the ebook file Push all sends for a book: the one the book
-// reports as its ebook path, else the lowest id ebook row. It is the same
-// pick migration 095 used to backfill the ledger.
-func pickPushFile(ebooks []models.BookFile, path string) models.BookFile {
-	clean := ""
-	if strings.TrimSpace(path) != "" {
-		clean = filepath.Clean(path)
-	}
-	pick := ebooks[0]
-	for _, f := range ebooks {
-		if clean != "" && filepath.Clean(f.Path) == clean {
-			return f
-		}
-		if f.ID < pick.ID {
-			pick = f
-		}
-	}
-	return pick
+		return a.ID < b.ID
+	})
 }
 
 // Progress reports the latest run, reading each of its rows from the ledger.
@@ -512,7 +489,7 @@ func (s *Syncer) Progress(ctx context.Context) (SyncProgress, error) {
 		case row.State == models.CalibreDeliveryPending:
 			pending++
 		case row.State == models.CalibreDeliveryDelivered:
-			if tf.f.before || row.Outcome != DeliveryOutcomeAdded {
+			if tf.f.before || (row.Outcome != DeliveryOutcomeAdded && row.Outcome != DeliveryOutcomeFormatAdded) {
 				p.Stats.AlreadyInCalibre++
 			} else {
 				p.Stats.Pushed++

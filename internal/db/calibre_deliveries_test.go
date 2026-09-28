@@ -471,3 +471,54 @@ func TestCalibreDeliveryListAllByBookAndWithBooks(t *testing.T) {
 		t.Errorf("empty list = %#v, %v; want a non-nil empty slice", empty, err)
 	}
 }
+
+// RearmSkipped re-queues only skipped rows with exactly the given reason.
+func TestCalibreDeliveryRearmSkipped(t *testing.T) {
+	f := newDeliveryFixture(t, 4)
+	ctx := context.Background()
+	const reason = "bridge cannot add a second format; update the Calibre plugin to 0.7.0"
+	held := f.enqueue(t, 0)
+	other := f.enqueue(t, 1)
+	failed := f.enqueue(t, 2)
+	pending := f.enqueue(t, 3)
+	if err := f.repo.MarkSkipped(ctx, held.ID, reason); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.MarkSkipped(ctx, other.ID, "file missing on disk"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.MarkFailed(ctx, failed.ID, "bad_format", "nope", f.clock, true); err != nil {
+		t.Fatal(err)
+	}
+
+	has, err := f.repo.HasSkipped(ctx, reason)
+	if err != nil || !has {
+		t.Fatalf("HasSkipped = %v, %v; want true", has, err)
+	}
+	if has, _ := f.repo.HasSkipped(ctx, "no such reason"); has {
+		t.Error("HasSkipped matched a reason no row has")
+	}
+
+	f.clock = f.clock.Add(time.Hour)
+	n, err := f.repo.RearmSkipped(ctx, reason)
+	if err != nil || n != 1 {
+		t.Fatalf("RearmSkipped = %d, %v; want 1", n, err)
+	}
+	got, _ := f.repo.Get(ctx, held.ID)
+	if got.State != models.CalibreDeliveryPending || got.Outcome != "" || got.Attempts != 0 || !got.NextAttemptAt.Equal(f.clock) {
+		t.Errorf("re-armed row = %+v, want pending, due now, no outcome", got)
+	}
+	for id, want := range map[int64]models.CalibreDeliveryState{
+		other.ID: models.CalibreDeliverySkipped, failed.ID: models.CalibreDeliveryFailed, pending.ID: models.CalibreDeliveryPending,
+	} {
+		if got, _ := f.repo.Get(ctx, id); got.State != want {
+			t.Errorf("row %d = %s, want %s untouched", id, got.State, want)
+		}
+	}
+	if has, _ := f.repo.HasSkipped(ctx, reason); has {
+		t.Error("HasSkipped still true after the rearm")
+	}
+	if n, err := f.repo.RearmSkipped(ctx, reason); err != nil || n != 0 {
+		t.Errorf("second RearmSkipped = %d, %v; want 0", n, err)
+	}
+}

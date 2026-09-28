@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,9 @@ type DeliveryStore interface {
 	MarkFailed(ctx context.Context, id int64, code, msg string, nextAttemptAt time.Time, terminal bool) error
 	MarkSkipped(ctx context.Context, id int64, reason string) error
 	DeliveredByCalibreID(ctx context.Context, calibreID int64) ([]models.CalibreDelivery, error)
+	ListByBook(ctx context.Context, bookID int64) ([]models.CalibreDelivery, error)
+	RearmSkipped(ctx context.Context, reason string) (int64, error)
+	HasSkipped(ctx context.Context, reason string) (bool, error)
 }
 
 // DeliveryBooks is the subset of *db.BookRepo the worker uses.
@@ -49,10 +53,20 @@ type metadataUpdater interface {
 	UpdateMetadata(ctx context.Context, id int64, meta Metadata) ([]string, error)
 }
 
+// formatAdder is a client that can put a second file of a Bindery book on
+// the Calibre row the first one made (calibre-bridge 0.7.0, add_format).
+type formatAdder interface {
+	SupportsAddFormat(ctx context.Context) bool
+	AddWithOptions(ctx context.Context, filePath string, meta Metadata, opts AddOptions) (AddResult, error)
+}
+
 // Delivery outcomes recorded on the ledger row.
 const (
 	DeliveryOutcomeAdded   = "added"
 	DeliveryOutcomeAlready = "already"
+	// DeliveryOutcomeFormatAdded is a file that joined the Calibre row an
+	// earlier file of the same book made, as another format of it.
+	DeliveryOutcomeFormatAdded = "format_added"
 )
 
 // Skip reasons recorded on the ledger row.
@@ -60,6 +74,12 @@ const (
 	deliverySkipBookGone = "book removed"
 	deliverySkipFileGone = "file removed"
 	deliverySkipNoFile   = "file missing on disk"
+	// DeliverySkipNeedsAddFormat is a second format of a book Calibre already
+	// has, held back because the target cannot add a format to an existing
+	// row. The worker re-queues these rows by this exact text once the
+	// bridge advertises add_format, so it must not change casually: rows
+	// already skipped under the old text would never be re-armed.
+	DeliverySkipNeedsAddFormat = "bridge cannot add a second format; update the Calibre plugin to 0.7.0"
 )
 
 const (
@@ -71,6 +91,11 @@ const (
 	deliveryHealthTimeout = 5 * time.Second
 	// deliveryMaxAttempts is the attempt that gives up for good.
 	deliveryMaxAttempts = 8
+	// deliveryIdleRearmInterval is how often an otherwise idle queue asks
+	// the bridge whether it can now add formats, while rows are skipped for
+	// want of that. The ask is one health request; the interval keeps it
+	// from becoming one a minute for as long as the plugin is old.
+	deliveryIdleRearmInterval = 15 * time.Minute
 )
 
 // deliveryBackoff is the wait after the Nth failed attempt (index N-1). Past
@@ -130,6 +155,9 @@ type Deliverer struct {
 	now      func() time.Time
 
 	mu sync.Mutex
+	// idleRearmAt is when an idle pass last probed the bridge on behalf of
+	// rows skipped for want of add_format. Guarded by mu.
+	idleRearmAt time.Time
 
 	healthMu sync.Mutex
 	health   DeliveryHealth
@@ -281,6 +309,9 @@ type deliveryTarget struct {
 	adder   Adder
 	cfg     Config
 	library string
+	// addFormat is true when the bridge advertised add_format at the start
+	// of the pass. Never true for calibredb.
+	addFormat bool
 }
 
 func (d *Deliverer) pass(ctx context.Context) {
@@ -296,7 +327,7 @@ func (d *Deliverer) pass(ctx context.Context) {
 		slog.Warn("calibre delivery: reading the queue failed", "error", err)
 		return
 	}
-	if len(rows) == 0 {
+	if len(rows) == 0 && !d.idleRearmDue(ctx, mode) {
 		return
 	}
 	adder := d.adderFor(mode)
@@ -325,7 +356,15 @@ func (d *Deliverer) pass(ctx context.Context) {
 		}
 		d.noteReachable(true, "")
 		target.library = state.Library
+		if fa, ok := adder.(formatAdder); ok && fa.SupportsAddFormat(ctx) {
+			target.addFormat = true
+			rows = d.rearmFormatSkips(ctx, rows)
+		}
 	}
+	if len(rows) == 0 {
+		return
+	}
+	orderDeliveries(rows)
 
 	var delivered, failed, gaveUp, skipped int
 	for i := range rows {
@@ -391,8 +430,34 @@ func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, ta
 		return d.fail(ctx, row, book, "file_unreadable", err)
 	}
 
+	// A book Calibre already holds a file of gets this file as another
+	// format of the same record, which only a bridge with add_format can do.
+	// Without it the file would be refused as a duplicate at best, so it is
+	// held back with a reason that is re-armed once the bridge can.
+	secondary, err := d.hasDeliveredSibling(ctx, row, target.library)
+	if err != nil {
+		if ctx.Err() != nil {
+			return deliveryStop
+		}
+		slog.Warn("calibre delivery: reading the book's deliveries failed", "bookId", book.ID, "error", err)
+		return deliveryUntouched
+	}
+	if secondary && !target.addFormat {
+		return d.skip(ctx, row, DeliverySkipNeedsAddFormat)
+	}
+
 	meta := d.metadata(ctx, book, row, path, target)
-	id, addErr := target.adder.Add(ctx, path, meta)
+	// The plugin client is asked through AddWithOptions even for a first
+	// format, so a format_added answer is seen either way: 0.7.0 also gives
+	// it when a push repairs a row a failed add left empty.
+	var res AddResult
+	var addErr error
+	if fa, ok := target.adder.(formatAdder); ok {
+		res, addErr = fa.AddWithOptions(ctx, path, meta, AddOptions{AddFormat: secondary})
+	} else {
+		res.ID, addErr = target.adder.Add(ctx, path, meta)
+	}
+	id := res.ID
 	// Once Calibre has the book, the result is recorded even if shutdown
 	// cancelled ctx while the add was in flight. Losing it would only cost a
 	// 409 on the next start, but there is no reason to lose it.
@@ -402,11 +467,15 @@ func (d *Deliverer) deliver(ctx context.Context, row *models.CalibreDelivery, ta
 	}
 	switch {
 	case addErr == nil:
-		if err := d.store.MarkDelivered(record, row.ID, id, DeliveryOutcomeAdded, target.library); err != nil {
+		outcome := DeliveryOutcomeAdded
+		if res.FormatAdded {
+			outcome = DeliveryOutcomeFormatAdded
+		}
+		if err := d.store.MarkDelivered(record, row.ID, id, outcome, target.library); err != nil {
 			return d.lostRow(row, err)
 		}
 		d.recordSourceID(record, book, id, target)
-		slog.Debug("calibre delivery: book added", "bookId", book.ID, "calibreId", id, "path", path)
+		slog.Debug("calibre delivery: book added", "bookId", book.ID, "calibreId", id, "path", path, "outcome", outcome)
 		return deliveryDelivered
 	case errors.Is(addErr, ErrAlreadyInCalibre):
 		// Ownership is read from the ledger before this row joins it, so
@@ -602,6 +671,89 @@ func (d *Deliverer) edition(ctx context.Context, book *models.Book, row *models.
 		}
 	}
 	return editionForFile(editions, book, path)
+}
+
+// hasDeliveredSibling reports whether another file of row's book is already
+// delivered to this target, which makes row a second format of a book
+// Calibre holds. A backfilled row has no target recorded and counts, the
+// same rule owns applies.
+func (d *Deliverer) hasDeliveredSibling(ctx context.Context, row *models.CalibreDelivery, library string) (bool, error) {
+	rows, err := d.store.ListByBook(ctx, row.BookID)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range rows {
+		if r.ID == row.ID || r.BookFileID == row.BookFileID || r.State != models.CalibreDeliveryDelivered {
+			continue
+		}
+		if strings.TrimSpace(r.TargetLibrary) == "" || cleanLibraryPath(r.TargetLibrary) == cleanLibraryPath(library) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// idleRearmDue reports whether a pass with nothing due should still ask the
+// bridge about add_format: rows are waiting on it, and the last idle ask was
+// long enough ago. Called with mu held.
+func (d *Deliverer) idleRearmDue(ctx context.Context, mode Mode) bool {
+	if mode != ModePlugin {
+		return false
+	}
+	now := d.now()
+	if !d.idleRearmAt.IsZero() && now.Sub(d.idleRearmAt) < deliveryIdleRearmInterval {
+		return false
+	}
+	waiting, err := d.store.HasSkipped(ctx, DeliverySkipNeedsAddFormat)
+	if err != nil {
+		slog.Debug("calibre delivery: reading skipped rows failed", "error", err)
+		return false
+	}
+	if !waiting {
+		return false
+	}
+	d.idleRearmAt = now
+	return true
+}
+
+// rearmFormatSkips re-queues the rows skipped because the bridge could not
+// add a format, now that it can, and returns the due batch including them.
+// One UPDATE per pass; it touches nothing when there is nothing to re-arm.
+func (d *Deliverer) rearmFormatSkips(ctx context.Context, rows []models.CalibreDelivery) []models.CalibreDelivery {
+	n, err := d.store.RearmSkipped(ctx, DeliverySkipNeedsAddFormat)
+	if err != nil {
+		slog.Warn("calibre delivery: re-queueing formats held for a plugin update failed", "error", err)
+		return rows
+	}
+	if n == 0 {
+		return rows
+	}
+	slog.Info("calibre delivery: the Calibre plugin can now add formats; re-queued the formats held for it", "rows", n)
+	due, err := d.store.DueBatch(ctx, d.now(), deliveryBatchSize)
+	if err != nil {
+		slog.Warn("calibre delivery: reading the queue failed", "error", err)
+		return rows
+	}
+	return due
+}
+
+// orderDeliveries puts each book's files in format preference order, so the
+// preferred format makes the Calibre record and the others join it. Books
+// keep the order they came in, and so does everything within one format.
+func orderDeliveries(rows []models.CalibreDelivery) {
+	first := make(map[int64]int, len(rows))
+	for i, r := range rows {
+		if _, ok := first[r.BookID]; !ok {
+			first[r.BookID] = i
+		}
+	}
+	sort.SliceStable(rows, func(i, j int) bool {
+		a, b := rows[i], rows[j]
+		if a.BookID != b.BookID {
+			return first[a.BookID] < first[b.BookID]
+		}
+		return lessByFormatPreference(a.FilePath, b.FilePath)
+	})
 }
 
 // isDeliveryUnreachable reports whether err means Calibre could not be

@@ -10,7 +10,7 @@ This runbook connects Bindery to the Calibre desktop app on a Windows PC through
 |---|---|
 | Bindery with its library on a network share the PC can open, for example `\\nas\media\books` | Bindery sends Calibre a file path, not the file. Calibre has to open that path itself |
 | Calibre desktop running on the PC | The plugin runs inside Calibre and only listens while Calibre is open |
-| Bindery Bridge plugin **0.6.2 or later** | Older versions fail on long share paths and can leave empty records behind (see [Troubleshooting](#troubleshooting)) |
+| Bindery Bridge plugin **0.7.0 or later** | 0.7.0 puts every format of a book on the same Calibre record. Before 0.6.2 the plugin fails on long share paths and can leave empty records behind (see [Troubleshooting](#troubleshooting)) |
 | Admin rights on the PC | For the firewall rule |
 | Access to your router's DHCP settings | For a fixed address |
 
@@ -30,7 +30,7 @@ You will also need the path of the same folder as Bindery sees it inside its con
 
 ## 2. Install the Bindery Bridge plugin
 
-1. Download `calibre-bridge-vX.Y.Z.zip` and `calibre-bridge-vX.Y.Z.zip.sha256` from [the plugin releases](https://github.com/vavallee/bindery-plugins/releases). Take 0.6.2 or later.
+1. Download `calibre-bridge-vX.Y.Z.zip` and `calibre-bridge-vX.Y.Z.zip.sha256` from [the plugin releases](https://github.com/vavallee/bindery-plugins/releases). Take 0.7.0 or later.
 2. Check the download in a Command Prompt, in the folder that holds both files:
 
    ```

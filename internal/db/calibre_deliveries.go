@@ -183,6 +183,37 @@ func (r *CalibreDeliveryRepo) Retry(ctx context.Context, state models.CalibreDel
 	return res.RowsAffected()
 }
 
+// RearmSkipped puts the skipped rows whose recorded reason is exactly reason
+// back in the queue, due now, with attempts and the last error reset. It is
+// for a skip that a change on the Calibre side undoes, such as the bridge
+// gaining a capability it lacked. Every other skipped row is left alone. It
+// returns the number of rows re-queued.
+func (r *CalibreDeliveryRepo) RearmSkipped(ctx context.Context, reason string) (int64, error) {
+	now := calibreDeliveryTime(r.now())
+	res, err := r.db.ExecContext(ctx, `
+		UPDATE calibre_deliveries
+		SET state = 'pending', attempts = 0, last_error = '', last_error_code = '',
+		    outcome = '', next_attempt_at = ?, updated_at = ?
+		WHERE state = 'skipped' AND outcome = ?`, now, now, reason)
+	if err != nil {
+		return 0, fmt.Errorf("calibre deliveries rearm skipped: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// HasSkipped reports whether any skipped row records exactly reason. The
+// worker asks it while the queue is idle, to decide whether a rearm is worth
+// a request to Calibre.
+func (r *CalibreDeliveryRepo) HasSkipped(ctx context.Context, reason string) (bool, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx, `
+		SELECT EXISTS(SELECT 1 FROM calibre_deliveries WHERE state = 'skipped' AND outcome = ?)`, reason).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("calibre deliveries has skipped: %w", err)
+	}
+	return n != 0, nil
+}
+
 // ClearPending drops every pending row, emptying the queue without touching
 // the record of what was delivered, failed or skipped.
 func (r *CalibreDeliveryRepo) ClearPending(ctx context.Context) (int64, error) {

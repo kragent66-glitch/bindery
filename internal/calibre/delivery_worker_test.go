@@ -31,18 +31,43 @@ type fakeBridge struct {
 	supportsPatch bool
 	supportsCover bool
 	patches       map[int64]Metadata
+	// supportsAddFormat is the add_format capability; addFormats records
+	// what each push asked for, and addWith, when set, answers a push that
+	// asked for it instead of add.
+	supportsAddFormat bool
+	addFormats        []bool
+	addWith           func(path string) (AddResult, error)
 }
 
-func (f *fakeBridge) Add(_ context.Context, path string, meta Metadata) (int64, error) {
+func (f *fakeBridge) Add(ctx context.Context, path string, meta Metadata) (int64, error) {
+	res, err := f.AddWithOptions(ctx, path, meta, AddOptions{})
+	return res.ID, err
+}
+
+func (f *fakeBridge) SupportsAddFormat(context.Context) bool {
 	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.supportsAddFormat
+}
+
+// AddWithOptions behaves like the real client: addFormat reaches the
+// "plugin" only when the capability is advertised.
+func (f *fakeBridge) AddWithOptions(_ context.Context, path string, meta Metadata, opts AddOptions) (AddResult, error) {
+	f.mu.Lock()
+	sent := opts.AddFormat && f.supportsAddFormat
 	f.adds = append(f.adds, path)
 	f.metas = append(f.metas, meta)
-	add := f.add
+	f.addFormats = append(f.addFormats, sent)
+	add, addWith := f.add, f.addWith
 	f.mu.Unlock()
-	if add == nil {
-		return 0, errors.New("unexpected add")
+	if sent && addWith != nil {
+		return addWith(path)
 	}
-	return add(path)
+	if add == nil {
+		return AddResult{}, errors.New("unexpected add")
+	}
+	id, err := add(path)
+	return AddResult{ID: id}, err
 }
 
 func (f *fakeBridge) HealthDetail(context.Context) (HealthState, error) {
@@ -280,7 +305,9 @@ func TestDeliverer_ModeOffDoesNothing(t *testing.T) {
 // Settings takes effect on the next pass rather than on the next restart.
 func TestDeliverer_ResolvesTheAdderPerPass(t *testing.T) {
 	cli := &fakeCalibredb{add: added(1)}
-	bridge := &fakeBridge{add: added(2), health: HealthState{Library: "/lib"}}
+	// b.epub is a second file of a book a.epub already delivered, so the
+	// bridge must be able to add a format for it to be sent at all.
+	bridge := &fakeBridge{add: added(2), health: HealthState{Library: "/lib"}, supportsAddFormat: true}
 	f := newWorkerFixture(t, ModeCalibredb, nil)
 	f.d.adderFor = func(m Mode) Adder {
 		if m == ModePlugin {
@@ -368,7 +395,7 @@ func TestDeliverer_409MarksAlreadyAndOwnershipComesFromTheLedger(t *testing.T) {
 	conflict := func(string) (int64, error) { return 55, ErrAlreadyInCalibre }
 
 	t.Run("books.calibre_id alone is not ownership", func(t *testing.T) {
-		bridge := &fakeBridge{add: conflict, supportsPatch: true, health: HealthState{Library: "/lib"}}
+		bridge := &fakeBridge{add: conflict, supportsPatch: true, supportsAddFormat: true, health: HealthState{Library: "/lib"}}
 		f := newWorkerFixture(t, ModePlugin, bridge)
 		if err := f.books.SetCalibreID(f.ctx, f.book.ID, 55); err != nil {
 			t.Fatal(err)
@@ -385,7 +412,7 @@ func TestDeliverer_409MarksAlreadyAndOwnershipComesFromTheLedger(t *testing.T) {
 	})
 
 	t.Run("an earlier delivery of this book owns it", func(t *testing.T) {
-		bridge := &fakeBridge{add: conflict, supportsPatch: true, health: HealthState{Library: "/lib"}}
+		bridge := &fakeBridge{add: conflict, supportsPatch: true, supportsAddFormat: true, health: HealthState{Library: "/lib"}}
 		f := newWorkerFixture(t, ModePlugin, bridge)
 		first := f.addFile(t, "a.epub")
 		if err := f.repo.MarkDelivered(f.ctx, first.ID, 55, DeliveryOutcomeAdded, "/lib"); err != nil {
@@ -407,7 +434,7 @@ func TestDeliverer_409MarksAlreadyAndOwnershipComesFromTheLedger(t *testing.T) {
 	})
 
 	t.Run("a delivery to another library does not own it", func(t *testing.T) {
-		bridge := &fakeBridge{add: conflict, supportsPatch: true, health: HealthState{Library: "/lib"}}
+		bridge := &fakeBridge{add: conflict, supportsPatch: true, supportsAddFormat: true, health: HealthState{Library: "/lib"}}
 		f := newWorkerFixture(t, ModePlugin, bridge)
 		first := f.addFile(t, "a.epub")
 		if err := f.repo.MarkDelivered(f.ctx, first.ID, 55, DeliveryOutcomeAdded, "/old-lib"); err != nil {
@@ -421,7 +448,7 @@ func TestDeliverer_409MarksAlreadyAndOwnershipComesFromTheLedger(t *testing.T) {
 	})
 
 	t.Run("a backfilled row owns it", func(t *testing.T) {
-		bridge := &fakeBridge{add: conflict, supportsPatch: true, health: HealthState{Library: "/lib"}}
+		bridge := &fakeBridge{add: conflict, supportsPatch: true, supportsAddFormat: true, health: HealthState{Library: "/lib"}}
 		f := newWorkerFixture(t, ModePlugin, bridge)
 		first := f.addFile(t, "a.epub")
 		if err := f.repo.MarkDelivered(f.ctx, first.ID, 55, "backfilled", ""); err != nil {
@@ -435,7 +462,7 @@ func TestDeliverer_409MarksAlreadyAndOwnershipComesFromTheLedger(t *testing.T) {
 	})
 
 	t.Run("no update without the capability", func(t *testing.T) {
-		bridge := &fakeBridge{add: conflict, supportsPatch: false, health: HealthState{Library: "/lib"}}
+		bridge := &fakeBridge{add: conflict, supportsPatch: false, supportsAddFormat: true, health: HealthState{Library: "/lib"}}
 		f := newWorkerFixture(t, ModePlugin, bridge)
 		first := f.addFile(t, "a.epub")
 		if err := f.repo.MarkDelivered(f.ctx, first.ID, 55, DeliveryOutcomeAdded, "/lib"); err != nil {
