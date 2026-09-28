@@ -76,6 +76,9 @@ type unmatchedScanFile struct {
 	author       string
 	layoutAuthor string
 	reason       string
+	// layoutTitle is the cleaned book folder name, "" when the file has
+	// none. Candidate ranking reads the volume number from it (#2860).
+	layoutTitle string
 }
 
 // unmatchedCollector gathers unmatched files up to maxUnmatchedFiles.
@@ -257,6 +260,7 @@ func groupUnmatched(files []unmatchedScanFile, roots []string) (groups []unmatch
 		// the book is the folder above it, so the unit is named after that.
 		if a.folder != "" && filepath.Dir(a.members[0].path) != a.folder {
 			rep.title = cleanLayoutTitle(filepath.Base(a.folder))
+			rep.layoutTitle = rep.title
 		}
 		u.ParsedTitle, u.ParsedAuthor, u.Reason = rep.title, rep.author, rep.reason
 		groups = append(groups, unmatchedGroup{unit: u, rep: rep})
@@ -335,7 +339,13 @@ func eligibleUnmatched(files []unmatchedScanFile, roots []string) []unmatchedSca
 // every reconcile candidate when the file named no author. In that last case
 // titles of wildly different length are skipped, the same cheap gate the
 // reconcile uses. No provider is asked anything.
-func rankCandidates(normParsed string, wanted []scanBook, byAuthor map[int64][]int, authorSet map[int64]bool) []db.UnmatchedCandidate {
+//
+// A book that is provably another volume of the same series is never
+// suggested, by the same rule the reconcile applies (libraryVolumeConflict):
+// volume 1's folder scores 0.983 against a wanted volume 17, and offering it
+// as the top suggestion would invite the user to adopt it there (#2860).
+func rankCandidates(title, layoutTitle string, wanted []scanBook, byAuthor map[int64][]int, authorSet map[int64]bool) []db.UnmatchedCandidate {
+	normParsed := normalizeTitle(title)
 	if normParsed == "" {
 		return nil
 	}
@@ -343,6 +353,9 @@ func rankCandidates(normParsed string, wanted []scanBook, byAuthor map[int64][]i
 	consider := func(sb *scanBook) {
 		score := textutil.JaroWinkler(sb.normTitle, normParsed)
 		if score < candidateThreshold {
+			return
+		}
+		if libraryVolumeConflict(title, layoutTitle, sb.book.Title) {
 			return
 		}
 		out = append(out, db.UnmatchedCandidate{BookID: sb.book.ID, Score: score})
@@ -395,7 +408,7 @@ type unitCounts struct {
 // recordUnmatchedUnits groups a finished scan's unmatched files and stores
 // them. candidatesFor ranks suggestions for one unit's representative parse.
 func (s *Scanner) recordUnmatchedUnits(ctx context.Context, c *unmatchedCollector, roots, rootsWithFiles []string, startedAt time.Time,
-	candidatesFor func(title, author, layoutAuthor string) []db.UnmatchedCandidate) unitCounts {
+	candidatesFor func(title, layoutTitle, author, layoutAuthor string) []db.UnmatchedCandidate) unitCounts {
 	if s.unmatchedUnits == nil {
 		return unitCounts{}
 	}
@@ -403,7 +416,7 @@ func (s *Scanner) recordUnmatchedUnits(ctx context.Context, c *unmatchedCollecto
 	units := make([]db.UnmatchedUnitScan, len(groups))
 	for i, g := range groups {
 		units[i] = g.unit
-		units[i].Candidates = candidatesFor(g.rep.title, g.rep.author, g.rep.layoutAuthor)
+		units[i].Candidates = candidatesFor(g.rep.title, g.rep.layoutTitle, g.rep.author, g.rep.layoutAuthor)
 	}
 	truncated := c.truncated || unitsTruncated
 	// A truncated scan did not see every unit, so it removes and purges

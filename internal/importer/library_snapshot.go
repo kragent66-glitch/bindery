@@ -9,7 +9,6 @@ import (
 	"sync"
 
 	"github.com/vavallee/bindery/internal/models"
-	"github.com/vavallee/bindery/internal/seriesmatch"
 )
 
 // LibrarySnapshot answers FindExisting queries from one walk of each library
@@ -94,24 +93,14 @@ func (ls *LibrarySnapshot) FindExisting(ctx context.Context, title, authorName, 
 			if !authorMatch(authorName, e.author) {
 				continue
 			}
-			// The volume comes from the book folder when the folder carries
-			// a number, and from the filename otherwise. A numbered folder
-			// is the better evidence on both sides of #2810: in a Libation
-			// layout it is the only place the number appears, and beside
-			// track files named "Defiance of the Fall 01.mp3" inside
-			// "Defiance of the Fall 7" the filename's number counts tracks,
-			// so letting it veto would lose the book's own files.
-			folder, wanted := volumeTitles(e.layoutTitle, title)
-			if carriesVolumeNumber(folder) {
-				if seriesmatch.DifferentVolumes(folder, wanted) {
-					continue
-				}
-				if titleWordsMatch(e.title, title) {
-					return e.path
-				}
+			// A numbered book folder settles the volume before the filename
+			// is read, so track numbers never veto a book's own files
+			// (#2810). libraryVolumeConflict is the same rule the library
+			// scan applies (#2860).
+			if libraryVolumeConflict(e.title, e.layoutTitle, title) {
 				continue
 			}
-			if titleMatch(e.title, title) {
+			if titleWordsMatch(e.title, title) {
 				return e.path
 			}
 		}

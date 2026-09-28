@@ -57,3 +57,39 @@ func carriesVolumeNumber(s string) bool {
 	}
 	return trailingDigitRe.MatchString(s)
 }
+
+// libraryVolumeConflict reports whether a library file is provably a different
+// volume of a series from the wanted title, so no title similarity may pair
+// them. It is the one volume rule for every matcher that pairs a library file
+// with a catalogue book: FindExisting on the add path (#2810), the library
+// scan's title tier (#2860) and the scan's adoption suggestions.
+//
+// fileTitle is what the file itself says (its name, or its tags in the scan);
+// folderTitle is the cleaned book folder name, "" when the file has none.
+//
+// The volume comes from the book folder when the folder carries a number, and
+// from the file otherwise. A numbered folder is the better evidence on both
+// sides of #2810: in a Libation layout ("Defiance of the Fall 01/Defiance of
+// the Fall_B094JZMCJX_….m4b") it is the only place the number appears, and
+// beside track files named "Defiance of the Fall 01.mp3" inside "Defiance of
+// the Fall 7" the filename's number counts tracks, so letting it veto would
+// lose the book's own files. Either way the comparison is
+// seriesmatch.DifferentVolumes after volumeTitles, so a one-sided "Part N"
+// never stands in for a series position, and a number that is part of a
+// title ("Fahrenheit 451", "Catch-22") never vetoes its own book.
+//
+// A file title that normalises to the wanted title is never a conflict, which
+// keeps titleMatch's exact fast path ahead of its veto.
+func libraryVolumeConflict(fileTitle, folderTitle, wanted string) bool {
+	if wanted == "" {
+		return false
+	}
+	folder, w := volumeTitles(folderTitle, wanted)
+	if carriesVolumeNumber(folder) {
+		return seriesmatch.DifferentVolumes(folder, w)
+	}
+	if fileTitle == "" || normalizeTitle(fileTitle) == normalizeTitle(wanted) {
+		return false
+	}
+	return differentVolumes(fileTitle, wanted)
+}

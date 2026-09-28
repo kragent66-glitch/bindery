@@ -3359,7 +3359,12 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 	// the folder, not the track that matched (see reconciledAudiobookPath); for
 	// everything else it is the file. Set per file in the loop below.
 	var registeredPath string
-	tryReconcileTitle := func(sb *scanBook, path, cleanPath, normParsed, detectedFmt string) bool {
+	// fileLayoutTitle is the cleaned book folder name of the file being
+	// processed, "" when it has none. The title tier reads the volume number
+	// from it before the file's own title (see libraryVolumeConflict). Set per
+	// file in the loop below.
+	var fileLayoutTitle string
+	tryReconcileTitle := func(sb *scanBook, path, cleanPath, title, normParsed, detectedFmt string) bool {
 		b := sb.book
 		// Length gate: Jaro-Winkler is bounded above by 0.8 + 0.2·(minLen/
 		// maxLen), so a score >= 0.85 is impossible once the shorter normalised
@@ -3375,6 +3380,19 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		// reconciling the wrong book after a delete+rescan (#343).
 		jwScore := textutil.JaroWinkler(sb.normTitle, normParsed)
 		if jwScore < 0.85 {
+			return false
+		}
+		// Two volumes of one series clear any similarity threshold:
+		// "Defiance of the Fall 17" against "Defiance of the Fall 01" scores
+		// 0.983. Without this an untracked volume 1 folder was reconciled onto
+		// a wanted volume 17, which flipped to imported with the wrong file
+		// and was never searched (#2860). The number is read from the book
+		// folder when it carries one, the same rule FindExisting applies on
+		// the add path (#2810). Checked before the claim so a vetoed book
+		// never sets claimBlocked: it is not a book this file matches.
+		if libraryVolumeConflict(title, fileLayoutTitle, b.Title) {
+			slog.Debug("library scan: title match rejected (different series volume)",
+				"title", b.Title, "path", path, "fileTitle", title, "folderTitle", fileLayoutTitle, "jw", jwScore)
 			return false
 		}
 		// This book already took a file of this format earlier in the pass. The
@@ -3426,7 +3444,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		authorSet, _ := resolveAuthors(author, layoutAuthor)
 		if authorSet == nil {
 			for i := range wantedBooks {
-				if tryReconcileTitle(&wantedBooks[i], path, cleanPath, normParsed, detectedFmt) {
+				if tryReconcileTitle(&wantedBooks[i], path, cleanPath, title, normParsed, detectedFmt) {
 					return true
 				}
 			}
@@ -3438,7 +3456,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		}
 		slices.Sort(titleCand) // restore library order across authors
 		for _, idx := range titleCand {
-			if tryReconcileTitle(&wantedBooks[idx], path, cleanPath, normParsed, detectedFmt) {
+			if tryReconcileTitle(&wantedBooks[idx], path, cleanPath, title, normParsed, detectedFmt) {
 				return true
 			}
 		}
@@ -3528,6 +3546,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 				parsed.Title = scanTitle(parsed.Title, t, detectedFmt)
 			}
 		}
+		fileLayoutTitle = layoutTitle
 
 		// Prefer embedded audio tags over filename and folder parsing for
 		// audiobook files. Well-tagged M4B/MP3 releases carry the author,
@@ -3710,7 +3729,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 			unmatched++
 			unmatchedFiles.add(unmatchedScanFile{
 				path: path, format: detectedFmt, size: walked[path].size, mode: walked[path].mode,
-				title: parsed.Title, author: parsed.Author, layoutAuthor: layoutAuthor, reason: reason,
+				title: parsed.Title, layoutTitle: layoutTitle, author: parsed.Author, layoutAuthor: layoutAuthor, reason: reason,
 			})
 		}
 	}
@@ -3734,9 +3753,9 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 	// Suggestions come from the catalogue already in memory, ranked once per
 	// unit rather than per file.
 	units := s.recordUnmatchedUnits(ctx, &unmatchedFiles, scanRoots, rootsWithFiles, scanStartedAt,
-		func(title, author, layoutAuthor string) []db.UnmatchedCandidate {
+		func(title, layoutTitle, author, layoutAuthor string) []db.UnmatchedCandidate {
 			authorSet, _ := resolveAuthors(author, layoutAuthor)
-			return rankCandidates(normalizeTitle(title), wantedBooks, booksByAuthor, authorSet)
+			return rankCandidates(title, layoutTitle, wantedBooks, booksByAuthor, authorSet)
 		})
 
 	s.writeScanResult(ctx, len(foundFiles), reconciled, unmatched, alreadyTracked, tagReadFailed, units)

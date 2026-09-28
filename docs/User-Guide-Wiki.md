@@ -502,6 +502,11 @@ to the records. Things worth knowing before you judge the results:
   layout, adding volume 17 no longer attaches volume 1's file and skips the
   search (#2810). A file that already belongs to another book is never
   attached to the new one either; the new book stays wanted and is searched.
+- The library scan follows the same volume rule. An untracked `Defiance of
+  the Fall 01` folder is never attached to a wanted volume 17, however alike
+  the titles look; it goes to volume 1 if that book is in your library, and
+  otherwise waits on **Import → In your library**, where volume 17 is not
+  offered as its suggestion either (#2860).
 
 ## Adopting files already in your library
 
