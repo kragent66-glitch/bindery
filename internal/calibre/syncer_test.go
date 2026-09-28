@@ -503,8 +503,10 @@ func TestSyncer_Start_RejectsConcurrentQueueing(t *testing.T) {
 	if err := s.Start(ModePlugin); !errors.Is(err, ErrSyncAlreadyRunning) {
 		t.Fatalf("second start while queueing: err = %v, want ErrSyncAlreadyRunning", err)
 	}
+	// Closing the gate is enough: a receive on a closed channel returns at
+	// once. Setting books.gate = nil here raced with the queueing goroutine
+	// reading it.
 	close(gate)
-	books.gate = nil
 	waitUntil(t, 2*time.Second, func() bool {
 		s.mu.Lock()
 		defer s.mu.Unlock()

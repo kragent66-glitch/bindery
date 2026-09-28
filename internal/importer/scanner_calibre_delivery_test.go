@@ -161,8 +161,20 @@ func TestImport_QueuesOneDeliveryPerEbookFileWithoutWaitingOnCalibre(t *testing.
 	// EPUB goes first and makes the record; calibredb cannot add a second
 	// format to it, so the MOBI is held back with the reason (#2832).
 	close(adder.gate)
+	// Wait for the pass to settle both rows before shutting the group down:
+	// Shutdown cancels the pass, and under the race detector that used to
+	// land between the EPUB and the MOBI, leaving the MOBI pending.
 	deadline := time.Now().Add(10 * time.Second)
-	for adder.count() < 1 && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		settled := 0
+		for _, r := range f.queued(t) {
+			if r.State != models.CalibreDeliveryPending {
+				settled++
+			}
+		}
+		if settled == 2 {
+			break
+		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	if stuck := group.Shutdown(10 * time.Second); len(stuck) != 0 {
