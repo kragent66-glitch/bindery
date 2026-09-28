@@ -1,36 +1,36 @@
 # Calibre on a Windows desktop
 
-This runbook connects Bindery to the Calibre desktop app on a Windows PC through the [Bindery Bridge plugin](https://github.com/vavallee/bindery-plugins). It is written from a real setup: Bindery in a container with its library on a NAS share, and Calibre 9 on Windows 11. For how the plugin fits alongside the other ways of reaching Calibre, see [Calibre and Calibre-Web-Automated](Calibre-Integration-Wiki.md).
+This runbook connects Bindery to the Calibre desktop app on a Windows PC through the [Bindery Bridge plugin](https://github.com/vavallee/bindery-plugins). It is written from real setups: Bindery in a container with its library on a NAS share, Bindery in WSL on the same PC, and Calibre 9 on Windows 11. For how the plugin fits alongside the other ways of reaching Calibre, see [Calibre and Calibre-Web-Automated](Calibre-Integration-Wiki.md).
 
-**What you end up with.** Every ebook Bindery imports is added to your Calibre library while Calibre is open, and your existing Bindery library can be pushed across in one run. From Calibre you can then send books to an e-reader.
+**What you end up with.** Every ebook Bindery imports is added to your Calibre library, and your existing Bindery library can be sent across in one run. Calibre does not have to be open when a book is imported: Bindery keeps it in a delivery queue until Calibre can take it. From Calibre you can then send books to an e-reader.
+
+## Choose a transport
+
+The plugin can be reached two ways. You pick one on the Calibre tab under **Transport** (`calibre.plugin_transport`).
+
+| Transport | How it works | Use it when |
+|---|---|---|
+| **Pull** | Calibre fetches from Bindery. The plugin connects out to Bindery, downloads each waiting book over HTTP(S) and adds it | Recommended for a desktop Calibre. It needs no shared drive, no path remap, no inbound firewall rule and no fixed address for the PC. Needs plugin **0.8.0 or later** |
+| **Push** | Bindery sends paths to Calibre. Bindery connects to the plugin and hands it each book's file path, and Calibre opens that path itself | Calibre runs in a container or on a server that already sees the Bindery library |
+
+Both go through the same delivery queue, so retries, **Push all to Calibre**, books with several formats and the Calibre tab's **Delivery queue** panel work the same either way. Switching from one to the other later never makes a second copy of a book: a book Calibre already has is recognised as already there.
 
 **What you need.**
 
-| Item | Why |
-|---|---|
-| Bindery with its library on a network share the PC can open, for example `\\nas\media\books` | Bindery sends Calibre a file path, not the file. Calibre has to open that path itself |
-| Calibre desktop running on the PC | The plugin runs inside Calibre and only listens while Calibre is open |
-| Bindery Bridge plugin **0.7.0 or later** | 0.7.0 puts every format of a book on the same Calibre record. Before 0.6.2 the plugin fails on long share paths and can leave empty records behind (see [Troubleshooting](#troubleshooting)) |
-| Admin rights on the PC | For the firewall rule |
-| Access to your router's DHCP settings | For a fixed address |
+| Item | Pull | Push | Why |
+|---|---|---|---|
+| Calibre desktop on the PC | Yes | Yes | The plugin runs inside Calibre. Books wait in Bindery's queue while Calibre is closed |
+| Bindery Bridge plugin | 0.8.0 or later | 0.7.0 or later | 0.8.0 adds pull. 0.7.0 puts every format of a book on the same Calibre record. Before 0.6.2 the plugin fails on long share paths and can leave empty records behind (see [Troubleshooting](#troubleshooting)) |
+| A Bindery URL the PC can open | Yes | No | The plugin connects to it. Use HTTPS when Bindery is not on the same machine (see [Keep the key safe in pull mode](#keep-the-key-safe-in-pull-mode)) |
+| Bindery's library on a network share the PC can open, for example `\\nas\media\books` | No | Yes | In push Bindery sends a file path, not the file, so Calibre has to open that path itself |
+| Admin rights on the PC | No | Yes | For the inbound firewall rule |
+| Access to your router's DHCP settings | No | Yes | For a fixed address |
 
-## 1. Find the share address Calibre can open
+## Install the Bindery Bridge plugin
 
-Do not use a mapped drive letter. A mapped drive such as `Z:` belongs to the Windows logon session that created it, so Explorer can show `Z:\books` while the running Calibre cannot see it at all. In the real setup `Z:\books` probed as not existing and the share address worked first time.
+Both transports start here.
 
-Find the share address behind the drive letter from a Command Prompt:
-
-```
-net use
-```
-
-The **Remote** column shows it, for example `Z:  \\nas\media`. Your books folder is then `\\nas\media\books`. Paste that into the Explorer address bar to confirm it opens. If the NAS asks for a login, tick **Remember my credentials** so Calibre, which runs as you, can use the same login.
-
-You will also need the path of the same folder as Bindery sees it inside its container, which is `BINDERY_LIBRARY_DIR` (for example `/books`). The two together make the push path remap in step 6.
-
-## 2. Install the Bindery Bridge plugin
-
-1. Download `calibre-bridge-vX.Y.Z.zip` and `calibre-bridge-vX.Y.Z.zip.sha256` from [the plugin releases](https://github.com/vavallee/bindery-plugins/releases). Take 0.7.0 or later.
+1. Download `calibre-bridge-vX.Y.Z.zip` and `calibre-bridge-vX.Y.Z.zip.sha256` from [the plugin releases](https://github.com/vavallee/bindery-plugins/releases). Take 0.8.0 or later for pull, 0.7.0 or later for push.
 2. Check the download in a Command Prompt, in the folder that holds both files:
 
    ```
@@ -43,9 +43,66 @@ You will also need the path of the same folder as Bindery sees it inside its con
    - or close Calibre and run `"C:\Program Files\Calibre2\calibre-customize.exe" -a calibre-bridge-vX.Y.Z.zip`
 4. Restart Calibre. Calibre only loads a new plugin, or a new version of one, after a restart. Upgrading later is the same steps.
 
-## 3. Configure the plugin
+The plugin's settings are under **Preferences, Plugins, User plugins, Bindery Bridge, Customize**, and are stored in `%APPDATA%\calibre\plugins\bindery_bridge.json`.
 
-Open **Preferences, Plugins, User plugins, Bindery Bridge, Customize**.
+## Set up pull
+
+1. **Open the right library in Calibre.** Pull delivers only to the library that is open when you turn it on, and pauses while any other library is open, so books never land in the wrong one.
+2. **Make a key in the plugin.** Open the plugin's **Customize** dialog, click **Generate** next to **API key**, then **Show**, and copy the key. Leave the dialog open.
+3. **Set Bindery to pull.** In Bindery open **Settings, Calibre tab**:
+
+   | Field | Value |
+   |---|---|
+   | **Write integration** (`calibre.mode`) | **Calibre Bridge plugin** |
+   | **Transport** (`calibre.plugin_transport`) | **Pull: Calibre fetches books from Bindery** |
+   | **API key** (`calibre.plugin_api_key`) | The key you copied. Save it with the button next to the field |
+
+   **Plugin URL** and **Push path remap** disappear in pull; they are not used. The key must be at least 16 characters, and Bindery refuses every pull request while it is shorter or empty; a generated key is 64. The same key goes into the plugin, and it authenticates both directions.
+4. **Turn pull on in the plugin.** Back in the **Customize** dialog, under **Pull from Bindery**:
+
+   | Setting | Value |
+   |---|---|
+   | **Pull mode** | Tick **Fetch books from Bindery (pull mode)** |
+   | **Bindery URL** | The address you open Bindery at, including any URL base (`BINDERY_URL_BASE`), for example `https://bindery.example.net` or `http://192.168.1.20:8787/bindery`. When Bindery runs on this same PC in WSL or Docker Desktop, use `http://127.0.0.1:8787`, not `localhost` (see [Troubleshooting](#pull-troubleshooting)) |
+   | **CA file** | Leave empty unless Bindery's certificate comes from your own certificate authority or is self signed. Then point it at that certificate as a PEM file. There is no setting that turns certificate checks off |
+
+   **Listen port** and **Bind host** belong to push. The push server keeps running in pull mode; if you only use pull you can set **Bind host** to `127.0.0.1` so it only answers the PC itself.
+5. **Click OK.** Saving starts a pull at once, with no restart. After that the plugin checks Bindery every 60 seconds by default.
+6. **Confirm it works.** Reopen **Customize** and read **Pull status**. It should say `Connected to Bindery; nothing waiting`, or `Connected to Bindery; N of M delivered in the last pass`. In Bindery the **Delivery queue** panel on the Calibre tab should say **Calibre last checked in** with a time, and **Test connection** reports the same with the plugin version. "Calibre has not checked in since Bindery started" means the plugin has not reached Bindery yet; see [Pull troubleshooting](#pull-troubleshooting). The check in time is held in memory, so it is blank after a Bindery restart until the plugin's next check.
+
+Then send your existing library across with [Push all to Calibre](#send-your-existing-library).
+
+## Keep the key safe in pull mode
+
+- **The key opens your queue.** Anyone who holds it can list and download every book waiting for Calibre. The plugin sends it to whatever Bindery URL you configure, so a plugin pointed at a wrong or hostile URL hands that server your key. Only enter a Bindery URL you trust, and change the key in both places if it ever went somewhere else.
+- **Use HTTPS when Bindery is not on the same machine.** Over plain `http` the key and every book cross the network unencrypted. The plugin warns about this in its status when the URL is plain `http` to anything but the PC itself. It also refuses redirects, so the key is never forwarded to a second address.
+- **Certificate checks cannot be turned off.** For a private certificate authority or a self signed certificate, give the plugin the certificate in **CA file**.
+- **The plugin key and the Bindery API key are separate.** The Bindery API key and a browser session are refused on the bridge routes, and the plugin key is refused everywhere under `/api/v1`. The plugin key is required in every auth mode, including Disabled and Local only.
+- **Repeated wrong keys are rate limited.** Too many bad keys from one address get `429` with a `Retry-After` header, on a counter separate from the login form, so a plugin with an old key cannot lock you out of the web UI. A plugin that hits the limit waits as long as Bindery asks.
+
+The routes are documented in [API.md](API.md#calibre-bridge-pull).
+
+## Set up push
+
+Use push when Calibre can open the Bindery library by path. On a desktop PC that means a network share, an inbound firewall rule and a fixed address, which is what the steps below cover.
+
+### 1. Find the share address Calibre can open
+
+Do not use a mapped drive letter. A mapped drive such as `Z:` belongs to the Windows logon session that created it, so Explorer can show `Z:\books` while the running Calibre cannot see it at all. In the real setup `Z:\books` probed as not existing and the share address worked first time.
+
+Find the share address behind the drive letter from a Command Prompt:
+
+```
+net use
+```
+
+The **Remote** column shows it, for example `Z:  \\nas\media`. Your books folder is then `\\nas\media\books`. Paste that into the Explorer address bar to confirm it opens. If the NAS asks for a login, tick **Remember my credentials** so Calibre, which runs as you, can use the same login.
+
+You will also need the path of the same folder as Bindery sees it inside its container, which is `BINDERY_LIBRARY_DIR` (for example `/books`). The two together make the push path remap in step 5.
+
+### 2. Configure the plugin
+
+In the plugin's **Customize** dialog:
 
 | Setting | Value | Notes |
 |---|---|---|
@@ -53,9 +110,9 @@ Open **Preferences, Plugins, User plugins, Bindery Bridge, Customize**.
 | Bind host | `0.0.0.0` (the default) | Listens on every interface, which is what lets the Bindery host reach it. `127.0.0.1` would only accept connections from the PC itself |
 | API key | Click **Generate** | Copy it now; Bindery needs the same key |
 
-The settings are stored in `%APPDATA%\calibre\plugins\bindery_bridge.json`. The plugin refuses to serve its API on a non loopback bind host with an empty key, so leaving the key blank on `0.0.0.0` does not open anything; it just stops the plugin working.
+Leave **Pull mode** unticked. The plugin refuses to serve its API on a non loopback bind host with an empty key, so leaving the key blank on `0.0.0.0` does not open anything; it just stops the plugin working.
 
-## 4. Let the Bindery host through the firewall
+### 3. Let the Bindery host through the firewall
 
 Do not assume a rule already exists. On the test machine the rules named "The main calibre program" were not made by the Calibre installer: Windows created them from its **Allow access** prompt the first time `calibre.exe` listened on a port, and they applied only to the Public profile. A home network is usually Private, so those rules did nothing for it.
 
@@ -74,13 +131,13 @@ New-NetFirewallRule -DisplayName "Bindery Bridge" -Direction Inbound -Protocol T
 
 Change `192.168.1.0/24` to your own subnet. The rule Windows makes from its prompt allows any remote address on any port Calibre opens, which is broader than the plugin needs. A Block rule for Calibre on the active profile wins over any Allow rule, so if the check above shows one, disable it.
 
-## 5. Give the PC a fixed address
+### 4. Give the PC a fixed address
 
 The plugin URL in Bindery names the PC by its address, and a PC normally gets its address from DHCP, which can change it. In your router, add a DHCP reservation for the PC so it always gets the same one, for example `192.168.1.50`. Find the current address with `ipconfig` (the **IPv4 Address** line for the adapter you use).
 
-## 6. Point Bindery at the plugin
+### 5. Point Bindery at the plugin
 
-In Bindery open **Settings, Calibre tab, Write integration** and choose **Calibre Bridge plugin**. Then fill in:
+In Bindery open **Settings, Calibre tab**, set **Write integration** to **Calibre Bridge plugin** and **Transport** to **Push: Bindery sends books to Calibre**. Then fill in:
 
 | Field | Value |
 |---|---|
@@ -90,15 +147,15 @@ In Bindery open **Settings, Calibre tab, Write integration** and choose **Calibr
 
 Type the backslashes once, exactly as you would in Explorer. The left side is the library path inside the Bindery container, not a path on the PC. If Bindery has more than one library root on the share, add a pair for each, separated by commas.
 
-Changes take effect on the next import; Bindery does not need a restart.
+Changes take effect on the next delivery run; Bindery does not need a restart.
 
-## 7. Run Test connection
+### 6. Run Test connection
 
 Click **Test connection** under the Calibre settings. It checks three things in turn: that the plugin answers, that Calibre can see the library root through your remap, and that Calibre can read one real book from your library through the same remap. The last check matters because a remap can reach the root and still produce broken paths for the books under it.
 
 | Message | What it means | Fix |
 |---|---|---|
-| `plugin client: health: ...` followed by `connection refused`, `i/o timeout` or `Client.Timeout exceeded` | Bindery could not reach the plugin | Check that Calibre is open, the firewall rule from step 4 covers the active profile, the Plugin URL has the right address and port, and that neither the PC nor Bindery sits behind a VPN that drops LAN traffic ([Running Bindery behind a VPN](DEPLOYMENT.md#running-bindery-behind-a-vpn-network_mode-service)) |
+| `plugin client: health: ...` followed by `connection refused`, `i/o timeout` or `Client.Timeout exceeded` | Bindery could not reach the plugin | Check that Calibre is open, the firewall rule from step 3 covers the active profile, the Plugin URL has the right address and port, and that neither the PC nor Bindery sits behind a VPN that drops LAN traffic ([Running Bindery behind a VPN](DEPLOYMENT.md#running-bindery-behind-a-vpn-network_mode-service)) |
 | `plugin client: authentication failed, check api_key in Settings then Calibre` | The plugin answered but rejected the key | Copy the key from the plugin's Customize dialog into Bindery again |
 | `the plugin answered but is not serving the API: ...` | The plugin refused to start its API, usually because the key is empty on a `0.0.0.0` bind | Generate a key in the plugin and restart Calibre |
 | `plugin reachable, but the Calibre container cannot see "..."` | Calibre cannot open the library root your remap produces | Check the right side of the remap is the share address from step 1, not a drive letter, and that it opens in Explorer on the PC |
@@ -108,26 +165,38 @@ Click **Test connection** under the Calibre settings. It checks three things in 
 | `plugin reachable, and it can read ... and the book at "..."` | It works | Carry on |
 | `... No imported book was found to test, so only the library root was checked.` | It works as far as it can tell | Test again after the first import |
 
-If the result also carries a warning that the Bindery Bridge version is older than 0.6.2, update the plugin (step 2) before pushing: 0.6.1 fixes long network share paths and 0.6.2 fixes the empty books a failed add can leave behind.
+If the result also carries a warning that the Bindery Bridge version is older than 0.6.2, update the plugin ([Install the Bindery Bridge plugin](#install-the-bindery-bridge-plugin)) before sending anything: 0.6.1 fixes long network share paths and 0.6.2 fixes the empty books a failed add can leave behind.
 
 The message says "container" whatever Calibre runs in. On Windows read it as "the PC".
 
-## 8. Push your existing library
+## Send your existing library
 
-**Push all to Calibre** appears under the test button in plugin mode. It puts every imported, monitored book that has an ebook file into Bindery's delivery queue, and the queue sends them to the plugin. A book the queue already holds is left alone, so a book delivered earlier is never sent twice. Calibre does not have to be open when you click it: queued books wait and go out once the plugin answers. The progress window reads the queue and has four tiles:
+**Push all to Calibre** appears on the Calibre tab in plugin mode, with either transport. Despite the name it sends nothing itself: it puts every ebook file of every imported, monitored book that the delivery queue does not hold yet into the queue, and the queue delivers them. In push Bindery sends them once the plugin answers; in pull the plugin takes them at its next check. Calibre does not have to be open when you click it.
+
+Running it again is safe. A book the queue already holds, delivered or not, is left alone, so a book delivered earlier is never sent twice. For the same reason a rerun does not retry failures: use **Retry failed** for those.
+
+The progress window reads the queue and has four tiles, counted per file:
 
 | Tile | Meaning |
 |---|---|
-| **Pushed** | Added to Calibre in this run |
+| **Pushed** | Added to Calibre in this run, as a new record or as a format added to one |
 | **Already in Calibre** | Matched a book Calibre already had, or was delivered by Bindery before this run, and was left alone |
 | **Failed** | Calibre refused it; the table under the tiles gives the reason for each (see [Troubleshooting](#troubleshooting)) |
 | **Skipped** | Imported books the run left out, each with a reason: `not monitored`, `no file on disk`, `audiobook only with no ebook` or `ebook file not tracked`. Books not yet imported are not listed, since they have no file to send |
 
-While books are still waiting the window says how many, and you can close it; the queue keeps going. The same numbers stay on the Calibre tab under **Delivery queue**: waiting, delivered and failed counts, when the last book was delivered, and whether Calibre was reachable the last time Bindery had something to send. The **Failed deliveries** table below it lists every failed book with its code, Calibre's error, the attempts and the last try.
+While books are still waiting the window says how many, and you can close it; the queue keeps going. The first run on the real push setup sent 1,540 books, found 337 already in Calibre and failed 17. All 17 were fixed by plugin 0.6.1 and 0.6.2, and retrying them picked them up.
 
-A failed book is not retried by running Push all again. Fix the cause, then click **Retry failed** under the queue: that is the recovery step for almost everything on this page. The first run on the real setup pushed 1,540 books, found 337 already in Calibre and failed 17. All 17 were fixed by plugin 0.6.1 and 0.6.2, and retrying them picked them up.
+## Watch the delivery queue
 
-## 9. Get books onto a Kobo
+The **Delivery queue** panel on the Calibre tab shows how many books are **Waiting**, **Delivered** and **Failed**, and when the last one was delivered. In push it also says whether Calibre was reachable the last time Bindery had something to send, with the error when it was not; in pull it says when Calibre last checked in. Below it the **Failed deliveries** table lists every failed book with its code, the error, the attempts and the last try. A book's own page shows **Waiting for Calibre**, **In Calibre** or **Calibre failed**.
+
+| Button | What it does |
+|---|---|
+| **Retry failed** | Puts every failed book back in the queue. Fix the cause first; this is the recovery step for almost everything on this page |
+| **Clear waiting** | Drops every book still waiting. The record of what was already delivered is kept |
+| **Reset delivery state** | Forgets every delivery, without touching either library. Only for pointing Bindery at a different Calibre library: afterwards run **Push all to Calibre** to fill the new one |
+
+## Get books onto a Kobo
 
 Bindery stops at Calibre; Calibre does the device side.
 
@@ -139,28 +208,61 @@ Reading Bindery's library on an e-reader directly over OPDS is not covered here 
 
 ## What to expect day to day
 
-- **Books imported while Calibre is closed wait for it.** Bindery queues every imported ebook and delivers it once the plugin answers, within about a minute of Calibre running again. Nothing to do on your side. A book Calibre keeps rejecting is retried with growing gaps and marked failed after 8 attempts; see [Deliveries are queued and retried](Calibre-Integration-Wiki.md#deliveries-are-queued-and-retried).
+- **Books imported while Calibre is closed wait for it.** Bindery queues every imported ebook and delivers it when Calibre is reachable: in push within about a minute of Calibre running again, in pull at the plugin's next check, 60 seconds by default. Nothing to do on your side.
+- **Failed deliveries are retried with backoff.** A book Calibre answers with an error is tried again after 1 minute, 5 minutes, 15 minutes, 1 hour, 6 hours and then daily, and marked failed after 8 attempts. Two errors are marked failed at once because waiting cannot fix them: `bad_format` and `path_forbidden`. See [Deliveries are queued and retried](Calibre-Integration-Wiki.md#deliveries-are-queued-and-retried).
+- **Every ebook format of a book lands on the same Calibre record** with plugin 0.7.0 or later, EPUB first and the others added to it. With an older plugin the first format arrives and the others are held with the reason `bridge cannot add a second format; update the Calibre plugin to 0.7.0`, then delivered on their own once the plugin is updated.
 - **Ebooks only.** Audiobooks are never sent to Calibre. Use Audiobookshelf for those.
-- **Every book exists twice on disk.** Calibre copies each file into its own library folder, so the Bindery copy on the share and the Calibre copy both stay. That is what keeps Calibre's own edits and conversions away from Bindery's files.
+- **Every book exists twice on disk.** Calibre copies each file into its own library folder, so the Bindery copy and the Calibre copy both stay. That is what keeps Calibre's own edits and conversions away from Bindery's files.
 - **Never point Calibre's Auto-add folder at the Bindery library.** Auto-add removes the files it adds, so it would empty Bindery's library into Calibre's.
 
 ## Troubleshooting
 
+### Pull troubleshooting
+
+Read the plugin's **Pull status** first (reopen **Customize** to refresh it), then the **Delivery queue** panel in Bindery.
+
+**Pull status says `Bindery is set to push; switch Settings, Calibre, Transport to Pull`.** Bindery answered but is not in pull mode. On the Calibre tab set **Write integration** to **Calibre Bridge plugin** and **Transport** to **Pull**. The plugin checks again every five minutes while Bindery says push; click OK in its **Customize** dialog to try at once.
+
+**Pull status says `Bindery rejected the API key; set the same key here and in Bindery Settings, Calibre`.** Bindery answered `401`: the key in the plugin and the key in Bindery differ, or Bindery's key is shorter than 16 characters. Copy the key into both again. After a rejected key the plugin waits an hour before trying again; click OK in its **Customize** dialog to retry at once.
+
+**Pull status says `Bindery asked the plugin to slow down`.** Bindery answered `429`: too many requests with a wrong key came from that address. The plugin waits as long as Bindery's `Retry-After` says, at most an hour, then carries on. Fix the key if it is wrong; the first request with the right key after the wait clears the count.
+
+**Pull status says `Paused: a different library is open`.** Pull only delivers to the library that was open when it was turned on. Switch back to that library, or untick pull, click OK, then tick it again with the right library open.
+
+**Pull status says `Cannot reach Bindery; retrying with backoff`.** The plugin got no answer, or a server error. Check that the **Bindery URL** opens in a browser on the PC. While Bindery stays unreachable the plugin waits longer between tries, up to 15 minutes. `This Bindery has no pull routes; update Bindery or check the URL` means the URL reached a server without the pull routes: a Bindery older than the pull release, or a URL missing its URL base.
+
+**Pull status says `Bindery redirected the request`.** Something in front of Bindery answered with a redirect, for example from `http` to `https`, and the plugin never follows one. Set the **Bindery URL** to the address the redirect pointed at.
+
+**Pull status warns `Bindery URL is plain http`.** The key and the books cross the network unencrypted. Fine when Bindery is on the same trusted LAN; use HTTPS otherwise (see [Keep the key safe in pull mode](#keep-the-key-safe-in-pull-mode)).
+
+**Every request from the plugin takes about 20 seconds.** The **Bindery URL** says `localhost` and Bindery runs in WSL or Docker Desktop on the same PC. Windows tries IPv6 `::1` first, the forwarding into WSL or Docker drops that connection silently, and Windows falls back to IPv4 only after about 21 seconds. Use `http://127.0.0.1:8787`, or the machine's address, instead of `localhost`.
+
+**Books fail with `path_forbidden`.** The book's file is outside Bindery's library folders (`BINDERY_LIBRARY_DIR`, `BINDERY_AUDIOBOOK_DIR` or a root folder), and Bindery will not serve a file from anywhere else. Move or import the book into the library, then click **Retry failed**. It is marked failed at once rather than retried, because waiting cannot fix it.
+
+### Push troubleshooting
+
 **`[Errno 22] Invalid argument` on a path that starts with `\\?\\\`.** The share path is long, over about 200 characters, and Calibre builds an invalid long path form for a network path. Fixed in plugin 0.6.1. Upgrade the plugin, restart Calibre and click **Retry failed** on the Calibre tab.
 
-**Push all says "Already in Calibre" but the Calibre record has no file.** An earlier failed add left an empty record behind, and the next push matched it. Plugin 0.6.2 removes the record when an add fails, and attaches the file to an existing empty record on the next push. Upgrade and restart Calibre. Bindery has recorded those books as delivered, so Push all on its own will not send them again: click **Reset delivery state** on the Calibre tab, confirm, then run **Push all to Calibre**. With plugin 0.6.0 or later that is safe, because every book Calibre already has comes back as already in Calibre instead of being added twice.
+**Test connection passes but deliveries still fail.** Read the reason in the **Failed deliveries** table on the Calibre tab (or the Failed table in the Push all window). A path error there usually means the remap covers the library root but the book sits under a different root folder; add a pair for that root, then click **Retry failed**.
+
+**Books sit in Waiting and nothing arrives.** The **Delivery queue** panel says `Calibre not reachable` with the error Bindery got. Calibre is closed, the plugin URL or key is wrong, or the firewall is in the way. Once that is fixed the books go out within about a minute.
+
+**The plugin stopped answering after a Windows update or a network change.** Windows may have moved the network to a different profile. Rerun the checks in [step 3](#3-let-the-bindery-host-through-the-firewall), or switch to pull, which needs no inbound rule.
+
+### Either transport
+
+**Push all says "Already in Calibre" but the Calibre record has no file.** An earlier failed add left an empty record behind, and the next delivery matched it. Plugin 0.6.2 removes the record when an add fails, and attaches the file to an existing empty record on the next delivery. Upgrade and restart Calibre. Bindery has recorded those books as delivered, so Push all on its own will not send them again: click **Reset delivery state** on the Calibre tab, confirm, then run **Push all to Calibre**. With plugin 0.6.0 or later that is safe, because every book Calibre already has comes back as already in Calibre instead of being added twice.
 
 **`Cannot determine book format from extension` with a folder path.** Bindery recorded a folder as the book's ebook file, and the plugin cannot add a folder. In the real case the folder held an audiobook of a different book, so the fix is in Bindery, not the plugin: open the book, look at its **Files**, use **Forget this file** on the wrong entry, and import the right ebook.
 
-**Test connection passes but pushes still fail.** Read the reason in the **Failed deliveries** table on the Calibre tab (or the Failed table in the Push all window). A path error there usually means the remap covers the library root but the book sits under a different root folder; add a pair for that root, then click **Retry failed**.
+**Books imported while Calibre was closed are missing.** They are waiting in the queue. Leave Calibre open: in push they arrive within about a minute, in pull at the plugin's next check. The **Delivery queue** panel shows how many are still waiting. If a book shows as failed, its reason is in the **Failed deliveries** table; fix the cause and click **Retry failed**. Running Push all again does not retry it.
 
-**Books imported while Calibre was closed are missing.** Leave Calibre open for a minute: queued books are delivered once the plugin answers. The **Delivery queue** line on the Calibre tab shows how many are still waiting and, when the plugin could not be reached, the error Bindery got. A book's own page shows **Waiting for Calibre**, **In Calibre** or **Calibre failed**. If a book shows as failed, its reason is in the **Failed deliveries** table (see [What to expect day to day](#what-to-expect-day-to-day)).
-
-**The plugin stopped answering after a Windows update or a network change.** Windows may have moved the network to a different profile. Rerun the checks in [step 4](#4-let-the-bindery-host-through-the-firewall).
+**Only one format of a book reached Calibre.** The plugin is older than 0.7.0, so the other formats are held with the reason `bridge cannot add a second format; update the Calibre plugin to 0.7.0`. Update the plugin and restart Calibre; the held formats are delivered to the same record on their own.
 
 ## See also
 
-- [Calibre and Calibre-Web-Automated](Calibre-Integration-Wiki.md) for the three ways Bindery hands books to Calibre and the plugin's capabilities by version
+- [Calibre and Calibre-Web-Automated](Calibre-Integration-Wiki.md) for the three ways Bindery hands books to Calibre, the delivery queue and the plugin's capabilities by version
 - [User guide, Quick answers](User-Guide-Wiki.md#quick-answers) for short answers to the symptoms above
-- [Plugin installation](https://github.com/vavallee/bindery-plugins/blob/main/docs/installation.md) for containerised Calibre
+- [Plugin installation](https://github.com/vavallee/bindery-plugins/blob/main/docs/installation.md) for pull mode on the plugin side and for containerised Calibre
+- [API.md, Calibre bridge (pull)](API.md#calibre-bridge-pull) for the routes the plugin calls
 - [Troubleshooting](Troubleshooting-Wiki.md)

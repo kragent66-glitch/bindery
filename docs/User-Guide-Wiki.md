@@ -1011,6 +1011,8 @@ for example `/books:\\nas\media\books`, not a mapped drive letter: a mapped
 drive belongs to one logon session and the running Calibre may not see it.
 Check the share opens in Explorer on that PC
 ([step 1 of the Windows runbook](Calibre-Windows-Desktop-Wiki.md#1-find-the-share-address-calibre-can-open)).
+For a desktop Calibre, pull mode avoids the share altogether
+([Set up pull](Calibre-Windows-Desktop-Wiki.md#set-up-pull)).
 
 **Pushing to Calibre fails with `[Errno 22] Invalid argument`.**
 The path starts with `\\?\\\` and is over about 200 characters: Calibre
@@ -1034,13 +1036,37 @@ use **Forget this file** on the wrong entry and import the right ebook. In the
 case this came from, the folder held an audiobook of a different book.
 
 **Books imported while Calibre was closed have not reached it yet.**
-They are waiting. Bindery queues every imported ebook and delivers it once
-Calibre is running and the plugin answers, within about a minute. A book
-Calibre keeps rejecting is retried with growing gaps and marked failed after 8
-attempts. The **Delivery queue** section of the Calibre tab shows how many are
-waiting, whether Calibre could be reached, and each failed book with its
-error; the book's own page shows **Waiting for Calibre**, **In Calibre** or
-**Calibre failed**.
+They are waiting. Bindery queues every imported ebook and delivers it when
+Calibre is reachable: with the push transport within about a minute of
+Calibre running again, with pull at the plugin's next check, 60 seconds by
+default. A book Calibre rejects is retried after 1 minute, 5 minutes, 15
+minutes, 1 hour, 6 hours and then daily, and marked failed after 8 attempts.
+The **Delivery queue** section of the Calibre tab shows how many are waiting,
+delivered and failed, and each failed book with its error; the book's own
+page shows **Waiting for Calibre**, **In Calibre** or **Calibre failed**.
+
+**Running Push all to Calibre again does not fix failed books.**
+Expected. Push all only queues books the queue does not hold yet, so it never
+resends a delivered book and leaves failed ones alone. Fix the cause shown in
+**Failed deliveries** on the Calibre tab, then click **Retry failed**
+([the delivery queue](Calibre-Windows-Desktop-Wiki.md#watch-the-delivery-queue)).
+
+**Calibre never picks up new books in pull mode.**
+Open the plugin's **Customize** dialog in Calibre and read **Pull status**.
+"Bindery is set to push" means **Transport** on the Calibre tab is still
+Push. "Bindery rejected the API key" means the keys differ, and the plugin
+then waits an hour; click OK in the dialog to retry at once. "Paused: a
+different library is open" means Calibre has another library open than the
+one pull was turned on in. On Bindery's side, the **Delivery queue** panel
+says when Calibre last checked in
+([pull troubleshooting](Calibre-Windows-Desktop-Wiki.md#pull-troubleshooting)).
+
+**Every request from the Calibre plugin takes about 20 seconds.**
+The plugin's **Bindery URL** says `localhost` and Bindery runs in WSL or
+Docker Desktop on the same Windows PC. Windows tries IPv6 `::1` first, the
+forwarding drops it silently, and the fallback to IPv4 takes about 21
+seconds. Use `127.0.0.1` or the machine's address instead
+([pull troubleshooting](Calibre-Windows-Desktop-Wiki.md#pull-troubleshooting)).
 
 **Only one format of a book reached Calibre.**
 Bindery sends every ebook format of a book to the same Calibre record, which
@@ -1060,7 +1086,7 @@ for audiobooks
 Through Calibre: connect the Kobo by USB and use **Send to device**. Kobo
 renders KEPUB better than EPUB; recent Calibre converts to it, and the
 KoboTouchExtended plugin adds it if yours does not
-([step 9](Calibre-Windows-Desktop-Wiki.md#9-get-books-onto-a-kobo)).
+([Windows runbook](Calibre-Windows-Desktop-Wiki.md#get-books-onto-a-kobo)).
 
 ---
 
