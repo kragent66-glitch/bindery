@@ -1,2 +1,0 @@
-### Added
-- **Calibre can now fetch books from Bindery instead of waiting for Bindery to send them** (#2833). Set the Calibre plugin transport to **Pull** and the Calibre Bridge plugin connects out to Bindery, downloads each queued book and adds it, so a desktop Calibre no longer needs the library on a shared drive, a push path remap, an open inbound port or a fixed address. It uses the plugin API key you already have, which must be at least 16 characters, and it needs Calibre Bridge 0.8.0 or later. The Calibre tab shows when the plugin last checked in.

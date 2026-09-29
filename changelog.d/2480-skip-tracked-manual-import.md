@@ -1,2 +1,0 @@
-### Fixed
-- **Importing from a folder no longer lists files that are already in your library** (#2480). A file Bindery already tracks, whether at the same path, as a hardlink of a library file, or as a confident match whose book already has that format, is left out of the scan, so rescanning a downloads folder stops offering things you already brought in. Tick **Show already imported** on the Import page to list them again, labelled, for example to replace a corrupt copy. Thanks to @trevorswanson for the fix.

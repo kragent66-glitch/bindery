@@ -1,2 +1,0 @@
-### Added
-- **Every ebook format of a book now reaches the same Calibre record with the Bindery Bridge plugin 0.7.0 or later** (#2832). A book with an EPUB and a PDF used to get only one of them into Calibre. Now the preferred format makes the record (EPUB, then KEPUB, AZW3, MOBI, PDF, then the rest) and the others are added to it, from an import and from Push all to Calibre alike. With an older plugin, or in calibredb mode, the extra formats are skipped with a reason telling you to update the plugin, and once you do Bindery delivers them on its own.

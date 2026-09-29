@@ -1,2 +1,0 @@
-### Changed
-- **Books imported while Calibre is closed or unreachable now reach it when it comes back** (#2832). Imports queue each ebook for Calibre instead of pushing it on the spot, so an import no longer waits on Calibre. A background job delivers the queue within about a minute of Calibre answering, retries failures with growing gaps and marks a book failed after 8 attempts. **Push all to Calibre** now sends covers too.
