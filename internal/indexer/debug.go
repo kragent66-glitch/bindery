@@ -307,6 +307,19 @@ func filterRelevantDebug(results []newznab.SearchResult, title, author string, a
 	var dropped []FilterDebug
 	for i, r := range results {
 		n := normTitles[i]
+		// The same attribution guard filterRelevant runs. Production search
+		// (auto-grab and the interactive panel) comes through here, so without
+		// it a same titled book by another author is kept and grabbed (#2863).
+		if conflictingTitleAuthor(r.Title, title, authorTokenSets) ||
+			conflictingTitleAuthor(r.Title, primaryTitle(title), authorTokenSets) {
+			dropped = append(dropped, FilterDebug{
+				Title:       r.Title,
+				IndexerName: r.IndexerName,
+				Stage:       "relevance",
+				Reason:      "release names a different author for this title",
+			})
+			continue
+		}
 		fullOK := tryMatch(n, fullKws) || tryMatchElided(n, fullElided, fullKws)
 		primaryOK := false
 		if !fullOK && len(primaryKws) > 0 && !sameKws(primaryKws, fullKws) {
