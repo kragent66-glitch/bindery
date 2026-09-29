@@ -1146,6 +1146,19 @@ func scanRequest(path string) *http.Request {
 	return httptest.NewRequest(http.MethodGet, u, nil)
 }
 
+// resolvedTempDir returns t.TempDir() with symlinks resolved. Scan reports
+// paths under the symlink-resolved folder, and on macOS t.TempDir() sits under
+// /var, a symlink to /private/var, so expectations built from the raw temp dir
+// never match (#2868).
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func writeTestFile(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -1298,7 +1311,7 @@ func TestManualImportScan_SkipsAlreadyTrackedFiles(t *testing.T) {
 	h := NewManualImportHandler(stub, downloads, books)
 
 	trackedBook := seedBook(t, authors, books, ctx)
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 	tracked := filepath.Join(root, "already-imported.epub")
 	newFile := filepath.Join(root, "new-book.epub")
 	writeTestFile(t, tracked)
@@ -1407,7 +1420,7 @@ func TestManualImportScan_LargeTrackedRegionDoesNotStarveTheCap(t *testing.T) {
 	trackedBook := seedBook(t, authors, books, ctx)
 	stub := &stubManualImportScanner{lookupResult: importer.LookupResult{Match: "none"}}
 	h := NewManualImportHandler(stub, downloads, books)
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 
 	const trackedCount = maxScanEntries + 5
 	for i := 0; i < trackedCount; i++ {
@@ -1534,7 +1547,7 @@ func TestManualImportScan_IncludeImportedSurfacesTrackedUnits(t *testing.T) {
 	books := db.NewBookRepo(database)
 	downloads := db.NewDownloadRepo(database)
 	trackedBook := seedBook(t, authors, books, ctx)
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 
 	// Exact-path tracked file (filter 1).
 	trackedPath := filepath.Join(root, "already-imported.epub")
@@ -1604,7 +1617,7 @@ func TestManualImportScan_RevealsFileAfterBookDeletedByCascade(t *testing.T) {
 	books := db.NewBookRepo(database)
 	downloads := db.NewDownloadRepo(database)
 	trackedBook := seedBook(t, authors, books, ctx)
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 	tracked := filepath.Join(root, "tracked.epub")
 	writeTestFile(t, tracked)
 	if err := books.AddBookFile(ctx, trackedBook.ID, models.MediaTypeEbook, tracked); err != nil {
@@ -1663,7 +1676,7 @@ func TestManualImportScan_SeesReorganizeMoveBetweenScans(t *testing.T) {
 	books := db.NewBookRepo(database)
 	downloads := db.NewDownloadRepo(database)
 	trackedBook := seedBook(t, authors, books, ctx)
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 	oldPath := filepath.Join(root, "old.epub")
 	newPath := filepath.Join(root, "Author", "new.epub")
 	writeTestFile(t, oldPath)
@@ -1749,7 +1762,7 @@ func TestManualImportScan_ReusedInodeIsNotTreatedAsTracked(t *testing.T) {
 	books := db.NewBookRepo(database)
 	downloads := db.NewDownloadRepo(database)
 	trackedBook := seedBook(t, authors, books, ctx)
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 	libDir := filepath.Join(root, "library")
 	dlDir := filepath.Join(root, "downloads")
 	if err := os.MkdirAll(libDir, 0o755); err != nil {
@@ -1827,7 +1840,7 @@ func TestManualImportScan_TrackedPathMissingAtRebuildStillHidden(t *testing.T) {
 	books := db.NewBookRepo(database)
 	downloads := db.NewDownloadRepo(database)
 	trackedBook := seedBook(t, authors, books, ctx)
-	root := t.TempDir()
+	root := resolvedTempDir(t)
 	tracked := filepath.Join(root, "away.epub")
 	if err := books.AddBookFile(ctx, trackedBook.ID, models.MediaTypeEbook, tracked); err != nil {
 		t.Fatalf("attach tracked file: %v", err)
@@ -1850,6 +1863,64 @@ func TestManualImportScan_TrackedPathMissingAtRebuildStillHidden(t *testing.T) {
 	}
 	if len(resp.Items) != 0 {
 		t.Fatalf("items = %+v, want the tracked file hidden by its exact path", resp.Items)
+	}
+}
+
+// TestManualImportScan_SymlinkedLibraryRootMatchesTrackedPaths covers a
+// library root configured through a symlink (#2868). Scan walks the resolved
+// folder, while book_files holds paths under the configured symlink, so the
+// exact-path filter never matched and only the inode fallback hid tracked
+// files. That fallback cannot help a tracked file that was missing when the
+// index was built (an unmounted share) or was rewritten in place since (size
+// and mtime changed), and both surfaced as importable.
+func TestManualImportScan_SymlinkedLibraryRootMatchesTrackedPaths(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+
+	ctx := context.Background()
+	authors := db.NewAuthorRepo(database)
+	books := db.NewBookRepo(database)
+	downloads := db.NewDownloadRepo(database)
+	trackedBook := seedBook(t, authors, books, ctx)
+
+	realRoot := resolvedTempDir(t)
+	linkRoot := filepath.Join(resolvedTempDir(t), "library")
+	if err := os.Symlink(realRoot, linkRoot); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	away := filepath.Join(linkRoot, "Author", "away.epub")
+	edited := filepath.Join(linkRoot, "Author", "edited.epub")
+	writeTestFile(t, edited)
+	for _, p := range []string{away, edited} {
+		if err := books.AddBookFile(ctx, trackedBook.ID, models.MediaTypeEbook, p); err != nil {
+			t.Fatalf("attach tracked file %s: %v", p, err)
+		}
+	}
+	stub := &stubManualImportScanner{lookupResult: importer.LookupResult{Match: "none"}}
+	h := NewManualImportHandler(stub, downloads, books).WithRoots(NewLibraryRoots(nil, linkRoot))
+
+	rec := httptest.NewRecorder()
+	h.Scan(rec, scanRequest(linkRoot)) // builds the index while away.epub is absent
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first scan: %d %s", rec.Code, rec.Body.String())
+	}
+
+	writeTestFile(t, away) // the mount comes back
+	if err := os.WriteFile(edited, []byte("rewritten in place"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec2 := httptest.NewRecorder()
+	h.Scan(rec2, scanRequest(linkRoot))
+	var resp ScanResponse
+	if err := json.Unmarshal(rec2.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Items) != 0 {
+		t.Fatalf("items = %+v, want both tracked files hidden by path through the symlinked root", resp.Items)
 	}
 }
 

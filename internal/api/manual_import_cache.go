@@ -78,9 +78,15 @@ func (h *ManualImportHandler) trackedFileIndex(ctx context.Context, scanRoot str
 	}
 	tracked := make(map[string]struct{}, len(trackedPaths))
 	trackedFiles := make([]os.FileInfo, 0, len(trackedPaths))
+	dirs := newDirResolver()
 	for _, trackedPath := range trackedPaths {
 		cleaned := filepath.Clean(trackedPath)
 		tracked[cleaned] = struct{}{}
+		// Scan walks the symlink-resolved folder (resolveImportFolder), but
+		// book_files holds paths in whatever form the library root was
+		// configured, so a root reached through a symlink never matched here
+		// by path (#2868). Index the resolved form too.
+		tracked[dirs.resolvePath(cleaned)] = struct{}{}
 		info, statErr := os.Stat(cleaned) //nolint:gosec // #nosec G304 -- path comes from book_files, populated only by prior imports through this same admin-gated handler
 		if statErr != nil {
 			continue
@@ -113,4 +119,50 @@ func (h *ManualImportHandler) trackedFileIndex(ctx context.Context, scanRoot str
 	c.tracked = tracked
 	c.trackedFiles = trackedFiles
 	return tracked, trackedFiles, nil
+}
+
+// dirResolver maps a path to the form Scan sees after resolveImportFolder's
+// symlink resolution, so book_files rows written under a symlinked library
+// root still match the scanned units by exact path (#2868). Only directory
+// components are resolved; the leaf is kept as-is because the scan walk
+// reports a symlinked file under its own name, not its target's.
+//
+// filepath.EvalSymlinks per tracked row would cost an lstat per component per
+// row on a cold rebuild, and fails outright for a path that is missing at
+// rebuild time, which is exactly the case the exact-path entry exists for (a
+// file on an unmounted share has no FileInfo to hardlink-match against).
+// Resolving one component at a time with a per-directory memo costs one lstat
+// per distinct directory in the library and still resolves the existing
+// prefix of a missing path.
+type dirResolver struct {
+	memo map[string]string
+}
+
+func newDirResolver() *dirResolver {
+	return &dirResolver{memo: make(map[string]string)}
+}
+
+func (r *dirResolver) resolvePath(p string) string {
+	dir := filepath.Dir(p)
+	if dir == p {
+		return p
+	}
+	return filepath.Join(r.resolveDir(dir), filepath.Base(p))
+}
+
+func (r *dirResolver) resolveDir(dir string) string {
+	if out, ok := r.memo[dir]; ok {
+		return out
+	}
+	out := dir
+	if parent := filepath.Dir(dir); parent != dir {
+		out = filepath.Join(r.resolveDir(parent), filepath.Base(dir))
+		if fi, err := os.Lstat(out); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+			if real, err := filepath.EvalSymlinks(out); err == nil {
+				out = real
+			}
+		}
+	}
+	r.memo[dir] = out
+	return out
 }

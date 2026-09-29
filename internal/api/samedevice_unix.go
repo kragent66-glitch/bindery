@@ -57,7 +57,12 @@ func deviceIDOf(fi os.FileInfo) (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
-	return uint64(st.Dev), true
+	// Stat_t.Dev is uint64 on linux and freebsd but int32 on darwin and
+	// openbsd, where gosec reports G115 (#2868). The result is only ever
+	// compared for equality against another deviceIDOf/deviceID result, never
+	// used as a size or index, and int32 to uint64 sign extension is
+	// injective, so distinct device ids stay distinct and equal ones equal.
+	return uint64(st.Dev), true //nolint:gosec // G115: opaque equality key, conversion is injective on every platform (see above)
 }
 
 // deviceID returns path's OS device ID as a cache key: two paths returning
