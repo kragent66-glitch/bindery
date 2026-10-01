@@ -778,6 +778,9 @@ func TestValidateSettingValue_AudiobookFileTemplate(t *testing.T) {
 		"{Title} - Part {Part:3}.{ext}",
 		"{Part}.{ext}",
 		"{Author} - {Title} - {Part:2}.{ext}",
+		// A conditional group, which a single-file audiobook drops (#2900).
+		"{Title}{ - Pt. Part:3}.{ext}",
+		"{Title}{ - Part:3}.{ext}",
 	} {
 		if err := validateSettingValue(SettingNamingAudiobookFileTemplate, v); err != nil {
 			t.Errorf("%q should be accepted: %v", v, err)

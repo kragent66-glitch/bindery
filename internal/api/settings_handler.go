@@ -17,6 +17,7 @@ import (
 	"github.com/vavallee/bindery/internal/calibre"
 	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/httpsec"
+	"github.com/vavallee/bindery/internal/importer"
 	"github.com/vavallee/bindery/internal/metadata/hardcover"
 	"github.com/vavallee/bindery/internal/models"
 	"github.com/vavallee/bindery/internal/pathmap"
@@ -669,11 +670,14 @@ func validateSettingValue(key, value string) error {
 	case SettingNamingAudiobookFileTemplate:
 		// Empty disables per-file audiobook renaming (#1126). A non-empty
 		// template MUST carry a {Part} token, otherwise every track flattens to
-		// the same filename and all but the last are dropped.
+		// the same filename and all but the last are dropped. The token may
+		// sit in a conditional group ("{Title}{ - Pt. Part:3}.{ext}"), which a
+		// single-file audiobook drops entirely (#2900), so this asks the
+		// renderer rather than looking for the substring "{Part".
 		if value == "" {
 			return nil
 		}
-		if !strings.Contains(value, "{Part") {
+		if !importer.AudiobookTemplateHasPart(value) {
 			return fmt.Errorf("naming.audiobook_file_template must include a {Part} token so each track gets a unique name")
 		}
 	case SettingImportDropLinkMode:

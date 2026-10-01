@@ -276,9 +276,22 @@ Two settings opt out of the merge: **Flatten multi-disc audiobooks** and a
 per-file audiobook naming template both keep the historical behaviour and place
 the audiobook in a sibling `Title (2)` folder. So does a download whose
 audiobook files do not share a folder of their own, which Bindery places file
-by file.
+by file. A lone audiobook file such as a single `.m4b` still merges with a
+naming template set; it is named from the template, and a file already there
+under that name is skipped the same way.
 (For handing files to Storyteller's *watch folder* instead,
 see [Handing off to another library tool](#handing-off-to-another-library-tool-cwa-calibre-storyteller).)
+
+The per-file audiobook naming template (`naming.audiobook_file_template`)
+renames a single-file audiobook too, whether it arrives as a lone `.m4b` or as
+a folder holding one track, and **Rename files** proposes the same name for one
+already in the library. `{Part}` decides how it reads. In a group with its own
+text, such as `{Title}{ - Pt. Part:3}.{ext}`, the group is left out for a single
+file (`The Shining.m4b`) and numbered for several (`Doctor Sleep - Pt. 001.m4b`).
+Written bare, as in the default `{Title} - Part {Part:3}.{ext}`, the single file
+is numbered as part 1 (`The Shining - Part 001.m4b`). Inside a group every word
+that is a token name is read as the token, so write `Pt.` rather than `Part` for
+the label there.
 
 ### `BINDERY_DOWNLOAD_DIR` is not a watch folder
 

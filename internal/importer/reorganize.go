@@ -164,7 +164,7 @@ func (s *Scanner) proposedPathFor(ctx context.Context, book *models.Book, author
 			if flattenedOntoFolderPath(f.Path, dest) {
 				return dest, ReorgStatusError, flattenedOntoFolderMsg
 			}
-			dest = s.singleFileAudiobookDest(ctx, book, dest, f.Path)
+			dest = s.singleFileAudiobookDest(ctx, book, author, seriesTitle, seriesNum, dest, f.Path)
 		} else {
 			dest = uniqueDirExcluding(dest, f.Path)
 		}
@@ -214,12 +214,14 @@ func isSingleFile(path string) bool {
 
 // singleFileAudiobookDest mirrors the single-file import branch: join the
 // book's own ebook folder (#2686), otherwise uniquify with the file's current
-// folder treated as available so a file already in place stays a noop.
-func (s *Scanner) singleFileAudiobookDest(ctx context.Context, book *models.Book, destDir, current string) string {
+// folder treated as available so a file already in place stays a noop. The
+// file is named the way the import names it (#2900): from the audiobook file
+// template when one is set, otherwise its own name.
+func (s *Scanner) singleFileAudiobookDest(ctx context.Context, book *models.Book, author *models.Author, seriesTitle, seriesNum, destDir, current string) string {
 	if existing, merging := s.existingEbookDir(ctx, book); !merging || filepath.Clean(destDir) != existing {
 		destDir = uniqueDirExcluding(destDir, filepath.Dir(current))
 	}
-	return filepath.Join(destDir, filepath.Base(current))
+	return filepath.Join(destDir, s.singleAudiobookFileName(ctx, author, book, seriesTitle, seriesNum, current))
 }
 
 const flattenedOntoFolderMsg = "this audiobook file sits where its folder belongs and has lost its extension (#2894). " +

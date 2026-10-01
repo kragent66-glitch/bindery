@@ -393,7 +393,7 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
               {t('settings.general.audiobookFileTemplate', 'Audiobook file naming (per track)')}
             </label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
-              {t('settings.general.audiobookFileTemplateHint', 'Leave empty to keep the download’s original file layout. Set a template to rename every audiobook track in playback order — it must include {Part}.')}
+              {t('settings.general.audiobookFileTemplateHint', 'Leave empty to keep the download’s original file layout. Set a template to rename every audiobook track in playback order; it must include {Part}. A single-file audiobook is renamed too, as part 1, unless {Part} sits in a group with its own text, such as {Title}{ - Pt. Part:3}.{ext}, which is left out when there is only one file.')}
             </p>
             <div className="flex gap-2">
               <input

@@ -163,6 +163,29 @@ func (s *Scanner) audiobookFileTemplate(ctx context.Context) string {
 	return strings.TrimSpace(setting.Value)
 }
 
+// singleAudiobookFileName is the name a single-file audiobook takes inside its
+// folder: the source file's own name, or, when naming.audiobook_file_template
+// is set, that template rendered the way the folder branch renders a track,
+// with {Part} left out as AudiobookSingleFileName describes (#2900). The
+// import's single-file branch and Rename files both call it, so a reorganized
+// file lands where a fresh import would put it. The extension is lowercased
+// for the template, the same as flattenAudiobookDirNamed does for each track.
+// A template that renders to nothing usable keeps the source name rather than
+// placing a file called "." or with no name at all.
+func (s *Scanner) singleAudiobookFileName(ctx context.Context, author *models.Author, book *models.Book, seriesTitle, seriesNum, src string) string {
+	name := filepath.Base(src)
+	tmpl := s.audiobookFileTemplate(ctx)
+	if tmpl == "" {
+		return name
+	}
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(src)), ".")
+	rendered := s.renamer.AudiobookSingleFileName(tmpl, author, book, seriesTitle, seriesNum, ext)
+	if rendered == "" || rendered == "." || rendered == ".." || rendered == string(filepath.Separator) {
+		return name
+	}
+	return rendered
+}
+
 // pushToCWA copies the just-imported file into the directory watched by a
 // sibling Calibre-Web-Automated container, when the cwa.ingest_path setting
 // is configured. CWA's auto-ingest deletes whatever lands in that folder

@@ -1789,7 +1789,13 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 					if mode == "move" {
 						flattenMode = "copy"
 					}
-					namer := func(index int, ext string) string {
+					namer := func(index, count int, ext string) string {
+						// A folder holding one track is a single-file
+						// audiobook too, so it gets the same name a lone
+						// .m4b does on the branch below (#2900).
+						if count == 1 {
+							return s.renamer.AudiobookSingleFileName(tmpl, author, book, seriesTitle, seriesNum, strings.TrimPrefix(ext, "."))
+						}
 						return s.renamer.AudiobookFileName(tmpl, author, book, seriesTitle, seriesNum, strings.TrimPrefix(ext, "."), index+1)
 					}
 					slog.Info("renaming audiobook files per template", "src", audiobookSource, "dst", destDir, "mode", flattenMode, "template", tmpl)
@@ -1892,7 +1898,10 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 				if err := os.MkdirAll(destDir, 0o750); err != nil {
 					dirErr = fmt.Errorf("create audiobook dest dir: %w", err)
 				} else {
-					name := filepath.Base(audiobookSource)
+					name := s.singleAudiobookFileName(ctx, author, book, seriesTitle, seriesNum, audiobookSource)
+					if name != filepath.Base(audiobookSource) {
+						slog.Info("renaming audiobook file per template", "src", audiobookSource, "dst", destDir, "name", name, "mode", mode)
+					}
 					dstFile := filepath.Join(destDir, name)
 					// A merge never overwrites what is already in the book's
 					// folder, the same contract CopyDirMergeCtx and friends
