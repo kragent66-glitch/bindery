@@ -1,6 +1,7 @@
 package importer
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -325,5 +327,150 @@ func BenchmarkGroupUnmatched(b *testing.B) {
 		if len(groups) == 0 {
 			b.Fatal("no groups")
 		}
+	}
+}
+
+// wilsonCatalogue is the #2879 library: the author is catalogued as "Sarah
+// K.L. Wilson" and her files sit under "Sarah K. L. Wilson". matsumotoStatus
+// sets the state of the one book whose title the untracked file carries; the
+// others are Wanted, so on their own they are exactly the reconcile pool.
+func wilsonCatalogue(t *testing.T, matsumotoStatus string) (s *Scanner, books *db.BookRepo, libraryDir string, ctx context.Context, matsumoto *models.Book, untracked string) {
+	t.Helper()
+	s, _, books, authors, _, libraryDir, ctx := unmatchedFixture(t)
+	author := &models.Author{ForeignID: "ol:skl-wilson", Name: "Sarah K.L. Wilson", SortName: "Wilson, Sarah K.L.", MetadataProvider: "openlibrary"}
+	if err := authors.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	for _, title := range []string{"Paths of Deception", "The Matsumoto", "Chase the Moon", "Mist of Power"} {
+		b := &models.Book{ForeignID: "ol:" + title, AuthorID: author.ID, Title: title, Status: models.BookStatusWanted,
+			Monitored: true, MediaType: models.MediaTypeEbook, MetadataProvider: "openlibrary"}
+		if title == "The Matsumoto" {
+			b.Status = matsumotoStatus
+			b.Monitored = matsumotoStatus == models.BookStatusWanted
+		}
+		if err := books.Create(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+		if title == "The Matsumoto" {
+			matsumoto = b
+		}
+	}
+	untracked = filepath.Join(libraryDir, "Sarah K. L. Wilson", "The Matsumoto (13110)", "The Matsumoto - Sarah K. L. Wilson.epub")
+	if err := os.MkdirAll(filepath.Dir(untracked), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeEpubAt(t, untracked, "", "", "")
+	return s, books, libraryDir, ctx, matsumoto, untracked
+}
+
+// TestScanLibrary_SuggestsTheExactTitleWhateverItsStatus is #2879. The author
+// resolved (the spelling "K. L." against "K.L." was never the problem: the
+// other three suggestions are her books), but suggestions were ranked only
+// from the books the scan may claim on its own, so a Skipped or already
+// Imported "The Matsumoto" was never offered and three weaker titles were.
+// Suggestions are confirmed by a person, so they come from every book of the
+// author; the automatic claim must still leave those books alone.
+func TestScanLibrary_SuggestsTheExactTitleWhateverItsStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status string
+		// existing, when set, is a file the book already has elsewhere in
+		// the library, so it is Imported with a file that resolves.
+		existing string
+	}{
+		{name: "skipped", status: models.BookStatusSkipped},
+		{name: "imported with a file elsewhere", status: models.BookStatusWanted,
+			existing: filepath.Join("Sarah K.L. Wilson", "The Matsumoto (13110)", "The Matsumoto - Sarah K.L. Wilson.epub")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, books, libraryDir, ctx, matsumoto, untracked := wilsonCatalogue(t, tc.status)
+			if tc.existing != "" {
+				p := filepath.Join(libraryDir, tc.existing)
+				if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeEpubAt(t, p, "", "", "")
+				if err := books.AddBookFile(ctx, matsumoto.ID, models.MediaTypeEbook, p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := books.GetByID(ctx, matsumoto.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.existing != "" && before.Status != models.BookStatusImported {
+				t.Fatalf("setup: book status = %s, want imported", before.Status)
+			}
+
+			s.ScanLibrary(ctx)
+
+			units := readUnmatchedFiles(t, ctx, s)
+			if len(units) != 1 || units[0].UnitPath != untracked {
+				t.Fatalf("units = %+v, want the untracked Matsumoto left for a person to decide", units)
+			}
+			c := units[0].Candidates
+			if len(c) == 0 || c[0].BookID != matsumoto.ID || c[0].Score < 0.999 {
+				t.Fatalf("candidates = %+v, want The Matsumoto (book %d) first with an exact title score", c, matsumoto.ID)
+			}
+			if len(c) > maxCandidates {
+				t.Errorf("kept %d candidates, cap is %d", len(c), maxCandidates)
+			}
+			after, err := books.GetByID(ctx, matsumoto.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Status != before.Status || after.Monitored != before.Monitored {
+				t.Errorf("book changed by the scan: status %s -> %s, monitored %v -> %v", before.Status, after.Status, before.Monitored, after.Monitored)
+			}
+			files, err := books.ListFiles(ctx, matsumoto.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, f := range files {
+				if f.Path == untracked {
+					t.Fatalf("the scan claimed %s for a %s book on its own", untracked, before.Status)
+				}
+			}
+		})
+	}
+}
+
+// TestScanLibrary_WantedExactTitleStillReconciles: widening the suggestions
+// changes nothing for the automatic claim. A Wanted book whose title the file
+// carries is claimed by the scan exactly as before, across the same "K. L."
+// and "K.L." spellings, and no unit is stored.
+func TestScanLibrary_WantedExactTitleStillReconciles(t *testing.T) {
+	s, books, _, ctx, matsumoto, untracked := wilsonCatalogue(t, models.BookStatusWanted)
+
+	s.ScanLibrary(ctx)
+
+	if units := readUnmatchedFiles(t, ctx, s); len(units) != 0 {
+		t.Fatalf("units = %+v, want none: the Wanted book should have claimed the file", units)
+	}
+	after, err := books.GetByID(ctx, matsumoto.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Status != models.BookStatusImported || after.EbookFilePath != untracked {
+		t.Fatalf("book = status %s path %q, want imported at %s", after.Status, after.EbookFilePath, untracked)
+	}
+}
+
+// TestRankCandidates_ReconcilableBookWinsATie: two books of the author carry
+// the same title, one Wanted and one that already has its file. The Wanted
+// one is the likelier home for a new file, so it is offered first.
+func TestRankCandidates_ReconcilableBookWinsATie(t *testing.T) {
+	imported := &models.Book{ID: 1, AuthorID: 7, Title: "The Matsumoto", Status: models.BookStatusImported}
+	wanted := &models.Book{ID: 2, AuthorID: 7, Title: "The Matsumoto", Status: models.BookStatusWanted}
+	other := &models.Book{ID: 3, AuthorID: 7, Title: "Mist of Power", Status: models.BookStatusWanted}
+	var catalogue []scanBook
+	byAuthor := map[int64][]int{}
+	for _, b := range []*models.Book{imported, wanted, other} {
+		byAuthor[b.AuthorID] = append(byAuthor[b.AuthorID], len(catalogue))
+		catalogue = append(catalogue, newScanBook(b, b.Status == models.BookStatusWanted))
+	}
+	got := rankCandidates("The Matsumoto", "", nil, catalogue, byAuthor, map[int64]bool{7: true})
+	if len(got) < 2 || got[0].BookID != wanted.ID || got[1].BookID != imported.ID {
+		t.Fatalf("candidates = %+v, want the wanted book then the imported one", got)
 	}
 }

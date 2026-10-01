@@ -2842,6 +2842,16 @@ type scanBook struct {
 	book      *models.Book
 	normTitle string
 	normLen   int
+	// reconcilable is isReconcileCandidate for the book: the scan may claim
+	// a file for it on its own. Only the suggestion pool holds books without
+	// it (#2879).
+	reconcilable bool
+}
+
+func newScanBook(b *models.Book, reconcilable bool) scanBook {
+	sb := scanBook{book: b, normTitle: normalizeTitle(b.Title), reconcilable: reconcilable}
+	sb.normLen = len(sb.normTitle)
+	return sb
 }
 
 // cleanLayoutTitle strips bracket/paren annotations from a book-folder name —
@@ -3205,8 +3215,7 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		if !isReconcileCandidate(b) {
 			continue
 		}
-		sb := scanBook{book: b, normTitle: normalizeTitle(b.Title)}
-		sb.normLen = len(sb.normTitle)
+		sb := newScanBook(b, true)
 		idx := len(wantedBooks)
 		wantedBooks = append(wantedBooks, sb)
 		booksByAuthor[b.AuthorID] = append(booksByAuthor[b.AuthorID], idx)
@@ -3751,11 +3760,22 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 		"reconciled", reconciled, "unmatched", unmatched, "tagReadFailed", tagReadFailed)
 
 	// Suggestions come from the catalogue already in memory, ranked once per
-	// unit rather than per file.
+	// unit rather than per file. A person confirms a suggestion, so for a
+	// resolved author they are drawn from every book of that author, not only
+	// the ones the scan may claim by itself: a Skipped book, or one already
+	// Imported with a file elsewhere, is often exactly what an untracked copy
+	// is (#2879). Built on first use, so a scan with nothing unmatched pays
+	// nothing for it. Excluded books are not in allBooks and so are never
+	// offered.
+	var catalogue []scanBook
+	var catalogueByAuthor map[int64][]int
 	units := s.recordUnmatchedUnits(ctx, &unmatchedFiles, scanRoots, rootsWithFiles, scanStartedAt,
 		func(title, layoutTitle, author, layoutAuthor string) []db.UnmatchedCandidate {
+			if catalogueByAuthor == nil {
+				catalogue, catalogueByAuthor = suggestionCatalogue(allBooks, wantedBooks)
+			}
 			authorSet, _ := resolveAuthors(author, layoutAuthor)
-			return rankCandidates(title, layoutTitle, wantedBooks, booksByAuthor, authorSet)
+			return rankCandidates(title, layoutTitle, wantedBooks, catalogue, catalogueByAuthor, authorSet)
 		})
 
 	s.writeScanResult(ctx, len(foundFiles), reconciled, unmatched, alreadyTracked, tagReadFailed, units)

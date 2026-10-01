@@ -533,6 +533,12 @@ How to work through the list:
 - **Possible match** means the title is only similar, or the author differs.
   Click the suggested title to check it in the editor, where it is already
   selected, and adopt it from there.
+- Suggestions come from **every book by the author the scan matched**,
+  whatever its status, and each shows that status. A book you skipped or one
+  that is already **Imported** is never a one click Confirm; adopting into a
+  book that already has a file adds the new file alongside it (#2879).
+  Suggestions are worked out by the scan, so a book added since the last scan
+  appears after the next one; until then, search for it in the editor.
 - **Choose book** opens the row in place: the suggestions with their scores,
   a search of your library (prefilled from the file), and a collapsed
   **Search metadata**. Metadata providers are only asked when you press Search

@@ -332,24 +332,55 @@ func eligibleUnmatched(files []unmatchedScanFile, roots []string) []unmatchedSca
 	return out
 }
 
+// suggestionCatalogue indexes every book the scan loaded by author, for
+// suggestions only. The reconcile's own candidates (wanted) are marked so a
+// tie goes to the book still waiting for a file; they are taken from the set
+// the scan already built rather than asking isReconcileCandidate again, which
+// stats files on disk.
+func suggestionCatalogue(books []models.Book, wanted []scanBook) ([]scanBook, map[int64][]int) {
+	reconcilable := make(map[int64]bool, len(wanted))
+	for i := range wanted {
+		reconcilable[wanted[i].book.ID] = true
+	}
+	out := make([]scanBook, 0, len(books))
+	byAuthor := make(map[int64][]int)
+	for i := range books {
+		b := &books[i]
+		byAuthor[b.AuthorID] = append(byAuthor[b.AuthorID], len(out))
+		out = append(out, newScanBook(b, reconcilable[b.ID]))
+	}
+	return out, byAuthor
+}
+
 // rankCandidates returns up to maxCandidates catalogue books whose title
 // scores at least candidateThreshold against normParsed, best first. It uses
-// the reconcile's own measure (Jaro-Winkler over normalizeTitle) and its own
-// candidate set: the books of the authors the file's author resolved to, or
-// every reconcile candidate when the file named no author. In that last case
-// titles of wildly different length are skipped, the same cheap gate the
-// reconcile uses. No provider is asked anything.
+// the reconcile's own measure (Jaro-Winkler over normalizeTitle). When the
+// file's author resolved, the candidates are every catalogue book of those
+// authors, whatever its status (#2879): the reconcile only claims books still
+// waiting for a file, but a person confirming a suggestion may well be
+// pointing an untracked copy at a book that is Skipped or already has one.
+// When the file named no author they are the reconcile's own candidates
+// (wanted), and titles of wildly different length are skipped, the same
+// cheap gate the reconcile uses; the whole library is too wide a net without
+// an author. No provider is asked anything.
+//
+// An exact title scores 1, so it ranks first; between equal scores a book the
+// reconcile could claim goes ahead of one that already has its files.
 //
 // A book that is provably another volume of the same series is never
 // suggested, by the same rule the reconcile applies (libraryVolumeConflict):
 // volume 1's folder scores 0.983 against a wanted volume 17, and offering it
 // as the top suggestion would invite the user to adopt it there (#2860).
-func rankCandidates(title, layoutTitle string, wanted []scanBook, byAuthor map[int64][]int, authorSet map[int64]bool) []db.UnmatchedCandidate {
+func rankCandidates(title, layoutTitle string, wanted, catalogue []scanBook, catalogueByAuthor map[int64][]int, authorSet map[int64]bool) []db.UnmatchedCandidate {
 	normParsed := normalizeTitle(title)
 	if normParsed == "" {
 		return nil
 	}
-	var out []db.UnmatchedCandidate
+	type scored struct {
+		db.UnmatchedCandidate
+		reconcilable bool
+	}
+	var out []scored
 	consider := func(sb *scanBook) {
 		score := textutil.JaroWinkler(sb.normTitle, normParsed)
 		if score < candidateThreshold {
@@ -358,7 +389,7 @@ func rankCandidates(title, layoutTitle string, wanted []scanBook, byAuthor map[i
 		if libraryVolumeConflict(title, layoutTitle, sb.book.Title) {
 			return
 		}
-		out = append(out, db.UnmatchedCandidate{BookID: sb.book.ID, Score: score})
+		out = append(out, scored{db.UnmatchedCandidate{BookID: sb.book.ID, Score: score}, sb.reconcilable})
 	}
 	if authorSet == nil {
 		for i := range wanted {
@@ -378,16 +409,20 @@ func rankCandidates(title, layoutTitle string, wanted []scanBook, byAuthor map[i
 		}
 		slices.Sort(ids)
 		for _, id := range ids {
-			for _, idx := range byAuthor[id] {
-				consider(&wanted[idx])
+			for _, idx := range catalogueByAuthor[id] {
+				consider(&catalogue[idx])
 			}
 		}
 	}
-	slices.SortStableFunc(out, func(a, b db.UnmatchedCandidate) int {
+	slices.SortStableFunc(out, func(a, b scored) int {
 		switch {
 		case a.Score > b.Score:
 			return -1
 		case a.Score < b.Score:
+			return 1
+		case a.reconcilable && !b.reconcilable:
+			return -1
+		case b.reconcilable && !a.reconcilable:
 			return 1
 		}
 		return 0
@@ -395,7 +430,14 @@ func rankCandidates(title, layoutTitle string, wanted []scanBook, byAuthor map[i
 	if len(out) > maxCandidates {
 		out = out[:maxCandidates]
 	}
-	return out
+	if len(out) == 0 {
+		return nil
+	}
+	res := make([]db.UnmatchedCandidate, len(out))
+	for i := range out {
+		res[i] = out[i].UnmatchedCandidate
+	}
+	return res
 }
 
 // unitCounts is what the scan result blob reports about stored units.

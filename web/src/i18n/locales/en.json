@@ -209,7 +209,8 @@
       "ignored": "Ignored. Later scans keep it out of this list.",
       "undoing": "Undoing…",
       "restored": "Back in Needs a decision.",
-      "keptBook": "Files removed. The book stayed because it is now in use."
+      "keptBook": "Files removed. The book stayed because it is now in use.",
+      "addedAlongside": "Added alongside the file it already had."
     },
     "editor": {
       "heading": "Which book is {{name}}?",
@@ -225,7 +226,8 @@
       "moreFiles": "and {{count}} more",
       "inPlace": "Files stay where they are. Picking a book already in your library leaves its owner and monitoring as they are.",
       "adoptAs": "Adopt as {{title}}",
-      "pickFirst": "Pick a book"
+      "pickFirst": "Pick a book",
+      "alreadyImported": "This book already has its files. Adopting adds these alongside them, and nothing is replaced or deleted."
     },
     "col": {
       "book": "Book",
