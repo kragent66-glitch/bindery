@@ -1193,7 +1193,7 @@
       "googleBooksKey": "Google Books API Key",
       "googleBooksKeyHiddenPlaceholder": "Saved key is hidden. Enter a new key to replace it.",
       "storage": "Storage",
-      "storageHint": "Paths Bindery reads from and writes to. The download directories are where your download client leaves finished files: the client decides that, and Bindery only reads there. The library directories are where Bindery moves or copies each import: only Bindery writes there. Configure via environment variables (or your config file) before starting the container; the running process captures them at startup.",
+      "storageHint": "Paths Bindery reads from and writes to. The download directories are where your download client leaves finished files: the client decides that, and Bindery only reads there. The library directories are where Bindery moves or copies each import: only Bindery writes there. Set them with the BINDERY_* environment variables shown below, then restart Bindery: it reads them once, at startup.",
       "downloadDir": "Download directory",
       "audiobookDownloadDir": "Audiobook download directory",
       "audiobookDownloadDirFallback": "Unset — audiobook downloads use the main download directory.",

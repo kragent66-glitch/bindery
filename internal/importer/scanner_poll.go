@@ -19,6 +19,7 @@ import (
 	"github.com/vavallee/bindery/internal/downloader/sabnzbd"
 	"github.com/vavallee/bindery/internal/downloader/transmission"
 	"github.com/vavallee/bindery/internal/models"
+	"github.com/vavallee/bindery/internal/pathmap"
 )
 
 // checkSABnzbdDownloads polls SABnzbd for status changes.
@@ -672,7 +673,7 @@ func (s *Scanner) checkQbittorrentDownloads(ctx context.Context, client *models.
 				// warning on every cycle forever (#2616). The row's own message
 				// is left alone: recordImportSkip restarts the streak whenever it
 				// changes, and the blocking reason names the missing path.
-				s.skipImportRetry(ctx, &dl, filepath.Join(torrent.SavePath, torrent.Name))
+				s.skipImportRetry(ctx, &dl, pathmap.ClientPathJoin(torrent.SavePath, torrent.Name))
 				continue
 			}
 			downloadPath := s.remapDownloadClientPath(client, rawPath)
@@ -793,7 +794,7 @@ func (s *Scanner) delugeImportSources(ctx context.Context, dlc *deluge.Client, c
 	if savePath == "" {
 		savePath = strings.TrimSpace(t.SavePath)
 	}
-	downloadPath := s.remapDownloadClientPath(client, filepath.Join(savePath, t.Name))
+	downloadPath := s.remapClientJoin(client, savePath, t.Name)
 	return downloadPath, s.delugeFilesFor(ctx, dlc, client, t, savePath)
 }
 
@@ -928,8 +929,9 @@ func (s *Scanner) rtorrentImportSources(ctx context.Context, rt *rtorrent.Client
 	basePath := strings.TrimSpace(t.BasePath)
 	if basePath == "" {
 		// Closed items after an rTorrent restart report an empty base path;
-		// reconstruct it the way rTorrent would have.
-		basePath = filepath.Join(strings.TrimSpace(t.Directory), t.Name)
+		// reconstruct it the way rTorrent would have, in its own namespace
+		// (#2902).
+		basePath = pathmap.ClientPathJoin(strings.TrimSpace(t.Directory), t.Name)
 	}
 	downloadPath := s.remapDownloadClientPath(client, basePath)
 	return downloadPath, s.rtorrentFilesFor(ctx, rt, client, t)
@@ -1283,19 +1285,20 @@ func (s *Scanner) resolveTorrentFilesWithContentFallback(client *models.Download
 		// Join. Splitting and matching per-segment avoids false positives on
 		// legitimate names like "My..Book.epub" while still catching
 		// "MyBook/../escape.epub".
-		if filepath.IsAbs(name) || hasDotDotSegment(name) {
+		// The absolute check covers both namespaces: on a Windows Bindery
+		// filepath.IsAbs does not count "/etc/x" as absolute.
+		if filepath.IsAbs(name) || pathmap.IsAbsClientPath(name) || strings.HasPrefix(name, `\`) || hasDotDotSegment(name) {
 			slog.Warn("import: rejecting malformed file name from download client",
 				"client", client.Name, "name", name)
 			continue
 		}
-		clientPath := filepath.Join(clientSavePath, name)
-		binderyPath := filepath.Clean(s.remapDownloadClientPath(client, clientPath))
+		binderyPath := filepath.Clean(s.remapClientJoin(client, clientSavePath, name))
 		if !IsBookFile(binderyPath) {
 			continue
 		}
 		if clientContentPath != "" && !pathOnHost(binderyPath) {
 			if dir, root := contentBase(); dir != "" && firstPathSegment(name) != root {
-				alt := filepath.Clean(s.remapDownloadClientPath(client, filepath.Join(dir, name)))
+				alt := filepath.Clean(s.remapClientJoin(client, dir, name))
 				if pathOnHost(alt) {
 					slog.Debug("import: file missing under the save path, using the content path as the join base",
 						"client", client.Name, "name", name, "save_path_join", binderyPath, "path", alt)
@@ -1311,24 +1314,37 @@ func (s *Scanner) resolveTorrentFilesWithContentFallback(client *models.Download
 // contentDirForFallback returns the client-side content directory (cleaned)
 // and its base name when it is usable as the second join base described on
 // resolveTorrentFilesWithContentFallback, or two empty strings when it is not.
+// Both are worked out in the client's namespace (#2902); only the stat sees a
+// host path.
 func (s *Scanner) contentDirForFallback(client *models.DownloadClient, clientSavePath, clientContentPath string) (string, string) {
 	dir := strings.TrimSpace(clientContentPath)
 	if dir == "" {
 		return "", ""
 	}
-	dir = filepath.Clean(dir)
-	if dir == filepath.Clean(strings.TrimSpace(clientSavePath)) {
+	dir = pathmap.CleanClientPath(dir)
+	if dir == pathmap.CleanClientPath(clientSavePath) {
 		return "", ""
 	}
 	fi, err := os.Stat(filepath.Clean(s.remapDownloadClientPath(client, dir)))
 	if err != nil || !fi.IsDir() {
 		return "", ""
 	}
-	root := filepath.Base(dir)
-	if root == "." || root == string(filepath.Separator) {
+	root := pathmap.ClientPathBase(dir)
+	if root == "" || root == "." {
 		return "", ""
 	}
 	return dir, root
+}
+
+// remapClientJoin joins name onto base the way the download client would,
+// then runs the result through the path remap. The join has to happen in the
+// client's namespace, before the remap: on a Windows Bindery filepath.Join
+// turns a Docker client's "/downloads/x" into "\downloads\x", which a POSIX
+// remap rule such as "/downloads:H:\Downloads" no longer matches, so every
+// file is reported missing (#2902). The caller converts the result to a host
+// path with filepath.Clean.
+func (s *Scanner) remapClientJoin(client *models.DownloadClient, base, name string) string {
+	return s.remapDownloadClientPath(client, pathmap.ClientPathJoin(base, name))
 }
 
 // pathOnHost reports whether anything exists at p, without following a
@@ -1349,12 +1365,13 @@ func firstPathSegment(name string) string {
 }
 
 // hasDotDotSegment reports whether p contains a ".." path segment under
-// either forward-slash or platform separators. The downloader Files() APIs
-// normalise to forward slash already, but checking both is defensive — a
-// rogue Windows-format response then can't smuggle a "..\\" past the
-// guard.
+// either separator, whatever OS Bindery runs on. The downloader Files() APIs
+// normalise to forward slash already, but checking both is defensive: a
+// rogue Windows-format response then can't smuggle a "..\\" past the guard,
+// and a Windows client's save path is joined with `\` as a separator even on
+// a Linux Bindery.
 func hasDotDotSegment(p string) bool {
-	for _, seg := range strings.Split(filepath.ToSlash(p), "/") {
+	for _, seg := range strings.Split(strings.ReplaceAll(p, `\`, "/"), "/") {
 		if seg == ".." {
 			return true
 		}
@@ -1572,7 +1589,8 @@ func (s *Scanner) remapDownloadClientPath(client *models.DownloadClient, rawPath
 // (e.g. ':' → '_'). When content_path is available it is used directly.
 //
 // For older clients that omit content_path the function falls back to
-// filepath.Join(SavePath, Name) and verifies the path exists with os.Stat.
+// SavePath + Name, joined in the client's namespace, and verifies the path
+// exists with os.Stat.
 //
 // SavePath is deliberately never returned on its own. For multi-file torrents
 // SavePath is the shared download root; falling back to it would cause Bindery
@@ -1581,7 +1599,7 @@ func resolveQbitContentPath(t qbittorrent.Torrent) (string, bool) {
 	if t.ContentPath != "" {
 		return t.ContentPath, true
 	}
-	candidate := filepath.Join(t.SavePath, t.Name)
+	candidate := pathmap.ClientPathJoin(t.SavePath, t.Name)
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate, true
 	}

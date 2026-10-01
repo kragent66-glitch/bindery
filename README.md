@@ -231,9 +231,9 @@ Bindery is configured through the web UI under **Settings** — indexers, downlo
 | `BINDERY_PORT` | `8787` | HTTP server port |
 | `BINDERY_DB_PATH` | platform-default | SQLite database path |
 | `BINDERY_DATA_DIR` | platform-default | Config directory (backups, image cache, secrets) |
-| `BINDERY_LIBRARY_DIR` | `/books` | Imported ebook destination |
+| `BINDERY_LIBRARY_DIR` | `/books` (set a real folder on Windows) | Imported ebook destination |
 | `BINDERY_AUDIOBOOK_DIR` | inherits library | Imported audiobook destination |
-| `BINDERY_DOWNLOAD_DIR` | `/downloads` | Where the download client deposits completed jobs |
+| `BINDERY_DOWNLOAD_DIR` | `/downloads` (unset on Windows) | Where the download client deposits completed jobs |
 | `BINDERY_AUDIOBOOK_DOWNLOAD_DIR` | inherits download dir | Separate watch folder for audiobook downloads |
 | `BINDERY_URL_BASE` | _(empty)_ | Reverse-proxy subpath (e.g. `/bindery`) |
 | `BINDERY_OUTBOUND_PROXY` | _(empty)_ | Route outbound HTTP (indexers, metadata, covers, notifications, telemetry) through an `http`/`https`/`socks5` proxy. LAN/loopback destinations bypass it by default — see [DEPLOYMENT.md](docs/DEPLOYMENT.md#environment-variables) |
