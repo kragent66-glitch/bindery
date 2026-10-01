@@ -1226,8 +1226,49 @@ type torrentFile struct {
 // downstream code (cleanupMovedSources, alreadyImportedPath) compares clean
 // forms consistently.
 func (s *Scanner) resolveTorrentFiles(client *models.DownloadClient, clientSavePath string, files []torrentFile) []string {
+	return s.resolveTorrentFilesWithContentFallback(client, clientSavePath, "", files)
+}
+
+// resolveTorrentFilesWithContentFallback is resolveTorrentFiles with a second
+// join base, for clients that speak the qBittorrent API but do not shape the
+// files list the way qBittorrent does (#2878).
+//
+// Real qBittorrent names every file of a multi-file torrent relative to the
+// save path, so the names carry the torrent's root folder
+// ("Release/book.m4b") and save_path + name is the file on disk. rdt-client,
+// and any other qBittorrent emulator that copied its shape, names them
+// relative to the content folder instead ("book.m4b"), so the same join lands
+// one directory too high and every file is reported missing.
+//
+// save_path + name stays the primary join. Only when that file is not on this
+// host does the resolver try clientContentPath + name, and only when:
+//
+//   - clientContentPath is set and differs from the save path (otherwise the
+//     two joins are the same path);
+//   - the remapped content path is a directory on this host (for a single
+//     file torrent content_path is the file itself, and the primary join is
+//     already right);
+//   - the name does not already start with the content folder's base name.
+//     Such a name is qBittorrent's own shape, so joining it onto content_path
+//     would double the root folder ("Release/Release/book.m4b").
+//
+// The candidate is used only when it exists; otherwise the primary path is
+// returned unchanged so filterImportableFiles reports it as missing, exactly
+// as before. Both joins go through the same path remap.
+func (s *Scanner) resolveTorrentFilesWithContentFallback(client *models.DownloadClient, clientSavePath, clientContentPath string, files []torrentFile) []string {
 	if len(files) == 0 || strings.TrimSpace(clientSavePath) == "" {
 		return nil
+	}
+	// The content directory is only stat'ed once, and only after a primary
+	// join misses, so the common qBittorrent path costs no extra syscalls.
+	var contentDir, contentRoot string
+	contentChecked := false
+	contentBase := func() (string, string) {
+		if !contentChecked {
+			contentChecked = true
+			contentDir, contentRoot = s.contentDirForFallback(client, clientSavePath, clientContentPath)
+		}
+		return contentDir, contentRoot
 	}
 	out := make([]string, 0, len(files))
 	for _, f := range files {
@@ -1252,9 +1293,59 @@ func (s *Scanner) resolveTorrentFiles(client *models.DownloadClient, clientSaveP
 		if !IsBookFile(binderyPath) {
 			continue
 		}
+		if clientContentPath != "" && !pathOnHost(binderyPath) {
+			if dir, root := contentBase(); dir != "" && firstPathSegment(name) != root {
+				alt := filepath.Clean(s.remapDownloadClientPath(client, filepath.Join(dir, name)))
+				if pathOnHost(alt) {
+					slog.Debug("import: file missing under the save path, using the content path as the join base",
+						"client", client.Name, "name", name, "save_path_join", binderyPath, "path", alt)
+					binderyPath = alt
+				}
+			}
+		}
 		out = append(out, binderyPath)
 	}
 	return out
+}
+
+// contentDirForFallback returns the client-side content directory (cleaned)
+// and its base name when it is usable as the second join base described on
+// resolveTorrentFilesWithContentFallback, or two empty strings when it is not.
+func (s *Scanner) contentDirForFallback(client *models.DownloadClient, clientSavePath, clientContentPath string) (string, string) {
+	dir := strings.TrimSpace(clientContentPath)
+	if dir == "" {
+		return "", ""
+	}
+	dir = filepath.Clean(dir)
+	if dir == filepath.Clean(strings.TrimSpace(clientSavePath)) {
+		return "", ""
+	}
+	fi, err := os.Stat(filepath.Clean(s.remapDownloadClientPath(client, dir)))
+	if err != nil || !fi.IsDir() {
+		return "", ""
+	}
+	root := filepath.Base(dir)
+	if root == "." || root == string(filepath.Separator) {
+		return "", ""
+	}
+	return dir, root
+}
+
+// pathOnHost reports whether anything exists at p, without following a
+// symlink. Whether the entry is importable is filterImportableFiles' call.
+func pathOnHost(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
+}
+
+// firstPathSegment returns the leading segment of a client-reported relative
+// file name, accepting either separator.
+func firstPathSegment(name string) string {
+	name = filepath.ToSlash(name)
+	if i := strings.Index(name, "/"); i >= 0 {
+		return name[:i]
+	}
+	return name
 }
 
 // hasDotDotSegment reports whether p contains a ".." path segment under
@@ -1439,12 +1530,17 @@ func (s *Scanner) transmissionFilesFor(ctx context.Context, trans *transmission.
 // supplied torrent and returns the absolute Bindery-side book-file paths,
 // or nil when the call fails or qBittorrent reported no files yet.
 //
-// SavePath, not ContentPath, is the join base: qBittorrent's files API
-// returns names that include the torrent's display folder (e.g.
+// SavePath, not ContentPath, is the primary join base: qBittorrent's files
+// API returns names that include the torrent's display folder (e.g.
 // "MyBook/file.epub") when the torrent has one, and just the basename for
 // single-file torrents. Joining against SavePath reproduces what's on disk
 // in both cases. ContentPath is the wrong base for multi-file torrents
 // because the file names already include the folder.
+//
+// ContentPath is passed as a fallback base for qBittorrent-compatible clients
+// such as rdt-client, whose files list omits the root folder (#2878). It is
+// consulted only for files missing under SavePath; see
+// resolveTorrentFilesWithContentFallback for the guards.
 func (s *Scanner) qbittorrentFilesFor(ctx context.Context, qb *qbittorrent.Client, client *models.DownloadClient, torrent qbittorrent.Torrent) []string {
 	files, err := qb.Files(ctx, torrent.Hash)
 	if err != nil {
@@ -1461,7 +1557,7 @@ func (s *Scanner) qbittorrentFilesFor(ctx context.Context, qb *qbittorrent.Clien
 	for _, f := range files {
 		conv = append(conv, torrentFile{Name: f.Name, Size: f.Size})
 	}
-	return s.resolveTorrentFiles(client, torrent.SavePath, conv)
+	return s.resolveTorrentFilesWithContentFallback(client, torrent.SavePath, torrent.ContentPath, conv)
 }
 
 func (s *Scanner) remapDownloadClientPath(client *models.DownloadClient, rawPath string) string {
