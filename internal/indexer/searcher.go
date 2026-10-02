@@ -424,6 +424,61 @@ func primaryTitle(title string) string {
 	return title
 }
 
+// volumeNumberAgrees keeps the cross spelling volume match (keywordPattern)
+// from accepting a different volume.
+//
+// The volume number is under three bytes for volumes 1 to 99, so SigWords
+// drops it and the keyword matchers never compare it. Before volume markers
+// matched across spellings, a "Vol 16" release for a "Volume 17" title was
+// rejected purely because "volume" was missing from it. That was an accident,
+// but it was a rejection, and the cross spelling match must not turn it into
+// an accept.
+//
+// So: when title names a volume marker followed by a number, and the release
+// does not carry that exact marker spelling (so any keyword hit on the marker
+// came through the cross spelling match), the release must carry some
+// spelling of the marker followed by the same number. A release that carries
+// the title's own spelling is left exactly as it was judged before. title is
+// the raw title string the keywords came from; normRelease is NormalizeRelease
+// output.
+func volumeNumberAgrees(normRelease, title string) bool {
+	tt := strings.Fields(NormalizeRelease(title))
+	spelling, number := "", ""
+	for i, tok := range tt {
+		if newznab.IsVolumeMarker(tok) {
+			spelling = tok
+			if i+1 < len(tt) {
+				number = tt[i+1]
+			}
+			break
+		}
+	}
+	if spelling == "" || number == "" {
+		return true
+	}
+	rt := strings.Fields(normRelease)
+	for _, tok := range rt {
+		if tok == spelling {
+			return true
+		}
+	}
+	for i, tok := range rt {
+		if newznab.IsVolumeMarker(tok) && i+1 < len(rt) && sameVolumeNumber(rt[i+1], number) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameVolumeNumber compares two volume tokens, ignoring zero padding when both
+// are numbers ("07" is "7"). Anything else must match exactly.
+func sameVolumeNumber(a, b string) bool {
+	if isAllDigits(a) && isAllDigits(b) {
+		a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	}
+	return a == b
+}
+
 // stripPossessivePrefix removes a leading "Author's " possessive from a book
 // title when the author's name (or a portion of it) forms the possessive
 // opener. For example, "Tom Clancy's Rainbow Six" with author "Tom Clancy"
@@ -795,7 +850,9 @@ func titleMatchesResult(normResult string, titleKws []string, authorToks []strin
 func filterRelevant(results []newznab.SearchResult, title, author string, aliases []string) []newznab.SearchResult {
 	// Strip edition qualifiers ("(German Edition)" etc.) and normalize
 	// smart quotes before tokenizing, so they don't become spurious keywords.
-	title = newznab.NormalizeQueryTitle(title)
+	// Format qualifiers mid title ("(Light Novel)") go too, matching what the
+	// query sent to the indexer (see newznab.StripFormatQualifiers).
+	title = newznab.StripFormatQualifiers(newznab.NormalizeQueryTitle(title))
 	// Strip possessive author prefix before keyword extraction.
 	// "Tom Clancy's Rainbow Six" → "Rainbow Six" when author is "Tom Clancy",
 	// preventing "clancys" from becoming a keyword that fails to match releases
@@ -876,11 +933,13 @@ func filterRelevant(results []newznab.SearchResult, title, author string, aliase
 		// allowFallback=true: each result gets phrase match first, then keyword
 		// fallback if the phrase fails. No batch-level gate.
 		fullOK := (tryMatch(n, fullKws) || tryMatchElided(n, fullElided, fullKws)) &&
-			identityOK(identity, fullIdentity, fullIdentityElided)
+			identityOK(identity, fullIdentity, fullIdentityElided) &&
+			volumeNumberAgrees(n, title)
 		primaryOK := false
 		if !fullOK && len(primaryKws) > 0 && !sameKws(primaryKws, fullKws) {
 			primaryOK = (tryMatch(n, primaryKws) || tryMatchElided(n, primaryElided, primaryKws)) &&
-				identityOK(identity, primaryIdentity, primaryIdentityElided)
+				identityOK(identity, primaryIdentity, primaryIdentityElided) &&
+				volumeNumberAgrees(n, primaryTitle(title))
 		}
 		if fullOK || primaryOK {
 			filtered = append(filtered, r)
