@@ -967,3 +967,33 @@ func TestHydrateHardcoverEditionsRespectsMediaTypePin(t *testing.T) {
 		})
 	}
 }
+
+func TestEditionHasAudioMarker(t *testing.T) {
+	cases := []struct {
+		text string
+		want bool
+	}{
+		{"Audio CD", true},
+		{"audio cd", true},
+		{"CD", true},
+		{"2 CD edition", true},
+		{"2 CDs", true},
+		{"Unabridged CD", true},
+		{"MP3 CD", true},
+		{"CD-ROM", true},
+		{"Audiobook", true},
+		{"Audible Studios", true},
+		{"mp3 edition", true},
+		{"Cassette", true},
+		{"hardcover, mcdermott edition", false},
+		{"McDonald & Co", false},
+		{"Hardcover", false},
+		{"Paperback, cdn edition", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := editionHasAudioMarker(tc.text); got != tc.want {
+			t.Errorf("editionHasAudioMarker(%q) = %v; want %v", tc.text, got, tc.want)
+		}
+	}
+}

@@ -328,6 +328,46 @@ func TestPluginContract(t *testing.T) {
 		}
 	})
 
+	t.Run("add format", func(t *testing.T) {
+		if !caps[pluginCapabilityAddFormat] {
+			if c.SupportsAddFormat(ctx) {
+				t.Error("SupportsAddFormat = true against a plugin that does not advertise it")
+			}
+			t.Skipf("plugin does not advertise %q; the degradation is asserted in TestPluginContract_DegradesWithoutCapabilities", pluginCapabilityAddFormat)
+		}
+		if !c.SupportsAddFormat(ctx) {
+			t.Fatal("SupportsAddFormat = false against a plugin that advertises it")
+		}
+		meta := Metadata{Title: "Dune", Authors: []string{"Frank Herbert"}, Identifiers: map[string]string{"bindery": "7007"}}
+		first, err := c.Add(ctx, tempBook(t, "multi.epub"), meta)
+		if err != nil || first <= 0 {
+			t.Fatalf("first format: id %d, err %v", first, err)
+		}
+		res, err := c.AddWithOptions(ctx, tempBook(t, "multi.pdf"), meta, AddOptions{AddFormat: true})
+		if err != nil {
+			t.Fatalf("second format with addFormat: %v", err)
+		}
+		if res.ID != first || !res.FormatAdded {
+			t.Errorf("second format = %+v, want format_added on id %d", res, first)
+		}
+		// The same format again is a duplicate, and the file already there
+		// is never replaced.
+		again, err := c.AddWithOptions(ctx, tempBook(t, "multi2.pdf"), meta, AddOptions{AddFormat: true})
+		if !errors.Is(err, ErrAlreadyInCalibre) || again.ID != first || again.FormatAdded {
+			t.Errorf("same format again = %+v, %v; want ErrAlreadyInCalibre on id %d", again, err, first)
+		}
+		// Without addFormat a second format is refused as it always was.
+		other := Metadata{Title: "Children of Dune", Identifiers: map[string]string{"bindery": "7008"}}
+		id, err := c.Add(ctx, tempBook(t, "plain.epub"), other)
+		if err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		res, err = c.AddWithOptions(ctx, tempBook(t, "plain.pdf"), other, AddOptions{})
+		if !errors.Is(err, ErrAlreadyInCalibre) || res.ID != id || res.FormatAdded {
+			t.Errorf("second format without addFormat = %+v, %v; want ErrAlreadyInCalibre on id %d", res, err, id)
+		}
+	})
+
 	t.Run("error codes", func(t *testing.T) {
 		if !caps[pluginCapabilityErrorCodes] {
 			if c.SupportsErrorCodes(ctx) {
@@ -638,6 +678,34 @@ func TestPluginContract_DegradesWithoutCapabilities(t *testing.T) {
 			t.Error("ProbePath succeeded against a bridge that does not serve /v1/paths")
 		} else {
 			t.Logf("probing anyway fails with %v", err)
+		}
+	})
+
+	t.Run("no add_format capability means no addFormat on the wire", func(t *testing.T) {
+		if caps[pluginCapabilityAddFormat] {
+			t.Skipf("plugin advertises %q; the positive case is TestPluginContract's add format row", pluginCapabilityAddFormat)
+		}
+		if c.SupportsAddFormat(ctx) {
+			t.Error("SupportsAddFormat = true against a plugin that does not advertise it")
+		}
+		meta := Metadata{Title: "Dune", Identifiers: map[string]string{"bindery": "8008"}}
+		first, err := c.Add(ctx, tempBook(t, "old.epub"), meta)
+		if err != nil {
+			t.Fatalf("first format: %v", err)
+		}
+		wire.reset()
+		res, err := c.AddWithOptions(ctx, tempBook(t, "old.pdf"), meta, AddOptions{AddFormat: true})
+		posts := wire.matching(http.MethodPost, "/v1/books")
+		if len(posts) != 1 {
+			t.Fatalf("POST count = %d, want one: %s", len(posts), wire.describe())
+		}
+		if bytes.Contains(posts[0].Body, []byte("addFormat")) {
+			t.Errorf("body = %s, want no addFormat for a bridge that did not advertise it", posts[0].Body)
+		}
+		// Such a bridge answers a second format of the book as it always
+		// has, which is why the worker holds these rows back instead.
+		if !errors.Is(err, ErrAlreadyInCalibre) || res.ID != first || res.FormatAdded {
+			t.Errorf("second format = %+v, %v; want ErrAlreadyInCalibre on id %d", res, err, first)
 		}
 	})
 

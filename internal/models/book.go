@@ -39,8 +39,15 @@ type Book struct {
 	Narrator          string     `json:"narrator"`
 	DurationSeconds   int        `json:"durationSeconds"`
 	ASIN              string     `json:"asin"`
-	CalibreID         *int64     `json:"calibre_id,omitempty"`
-	MetadataProvider  string     `json:"metadataProvider"`
+	// CalibreID is the book's id in the Calibre library at
+	// calibre.library_path, the library Bindery imports from (#2832). It is
+	// not the id in the push target: a delivery records that on its
+	// calibre_deliveries row. The delivery worker only fills this when it is
+	// NULL, the book did not come from a Calibre import, and the push target
+	// is that same library (or no library path is set). It never clears or
+	// replaces a value.
+	CalibreID        *int64 `json:"calibre_id,omitempty"`
+	MetadataProvider string `json:"metadataProvider"`
 	// DedupKey is the canonical cross-source title key (#940), computed by
 	// indexer.CanonicalDedupKey at every book-create path. It is the only
 	// signal used to bind the same work imported from different sources

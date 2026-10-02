@@ -809,17 +809,80 @@ func TestRemoveDownload_SABnzbd_NilNzoID(t *testing.T) {
 	}
 }
 
-func TestRemoveDownload_Transmission(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// transmissionRPCRecorder serves a Transmission RPC endpoint that answers
+// every call with success and records each request's method and ids, so a
+// test can assert exactly what Bindery asked the daemon to act on.
+type transmissionRPCRecorder struct {
+	methods []string
+	ids     [][]any
+}
+
+func (rec *transmissionRPCRecorder) handler(t *testing.T) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Method    string         `json:"method"`
+			Arguments map[string]any `json:"arguments"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode rpc body: %v", err)
+		}
+		rec.methods = append(rec.methods, body.Method)
+		ids, _ := body.Arguments["ids"].([]any)
+		rec.ids = append(rec.ids, ids)
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "arguments": map[string]any{}})
-	}))
+	}
+}
+
+// TestRemoveDownload_Transmission_ByHash pins that a download identified by
+// its info hash is removed by that hash, sent to the daemon as a JSON string.
+// Transmission accepts a hashString anywhere it accepts an id, and unlike the
+// id the hash survives a daemon restart.
+func TestRemoveDownload_Transmission_ByHash(t *testing.T) {
+	rec := &transmissionRPCRecorder{}
+	srv := httptest.NewServer(rec.handler(t))
 	defer srv.Close()
 	host, port := serverHostPort(t, srv.URL)
 	client := &models.DownloadClient{Type: "transmission", Host: host, Port: port}
-	torrentID := "7"
-	dl := &models.Download{TorrentID: &torrentID}
-	if err := RemoveDownload(context.Background(), client, dl, false, ""); err != nil {
+	hash := "0123456789ABCDEF0123456789ABCDEF01234567"
+	dl := &models.Download{TorrentID: &hash}
+	if err := RemoveDownload(context.Background(), client, dl, true, ""); err != nil {
 		t.Fatalf("RemoveDownload: %v", err)
+	}
+	if len(rec.methods) != 1 || rec.methods[0] != "torrent-remove" {
+		t.Fatalf("expected one torrent-remove call, got %v", rec.methods)
+	}
+	if len(rec.ids[0]) != 1 {
+		t.Fatalf("expected exactly one id in the removal, got %v", rec.ids[0])
+	}
+	got, ok := rec.ids[0][0].(string)
+	if !ok || got != "0123456789abcdef0123456789abcdef01234567" {
+		t.Fatalf("expected the lower-cased hash as a string id, got %#v", rec.ids[0][0])
+	}
+}
+
+// TestRemoveDownload_Transmission_RefusesSessionID is the destructive half of
+// #2808. A row written before hashes were persisted holds Transmission's
+// session id, which the daemon renumbers on every restart, so that number
+// may now name a torrent Bindery never grabbed. The poller rewrites such rows
+// to the hash once it can pair them with confidence; one it could not pair
+// must not be removed by number, and certainly not with its data. The call has
+// to fail without ever reaching the daemon.
+func TestRemoveDownload_Transmission_RefusesSessionID(t *testing.T) {
+	rec := &transmissionRPCRecorder{}
+	srv := httptest.NewServer(rec.handler(t))
+	defer srv.Close()
+	host, port := serverHostPort(t, srv.URL)
+	client := &models.DownloadClient{Type: "transmission", Host: host, Port: port}
+	for _, deleteFiles := range []bool{true, false} {
+		stale := "7"
+		dl := &models.Download{TorrentID: &stale}
+		if err := RemoveDownload(context.Background(), client, dl, deleteFiles, ""); err == nil {
+			t.Fatalf("deleteFiles=%v: expected an error for a session id, got nil", deleteFiles)
+		}
+	}
+	if len(rec.methods) != 0 {
+		t.Fatalf("expected no RPC for a session id, got %v with ids %v", rec.methods, rec.ids)
 	}
 }
 
@@ -828,15 +891,6 @@ func TestRemoveDownload_Transmission_NilID(t *testing.T) {
 	dl := &models.Download{TorrentID: nil}
 	if err := RemoveDownload(context.Background(), client, dl, false, ""); err != nil {
 		t.Fatalf("expected nil error for nil TorrentID: %v", err)
-	}
-}
-
-func TestRemoveDownload_Transmission_InvalidID(t *testing.T) {
-	client := &models.DownloadClient{Type: "transmission"}
-	bad := "not-a-number"
-	dl := &models.Download{TorrentID: &bad}
-	if err := RemoveDownload(context.Background(), client, dl, false, ""); err == nil {
-		t.Fatal("expected error for non-numeric torrent ID")
 	}
 }
 
@@ -962,5 +1016,35 @@ func TestGetLiveStatusesTransmission_UsesErrorStringStatus(t *testing.T) {
 	}
 	if !LiveStatusIsError(ls.Status) {
 		t.Error("expected LiveStatusIsError to return true for Transmission errorString")
+	}
+}
+
+// TestSendDownload_Transmission_PersistsInfoHash pins the core of #2808: the
+// identifier handed back for storage is the torrent's info hash, lower-cased,
+// not the session id Transmission renumbers on every restart. A re-add of a
+// torrent the daemon already holds comes back as torrent-duplicate and must be
+// identified the same way.
+func TestSendDownload_Transmission_PersistsInfoHash(t *testing.T) {
+	for _, key := range []string{"torrent-added", "torrent-duplicate"} {
+		t.Run(key, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"result": "success",
+					"arguments": map[string]any{
+						key: map[string]any{"id": 5, "name": "Book", "hashString": "ABCDEF0123456789ABCDEF0123456789ABCDEF01"},
+					},
+				})
+			}))
+			defer srv.Close()
+			host, port := serverHostPort(t, srv.URL)
+			client := &models.DownloadClient{Type: "transmission", Host: host, Port: port}
+			result, err := SendDownload(context.Background(), client, "magnet:?xt=urn:btih:abc", "")
+			if err != nil {
+				t.Fatalf("SendDownload: %v", err)
+			}
+			if result.RemoteID != "abcdef0123456789abcdef0123456789abcdef01" {
+				t.Fatalf("expected the lower-cased info hash as RemoteID, got %q", result.RemoteID)
+			}
+		})
 	}
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { useConfirmDialog } from '../components/useConfirmDialog'
@@ -22,6 +22,7 @@ import MoreMenu from '../components/MoreMenu'
 import Section from '../components/Section'
 import AuthorSyncNotice from '../components/AuthorSyncNotice'
 import CatalogueReconciliationModal from '../components/CatalogueReconciliationModal'
+import DuplicateCandidatesModal from '../components/DuplicateCandidatesModal'
 
 type MediaFilter = '' | 'ebook' | 'audiobook'
 // 'excluded' folds in what used to be a separate "Show excluded" checkbox. It
@@ -123,6 +124,7 @@ export default function AuthorDetailPage() {
   const [showRename, setShowRename] = useState(false)
   const [showMetadataLink, setShowMetadataLink] = useState(false)
   const [showCatalogueReconciliation, setShowCatalogueReconciliation] = useState(false)
+  const [showDuplicateCandidates, setShowDuplicateCandidates] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Bulk multi-select state (#791). Selection is keyed by book.id and
@@ -457,10 +459,12 @@ export default function AuthorDetailPage() {
       }
       let okCount = 0
       let firstError = ''
+      const succeeded = new Set<number>()
       for (const id of ids) {
         const r = res.results[String(id)]
         if (r?.ok) {
           okCount++
+          succeeded.add(id)
         } else if (!firstError) {
           firstError = r?.error || 'unknown error'
         }
@@ -473,7 +477,15 @@ export default function AuthorDetailPage() {
           error: firstError,
         }))
       }
-      clearSelection()
+      // The selection survives the action so a second one can run on the
+      // same books; Clear is the way out (#2457). Books that leave the view
+      // (excluded, deleted, filtered out by the change) are dropped by the
+      // visibleIds effect once the reload lands. Deleted ids are dropped here
+      // as well, so a failed reload cannot leave a gone book selected for the
+      // next action. Ids that failed to delete stay selected for a retry.
+      if (action === 'delete' && succeeded.size > 0) {
+        setSelected(prev => new Set([...prev].filter(id => !succeeded.has(id))))
+      }
       await reloadBooks()
     } catch (e) {
       setError(t('authorDetail.bulk.failed', {
@@ -631,6 +643,20 @@ export default function AuthorDetailPage() {
   // BookDetailPage.tsx for how Back uses it to skip the whole chain.
   const bookNavState = (book: Book) => ({ ids: bookIds, index: bookIndexById.get(book.id) ?? -1, hopDepth: 1 })
 
+  // While a selection exists, a plain click anywhere on a card or row adds or
+  // removes that book instead of opening it, so a click that misses the small
+  // checkbox no longer navigates away and loses the selection (#2456). With
+  // nothing selected the click opens the book as before. Modified clicks
+  // (ctrl/cmd/shift/alt) pass through so open in a new tab keeps working;
+  // middle click never reaches onClick. Returns true when it handled the click.
+  const selectingClick = (e: MouseEvent, book: Book): boolean => {
+    if (selected.size === 0) return false
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false
+    e.preventDefault()
+    toggleSelect(book.id)
+    return true
+  }
+
   // Render helpers shared by the flat and grouped-by-series (#1125) layouts so
   // each series section and the standalone group reuse the exact same table
   // rows / grid cards instead of duplicating the markup.
@@ -642,7 +668,12 @@ export default function AuthorDetailPage() {
         // Client-side, matching the <Link> in this same row. The row used to do
         // a full page reload while the link inside it routed client-side, so
         // one row had two different navigation behaviours.
-        onClick={() => navigate(`/book/${book.id}`, { state: bookNavState(book) })}
+        // The bare row is not a link, so it has no new-tab gesture to keep:
+        // while selecting, every click on it toggles (#2456).
+        onClick={() => {
+          if (selected.size > 0) toggleSelect(book.id)
+          else navigate(`/book/${book.id}`, { state: bookNavState(book) })
+        }}
       >
         <td className="px-3 py-2 w-10 align-middle" onClick={e => e.stopPropagation()}>
           <input
@@ -654,7 +685,15 @@ export default function AuthorDetailPage() {
           />
         </td>
         <td className="px-3 py-2 align-middle">
-          <Link to={`/book/${book.id}`} state={bookNavState(book)} className="flex items-center gap-2 min-w-0" onClick={e => e.stopPropagation()}>
+          <Link
+            to={`/book/${book.id}`}
+            state={bookNavState(book)}
+            className="flex items-center gap-2 min-w-0"
+            onClick={e => {
+              e.stopPropagation()
+              selectingClick(e, book)
+            }}
+          >
             {book.imageUrl ? (
               <img src={book.imageUrl} alt="" className="w-6 h-9 object-cover rounded flex-shrink-0" />
             ) : (
@@ -767,7 +806,12 @@ export default function AuthorDetailPage() {
             className={`absolute top-2 left-2 z-10 rounded border-slate-400 dark:border-zinc-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 ${selected.has(book.id) ? '' : 'bg-white/80 dark:bg-zinc-900/80'}`}
             aria-label={`Select ${book.title}`}
           />
-          <Link to={`/book/${book.id}`} state={bookNavState(book)} className="block">
+          <Link
+            to={`/book/${book.id}`}
+            state={bookNavState(book)}
+            className="block"
+            onClick={e => { selectingClick(e, book) }}
+          >
             <div className="aspect-[2/3] bg-slate-200 dark:bg-zinc-800 relative">
               {book.imageUrl ? (
                 <img src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />
@@ -981,6 +1025,11 @@ export default function AuthorDetailPage() {
                   onSelect: () => setShowCatalogueReconciliation(true),
                 },
                 {
+                  label: t('authorDetail.actions.reviewDuplicates', 'Review duplicates…'),
+                  title: t('authorDetail.actions.reviewDuplicatesHint', 'Find titles that look like the same book; nothing changes until you exclude a row'),
+                  onSelect: () => setShowDuplicateCandidates(true),
+                },
+                {
                   label: t('authorDetail.actions.delete', 'Delete'),
                   danger: true,
                   onSelect: handleDelete,
@@ -1053,6 +1102,15 @@ export default function AuthorDetailPage() {
           authorName={author.authorName}
           onClose={() => setShowCatalogueReconciliation(false)}
           onApplied={reloadBooks}
+        />
+      )}
+
+      {showDuplicateCandidates && (
+        <DuplicateCandidatesModal
+          authorId={author.id}
+          authorName={author.authorName}
+          onClose={() => setShowDuplicateCandidates(false)}
+          onChanged={reloadBooks}
         />
       )}
 

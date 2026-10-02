@@ -109,6 +109,30 @@ func TestBookRepo_ExcludedFlagAndListVariants(t *testing.T) {
 	}
 }
 
+// SetCalibreIDIfUnset fills a NULL calibre_id and never replaces one (#2832).
+func TestBookRepo_SetCalibreIDIfUnset(t *testing.T) {
+	database, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	bookRepo := NewBookRepo(database)
+	a := mkAuthor(t, NewAuthorRepo(database), ctx, "OL-IU-A")
+	b := mkBook(t, bookRepo, ctx, a.ID, "OL-IU-B", "Unset Book", "wanted")
+
+	if set, err := bookRepo.SetCalibreIDIfUnset(ctx, b.ID, 7); err != nil || !set {
+		t.Fatalf("first set = %v, %v; want it written", set, err)
+	}
+	if set, err := bookRepo.SetCalibreIDIfUnset(ctx, b.ID, 8); err != nil || set {
+		t.Fatalf("second set = %v, %v; want it refused", set, err)
+	}
+	got, err := bookRepo.GetByID(ctx, b.ID)
+	if err != nil || got.CalibreID == nil || *got.CalibreID != 7 {
+		t.Fatalf("calibre_id = %v, %v; want 7 kept", got.CalibreID, err)
+	}
+}
+
 func TestBookRepo_CalibreIDRoundTrip(t *testing.T) {
 	database, err := OpenMemory()
 	if err != nil {

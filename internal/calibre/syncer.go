@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/vavallee/bindery/internal/jobs"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -33,12 +34,12 @@ type SyncSkip struct {
 	Reason string `json:"reason"`
 }
 
-// Skip reasons. Kept free of commas so they read correctly when the zero-case
+// Skip reasons. A book that has not been imported is not among them: it has
+// no file, so it was never a candidate, and listing it drowned the reasons a
+// user can act on (a 3,000 book wanted list filled the 50 row sample before
+// any unmonitored or missing file book was reached). Kept free of commas so they read correctly when the zero-case
 // message joins several of them into one sentence.
 const (
-	// SkipReasonNotImported is a book whose status is not "imported": there
-	// is nothing on disk to hand to Calibre yet.
-	SkipReasonNotImported = "not imported"
 	// SkipReasonNotMonitored is an imported book that is unmonitored. The
 	// bulk push has always inherited this filter from ListByStatus; it was
 	// simply invisible.
@@ -49,29 +50,41 @@ const (
 	// SkipReasonAudiobookOnly is an imported book that only has an audiobook.
 	// The plugin endpoint takes one ebook file, so there is nothing to send.
 	SkipReasonAudiobookOnly = "audiobook only with no ebook"
+	// SkipReasonUntracked is a book whose only file path is the legacy
+	// books.file_path column, with no ebook row in book_files behind it. The
+	// delivery ledger is keyed on book_files, so there is nothing to queue.
+	// A library rescan tracks the file and clears this.
+	SkipReasonUntracked = "ebook file not tracked"
 )
 
-// maxSyncErrors caps the per-book error list kept in SyncProgress.Errors (and
-// thus returned on every status poll). A run that fails on every book — e.g. a
-// library path the Calibre container can't see (#1346) — would otherwise grow a
-// SyncError per book and re-serialize thousands of near-identical entries to the
-// UI on each poll. The full failure count is always in Stats.Failed; the list is
-// a sample for display.
+// maxSyncErrors caps the per-book error and skip lists returned on every
+// status poll. A run that fails on every book (a library path the Calibre
+// container cannot see, #1346) would otherwise re-serialize thousands of
+// near identical entries on each poll. The full counts are always in Stats;
+// the lists are a sample for display.
 const maxSyncErrors = 50
 
-// SyncStats summarises one bulk-push run. Totals are cumulative across
-// every imported book with a file path; `Pushed` counts newly-added,
-// `AlreadyInCalibre` counts 409 Conflict responses (treated as success
-// for idempotency), and `Failed` counts everything else.
+// syncRemovedReason is the failure shown for a row this run queued that was
+// gone from the ledger before it was delivered: cleared from the queue, reset,
+// or removed with its file.
+const syncRemovedReason = "removed from the queue before it was delivered"
+
+// SyncStats summarises one Push all run, read from the delivery ledger.
+// Counts are per ebook file. Pushed counts the run's files Calibre newly took,
+// as a new record or as a format added to one; AlreadyInCalibre
+// counts the ones Calibre already had, including files delivered before this
+// run began; Failed counts the ones that failed for good (a retrying row is
+// still pending).
 type SyncStats struct {
 	Total            int `json:"total"`
 	Processed        int `json:"processed"`
 	Pushed           int `json:"pushed"`
 	AlreadyInCalibre int `json:"alreadyInCalibre"`
 	Failed           int `json:"failed"`
-	// Skipped counts books the run never attempted. It is deliberately not
-	// part of Total: Total is the denominator of the progress bar and only
-	// counts work the run is actually going to do.
+	// Skipped counts books the run never queued, plus queued books the worker
+	// then skipped because the file had gone. It is deliberately not part of
+	// Total: Total is the denominator of the progress bar and only counts
+	// work the run is actually going to do.
 	Skipped int `json:"skipped"`
 }
 
@@ -79,7 +92,12 @@ type SyncStats struct {
 // with a non-nil FinishedAt means the last run is complete; Running=false
 // with StartedAt zero means nothing has been run yet this process.
 type SyncProgress struct {
-	Running    bool        `json:"running"`
+	// Running is true while the run is queueing or any book it queued is
+	// still waiting for Calibre, which lasts as long as Calibre is closed.
+	Running bool `json:"running"`
+	// Queueing is the part of Running that is Push all itself walking the
+	// library. Only this part blocks a second Push all.
+	Queueing   bool        `json:"queueing,omitempty"`
 	StartedAt  time.Time   `json:"startedAt"`
 	FinishedAt *time.Time  `json:"finishedAt,omitempty"`
 	Message    string      `json:"message,omitempty"`
@@ -91,184 +109,262 @@ type SyncProgress struct {
 	Skips []SyncSkip `json:"skips"`
 }
 
-// pluginPusher captures the subset of *PluginClient the syncer needs, so
-// tests can inject a fake without standing up an HTTP server.
-type pluginPusher interface {
-	Add(ctx context.Context, filePath string, meta Metadata) (int64, error)
-	Library(ctx context.Context) (string, error)
-}
-
 // BookLister is the subset of *db.BookRepo the syncer uses. Keeps the
 // dependency narrow for tests.
 type BookLister interface {
 	// List returns the whole visible catalogue. It exists only so the run can
-	// say why a book was left out; eligibility still comes from ListByStatus,
-	// so what gets pushed is unchanged.
+	// say why a book was left out; eligibility still comes from ListByStatus.
 	List(ctx context.Context) ([]models.Book, error)
 	ListByStatus(ctx context.Context, status string) ([]models.Book, error)
-	SetCalibreID(ctx context.Context, id, calibreID int64) error
+	ListFiles(ctx context.Context, bookID int64) ([]models.BookFile, error)
+}
+
+// SyncQueue is where Push all puts books: the delivery worker's queue.
+// *Deliverer implements it.
+type SyncQueue interface {
+	Enqueue(ctx context.Context, bookID, bookFileID int64, editionID *int64, path string) (bool, error)
+	Kick()
+}
+
+// SyncLedger reads the delivery ledger. *db.CalibreDeliveryRepo implements it.
+type SyncLedger interface {
+	ListAll(ctx context.Context) ([]models.CalibreDelivery, error)
 }
 
 // SeriesGetter is the subset of *db.SeriesRepo used to attach series and
-// series index to a bulk-pushed book, which a live import has always sent and
-// the bulk push never did.
+// series index to a delivered book.
 type SeriesGetter interface {
 	GetPrimarySeriesForBook(ctx context.Context, bookID int64) (string, string, error)
 }
 
 // AuthorGetter is the subset of *db.AuthorRepo used to add author metadata
-// to plugin sync requests.
+// to a delivery.
 type AuthorGetter interface {
 	GetByID(ctx context.Context, id int64) (*models.Author, error)
 }
 
 // EditionLister is the subset of *db.EditionRepo used to identify the
-// specific edition for the file being pushed.
+// specific edition for the file being delivered.
 type EditionLister interface {
 	ListByBook(ctx context.Context, bookID int64) ([]models.Edition, error)
 }
 
-// Syncer orchestrates the "Push all to Calibre" bulk job. One sync runs
-// at a time — a second call returns ErrSyncAlreadyRunning. Progress is
-// mutex-protected and can be polled concurrently with the running job.
+// Syncer is "Push all to Calibre" (#2832). It no longer talks to Calibre: it
+// queues every ebook file of every eligible book that the delivery ledger does not
+// already hold and kicks the delivery worker, which does the sending,
+// retrying and recording. Status is read back from the ledger, so what the
+// modal reports is what the worker actually did.
+//
+// Only the queueing phase is exclusive. Once it is done a second Push all may
+// start, and simply finds the first run's rows already in the ledger.
 type Syncer struct {
-	books     BookLister
-	authors   AuthorGetter
-	editions  EditionLister
-	series    SeriesGetter
-	newClient func(cfg Config) pluginPusher
+	books  BookLister
+	ledger SyncLedger
+	queue  SyncQueue
+	jobs   *jobs.Group
+	now    func() time.Time
 
-	mu       sync.Mutex
-	running  bool
-	progress SyncProgress
+	mu  sync.Mutex
+	run *syncRun
 }
 
-// NewSyncer wires a syncer against the books repo. The plugin client is
-// built per-run from the current settings so mode/URL changes take effect
-// without restarting Bindery.
-func NewSyncer(books BookLister) *Syncer {
-	return &Syncer{
-		books: books,
-		newClient: func(cfg Config) pluginPusher {
-			return NewPluginClient(cfg.PluginURL, cfg.PluginAPIKey).WithPushPathRemap(cfg.PushPathRemap)
-		},
-	}
+// trackedFile is one ebook file the run follows through the ledger. A book
+// with several formats has one per file.
+type trackedFile struct {
+	bookID int64
+	title  string
+	path   string
+	// before is true when the book's row was already delivered when the run
+	// began. That book was in Calibre before this Push all, whatever outcome
+	// its row records, so it counts as already in Calibre and not as pushed.
+	before bool
 }
 
-// WithMetadata attaches optional repositories used to enrich plugin sync
-// requests. Keeping this separate preserves the narrow constructor used in
-// tests while production can export authors and edition identifiers.
-func (s *Syncer) WithMetadata(authors AuthorGetter, editions EditionLister) *Syncer {
-	s.authors = authors
-	s.editions = editions
-	return s
+// syncRun is the in-memory record of the latest Push all. It holds what the
+// ledger cannot say: which rows belong to the run and why books were left
+// out. Everything else is read from the ledger on each poll.
+type syncRun struct {
+	startedAt  time.Time
+	finishedAt *time.Time
+	queueing   bool
+	err        string
+	// nothing is the zero case message naming why nothing was queued.
+	nothing string
+	tracked map[int64]trackedFile // by book_file_id
+	skipped int
+	skips   []SyncSkip
+	// failed and errors are books the run could not queue at all.
+	failed int
+	errors []SyncError
 }
 
-// WithSeries attaches the series lookup so bulk-pushed books carry the same
-// series and series index a live import sends.
-func (s *Syncer) WithSeries(series SeriesGetter) *Syncer {
-	s.series = series
+// NewSyncer wires Push all against the books repo, the delivery ledger and
+// the worker's queue.
+func NewSyncer(books BookLister, ledger SyncLedger, queue SyncQueue) *Syncer {
+	return &Syncer{books: books, ledger: ledger, queue: queue, now: time.Now}
+}
+
+// WithJobs runs the queueing phase in the process-wide jobs group, so it is
+// cancelled at shutdown and the database is not closed under it.
+func (s *Syncer) WithJobs(g *jobs.Group) *Syncer {
+	s.jobs = g
 	return s
 }
 
 // ErrSyncAlreadyRunning is returned when Start is called while a previous
-// sync is still executing. Maps to 409 Conflict at the API layer.
+// run is still queueing. Maps to 409 Conflict at the API layer.
 var ErrSyncAlreadyRunning = errors.New("calibre sync already running")
 
 // ErrSyncModeNotPlugin is returned when Start is called while the Calibre
-// integration is not in plugin mode — bulk push only makes sense against
-// the plugin, not the calibredb CLI (which already lives next to the
-// library file on the Bindery host).
+// integration is not in plugin mode. The delivery worker serves calibredb
+// mode too, but calibredb has no "already in the library" answer: its add
+// refuses a duplicate with an error, so a bulk run would turn every book the
+// library already holds into a failed row. The plugin answers 409 instead.
 var ErrSyncModeNotPlugin = errors.New("calibre sync requires mode=plugin")
 
-// Running reports whether a sync is currently in flight.
-func (s *Syncer) Running() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running
-}
-
-// Progress returns a snapshot of the current (or most recent) sync.
-func (s *Syncer) Progress() SyncProgress {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// Defensive copy of the slice so a later append by the worker does
-	// not mutate a snapshot already handed to the HTTP layer.
-	snap := s.progress
-	if len(s.progress.Errors) > 0 {
-		snap.Errors = append([]SyncError(nil), s.progress.Errors...)
-	}
-	if len(s.progress.Skips) > 0 {
-		snap.Skips = append([]SyncSkip(nil), s.progress.Skips...)
-	}
-	return snap
-}
-
-// Start launches a sync in the background. Caller passes
-// context.WithoutCancel(r.Context()) so the HTTP response-send doesn't
-// cancel the long-running job.
-func (s *Syncer) Start(ctx context.Context, cfg Config, mode Mode) error {
+// Start begins a Push all: the queueing runs in the background and the
+// caller polls Progress. It returns at once.
+func (s *Syncer) Start(mode Mode) error {
 	if mode != ModePlugin {
 		return ErrSyncModeNotPlugin
 	}
 	s.mu.Lock()
-	if s.running {
+	if s.run != nil && s.run.queueing {
 		s.mu.Unlock()
 		return ErrSyncAlreadyRunning
 	}
-	s.running = true
-	s.progress = SyncProgress{
-		Running:   true,
-		StartedAt: time.Now().UTC(),
-		Message:   "listing imported books…",
-		Errors:    []SyncError{},
-		Skips:     []SyncSkip{},
+	run := &syncRun{
+		startedAt: s.now().UTC(),
+		queueing:  true,
+		tracked:   map[int64]trackedFile{},
+		skips:     []SyncSkip{},
+		errors:    []SyncError{},
 	}
+	s.run = run
 	s.mu.Unlock()
 
-	go s.run(ctx, cfg)
+	work := func(ctx context.Context) { s.queueAll(ctx, run) }
+	if s.jobs == nil {
+		go work(context.Background())
+		return nil
+	}
+	if !s.jobs.Go("calibre-push-all", work) {
+		s.finishQueueing(run, "Bindery is shutting down")
+	}
 	return nil
 }
 
-func (s *Syncer) run(ctx context.Context, cfg Config) {
-	defer func() {
-		now := time.Now().UTC()
-		s.mu.Lock()
-		s.progress.Running = false
-		s.progress.FinishedAt = &now
-		s.running = false
-		s.mu.Unlock()
-	}()
+func (s *Syncer) finishQueueing(run *syncRun, errMsg string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run.queueing = false
+	if errMsg != "" {
+		run.err = errMsg
+		now := s.now().UTC()
+		run.finishedAt = &now
+	}
+}
+
+// queueAll walks the imported books and queues each eligible one's ebook
+// file, unless the ledger already holds a row for one of its ebook files.
+func (s *Syncer) queueAll(ctx context.Context, run *syncRun) {
+	failMsg := ""
+	defer func() { s.finishQueueing(run, failMsg) }()
+	fail := func(msg string) {
+		failMsg = msg
+		slog.Error("calibre sync failed", "error", msg)
+	}
 
 	books, err := s.books.ListByStatus(ctx, models.BookStatusImported)
 	if err != nil {
-		s.fail("list imported books: " + err.Error())
+		fail("list imported books: " + err.Error())
 		return
 	}
+	ledger, err := s.ledger.ListAll(ctx)
+	if err != nil {
+		fail("read the delivery queue: " + err.Error())
+		return
+	}
+	byFile := make(map[int64]models.CalibreDelivery, len(ledger))
+	for _, row := range ledger {
+		byFile[row.BookFileID] = row
+	}
 
-	// Restrict to books that actually have a file on disk. A book row with
-	// status=imported but empty file_path means the importer crashed or the
-	// file was deleted out from under us, so there is nothing to push.
-	eligible := make([]models.Book, 0, len(books))
-	skips := make([]SyncSkip, 0)
 	skipCounts := map[string]int{}
 	recordSkip := func(b *models.Book, reason string) {
 		skipCounts[reason]++
-		if len(skips) < maxSyncErrors {
-			skips = append(skips, SyncSkip{BookID: b.ID, Title: b.Title, Reason: reason})
+		s.mu.Lock()
+		run.skipped++
+		if len(run.skips) < maxSyncErrors {
+			run.skips = append(run.skips, SyncSkip{BookID: b.ID, Title: b.Title, Reason: reason})
 		}
+		s.mu.Unlock()
 	}
+	recordFailure := func(b *models.Book, reason string) {
+		s.mu.Lock()
+		run.failed++
+		if len(run.errors) < maxSyncErrors {
+			run.errors = append(run.errors, SyncError{BookID: b.ID, Title: b.Title, Reason: reason})
+		}
+		s.mu.Unlock()
+		slog.Warn("calibre sync: could not queue a book", "bookId", b.ID, "title", b.Title, "reason", reason)
+	}
+	track := func(b *models.Book, file models.BookFile, before bool) {
+		s.mu.Lock()
+		run.tracked[file.ID] = trackedFile{bookID: b.ID, title: b.Title, path: file.Path, before: before}
+		s.mu.Unlock()
+	}
+
+	queued := 0
 	for i := range books {
+		if err := ctx.Err(); err != nil {
+			fail("cancelled: " + err.Error())
+			return
+		}
 		b := &books[i]
-		switch {
-		case pushPath(b) != "":
-			eligible = append(eligible, *b)
-		case strings.TrimSpace(b.AudiobookFilePath) != "":
-			recordSkip(b, SkipReasonAudiobookOnly)
-		default:
-			recordSkip(b, SkipReasonNoFile)
+		files, err := s.books.ListFiles(ctx, b.ID)
+		if err != nil {
+			recordFailure(b, "listing the book's files failed: "+err.Error())
+			continue
+		}
+		ebooks := make([]models.BookFile, 0, len(files))
+		for _, f := range files {
+			if f.Format == models.MediaTypeEbook {
+				ebooks = append(ebooks, f)
+			}
+		}
+		if len(ebooks) == 0 {
+			switch {
+			case strings.TrimSpace(b.AudiobookFilePath) != "":
+				recordSkip(b, SkipReasonAudiobookOnly)
+			case pushPath(b) != "":
+				recordSkip(b, SkipReasonUntracked)
+			default:
+				recordSkip(b, SkipReasonNoFile)
+			}
+			continue
+		}
+		// Every ebook file is queued, in format preference order, so the
+		// preferred one makes the Calibre record and the worker adds the
+		// rest to it as further formats. A file the ledger already holds is
+		// never queued again, in any state: a delivered one is in Calibre,
+		// a pending one is queued, and a failed or skipped one waits for
+		// Retry.
+		sortEbooksByPreference(ebooks)
+		for _, file := range ebooks {
+			if row, ok := byFile[file.ID]; ok {
+				track(b, file, row.State == models.CalibreDeliveryDelivered)
+				continue
+			}
+			if _, err := s.queue.Enqueue(ctx, b.ID, file.ID, nil, file.Path); err != nil {
+				recordFailure(b, "queueing failed: "+err.Error())
+				continue
+			}
+			track(b, file, false)
+			queued++
 		}
 	}
+
 	// Books that never reached the eligible list at all. ListByStatus filters
 	// on status AND monitored, so both are reported separately rather than as
 	// one undifferentiated "not eligible".
@@ -284,114 +380,171 @@ func (s *Syncer) run(ctx context.Context, cfg Config) {
 			if _, ok := considered[b.ID]; ok {
 				continue
 			}
+			// A book with no import has no file and was never a candidate,
+			// so it is left out of the skips rather than reported as one.
 			if b.Status == models.BookStatusImported {
 				recordSkip(b, SkipReasonNotMonitored)
-			} else {
-				recordSkip(b, SkipReasonNotImported)
 			}
 		}
 	}
-	skipped := 0
-	for _, n := range skipCounts {
-		skipped += n
-	}
 
-	s.setProgress(func(p *SyncProgress) {
-		p.Stats.Total = len(eligible)
-		p.Stats.Skipped = skipped
-		p.Skips = skips
-		if len(eligible) == 0 {
-			p.Message = nothingToPushMessage(skipCounts)
-		} else {
-			p.Message = "pushing books to Calibre…"
+	s.mu.Lock()
+	tracked := len(run.tracked)
+	if tracked == 0 && run.failed == 0 {
+		run.nothing = nothingToPushMessage(skipCounts)
+	}
+	s.mu.Unlock()
+	if len(skipCounts) > 0 {
+		slog.Info("calibre sync: books skipped", "reasons", skipSummary(skipCounts))
+	}
+	slog.Info("calibre sync: books queued for Calibre", "queued", queued, "alreadyRecorded", tracked-queued)
+	if tracked > 0 {
+		s.queue.Kick()
+	}
+}
+
+// sortEbooksByPreference orders a book's ebook files the way they should
+// reach Calibre: by format preference, then by id within a format.
+func sortEbooksByPreference(ebooks []models.BookFile) {
+	sort.SliceStable(ebooks, func(i, j int) bool {
+		a, b := ebooks[i], ebooks[j]
+		if lessByFormatPreference(a.Path, b.Path) {
+			return true
 		}
+		if lessByFormatPreference(b.Path, a.Path) {
+			return false
+		}
+		return a.ID < b.ID
 	})
-	if skipped > 0 {
-		slog.Info("calibre sync: books skipped", "skipped", skipped, "reasons", skipSummary(skipCounts))
+}
+
+// Progress reports the latest run, reading each of its rows from the ledger.
+func (s *Syncer) Progress(ctx context.Context) (SyncProgress, error) {
+	s.mu.Lock()
+	run := s.run
+	if run == nil {
+		s.mu.Unlock()
+		return SyncProgress{Errors: []SyncError{}, Skips: []SyncSkip{}}, nil
+	}
+	p := SyncProgress{
+		StartedAt: run.startedAt,
+		Error:     run.err,
+		Errors:    append([]SyncError{}, run.errors...),
+		Skips:     append([]SyncSkip{}, run.skips...),
+		Stats:     SyncStats{Failed: run.failed, Skipped: run.skipped},
+	}
+	queueing := run.queueing
+	nothing := run.nothing
+	queueFailed := run.failed
+	tracked := make([]struct {
+		fileID int64
+		f      trackedFile
+	}, 0, len(run.tracked))
+	for id, f := range run.tracked {
+		tracked = append(tracked, struct {
+			fileID int64
+			f      trackedFile
+		}{id, f})
+	}
+	if run.finishedAt != nil {
+		t := *run.finishedAt
+		p.FinishedAt = &t
+	}
+	s.mu.Unlock()
+
+	if queueing {
+		p.Running = true
+		p.Queueing = true
+		p.Message = "queueing books for Calibre…"
+		p.Stats.Total = len(tracked) + p.Stats.Failed
+		return p, nil
+	}
+	if p.Error != "" {
+		p.Message = "failed"
+		return p, nil
 	}
 
-	client := s.newClient(cfg)
-	sameLibrary := sameCalibreLibrary(ctx, cfg, client)
+	rows, err := s.ledger.ListAll(ctx)
+	if err != nil {
+		return p, err
+	}
+	byFile := make(map[int64]models.CalibreDelivery, len(rows))
+	for _, r := range rows {
+		byFile[r.BookFileID] = r
+	}
+	sort.Slice(tracked, func(i, j int) bool { return tracked[i].f.bookID < tracked[j].f.bookID })
 
-	// Log the first book to hit each distinct failure reason at WARN. The
-	// summary line below only reports failed=N, and the per-book SyncErrors live
-	// in the polled progress (not the log), so a user staring at the log had no
-	// way to see *why* every push failed (#1346 — a path the Calibre container
-	// can't resolve). Dedupe by reason so a library-wide path mismatch logs once,
-	// not once per book.
-	loggedReasons := make(map[string]bool)
-	recordFailure := func(b *models.Book, path, reason string) {
-		s.setProgress(func(p *SyncProgress) {
-			p.Stats.Failed++
-			p.Stats.Processed++
-			if len(p.Errors) < maxSyncErrors {
-				p.Errors = append(p.Errors, SyncError{
-					BookID: b.ID,
-					Title:  b.Title,
-					Path:   path,
-					Reason: reason,
-				})
-			}
-		})
-		if !loggedReasons[reason] {
-			loggedReasons[reason] = true
-			slog.Warn("calibre sync: book push failed",
-				"bookId", b.ID, "title", b.Title, "path", path, "reason", reason)
+	pending, workerSkipped := 0, 0
+	addError := func(t trackedFile, reason string) {
+		p.Stats.Failed++
+		if len(p.Errors) < maxSyncErrors {
+			p.Errors = append(p.Errors, SyncError{BookID: t.bookID, Title: t.title, Path: t.path, Reason: reason})
 		}
 	}
-
-	for i := range eligible {
-		if err := ctx.Err(); err != nil {
-			s.fail("cancelled: " + err.Error())
-			return
-		}
-		b := &eligible[i]
-		path := pushPath(b)
-		meta, err := s.metadataForBook(ctx, b, path, sameLibrary)
-		if err != nil {
-			recordFailure(b, path, err.Error())
-			continue
-		}
-		id, addErr := client.Add(ctx, path, meta)
+	for _, tf := range tracked {
+		row, ok := byFile[tf.fileID]
 		switch {
-		case addErr == nil:
-			if perr := s.persistCalibreID(ctx, b, id, sameLibrary); perr != nil {
-				slog.Warn("calibre sync: persist calibre_id failed", "bookId", b.ID, "calibreId", id, "error", perr)
-			}
-			s.setProgress(func(p *SyncProgress) {
-				p.Stats.Pushed++
-				p.Stats.Processed++
-			})
-		case errors.Is(addErr, ErrAlreadyInCalibre):
-			if perr := s.persistCalibreID(ctx, b, id, sameLibrary); perr != nil {
-				slog.Warn("calibre sync: persist calibre_id failed", "bookId", b.ID, "calibreId", id, "error", perr)
-			}
-			s.setProgress(func(p *SyncProgress) {
+		case !ok:
+			addError(tf.f, syncRemovedReason)
+		case row.State == models.CalibreDeliveryPending:
+			pending++
+		case row.State == models.CalibreDeliveryDelivered:
+			if tf.f.before || (row.Outcome != DeliveryOutcomeAdded && row.Outcome != DeliveryOutcomeFormatAdded) {
 				p.Stats.AlreadyInCalibre++
-				p.Stats.Processed++
-			})
-		default:
-			recordFailure(b, path, addErr.Error())
+			} else {
+				p.Stats.Pushed++
+			}
+		case row.State == models.CalibreDeliveryFailed:
+			reason := row.LastError
+			if reason == "" {
+				reason = row.LastErrorCode
+			}
+			addError(tf.f, reason)
+		case row.State == models.CalibreDeliverySkipped:
+			workerSkipped++
+			p.Stats.Skipped++
+			if len(p.Skips) < maxSyncErrors {
+				p.Skips = append(p.Skips, SyncSkip{BookID: tf.f.bookID, Title: tf.f.title, Reason: row.Outcome})
+			}
 		}
 	}
-
-	s.setProgress(func(p *SyncProgress) {
-		// A run with nothing to do keeps the message that named why, so the
-		// modal does not overwrite the only useful thing it has to say.
-		if p.Stats.Total > 0 {
-			p.Message = "done"
+	// Total is every book the run took on: the rows it follows, less the
+	// ones the worker skipped (those count under Skipped), plus the books it
+	// could not queue at all.
+	p.Stats.Total = len(tracked) - workerSkipped + queueFailed
+	p.Stats.Processed = p.Stats.Total - pending
+	p.Running = pending > 0
+	switch {
+	case p.Running:
+		p.Message = strconv.Itoa(pending) + " waiting for Calibre"
+	case p.Stats.Total == 0 && nothing != "":
+		p.Message = nothing
+	default:
+		p.Message = "done"
+	}
+	if p.Running && p.FinishedAt != nil {
+		// A retry put one of the run's rows back in the queue after the run
+		// had settled, so it is running again.
+		p.FinishedAt = nil
+		s.mu.Lock()
+		if s.run == run {
+			run.finishedAt = nil
 		}
-	})
-	// Snapshot under lock — setProgress writes s.progress concurrently with the
-	// HTTP poller reading it, so read the stats through the locked getter.
-	final := s.Progress()
-	slog.Info("calibre sync complete",
-		"total", len(eligible),
-		"pushed", final.Stats.Pushed,
-		"alreadyInCalibre", final.Stats.AlreadyInCalibre,
-		"failed", final.Stats.Failed,
-		"skipped", final.Stats.Skipped,
-		"distinctFailureReasons", len(loggedReasons))
+		s.mu.Unlock()
+	}
+	if !p.Running && p.FinishedAt == nil {
+		s.mu.Lock()
+		if s.run == run && run.finishedAt == nil {
+			now := s.now().UTC()
+			run.finishedAt = &now
+		}
+		if run.finishedAt != nil {
+			t := *run.finishedAt
+			p.FinishedAt = &t
+		}
+		s.mu.Unlock()
+	}
+	return p, nil
 }
 
 // pushPath returns the on-disk path to send to Calibre for the given
@@ -404,52 +557,13 @@ func pushPath(b *models.Book) string {
 	return b.FilePath
 }
 
-func (s *Syncer) metadataForBook(ctx context.Context, b *models.Book, path string, sameLibrary bool) (Metadata, error) {
-	edition, err := s.editionForPath(ctx, b, path)
-	if err != nil {
-		return Metadata{}, err
-	}
-	authors, authorSort, err := s.authorMetadata(ctx, b)
-	if err != nil {
-		return Metadata{}, err
-	}
-	identifiers := IdentifiersForBook(b, edition)
-	if !sameLibrary && isCalibreOrigin(b) {
-		delete(identifiers, "calibre")
-	}
-	seriesTitle, seriesIndex := s.primarySeries(ctx, b)
-	return BuildMetadata(MetadataSource{
-		Book:        b,
-		Authors:     authors,
-		AuthorSort:  authorSort,
-		Edition:     edition,
-		SeriesTitle: seriesTitle,
-		SeriesIndex: seriesIndex,
-		Identifiers: identifiers,
-	}), nil
-}
-
-// primarySeries mirrors the importer's lookup. A failure is not worth failing
-// the push over: the book still reaches Calibre, just without its series.
-func (s *Syncer) primarySeries(ctx context.Context, b *models.Book) (string, string) {
-	if s.series == nil || b == nil {
-		return "", ""
-	}
-	title, index, err := s.series.GetPrimarySeriesForBook(ctx, b.ID)
-	if err != nil {
-		slog.Debug("calibre sync: primary series lookup failed", "bookId", b.ID, "error", err)
-		return "", ""
-	}
-	return title, index
-}
-
 // nothingToPushMessage replaces the old generic "no imported books with files
 // to push" with the reasons the run actually found, so the #1592 report is
 // self-diagnosing.
 func nothingToPushMessage(counts map[string]int) string {
 	summary := skipSummary(counts)
 	if summary == "" {
-		return "no books to push: the library is empty"
+		return "no books to push: no imported book has an ebook file yet"
 	}
 	return "no books to push: " + summary
 }
@@ -480,33 +594,13 @@ func skipSummary(counts map[string]int) string {
 	return strings.Join(parts, "; ")
 }
 
-func (s *Syncer) authorMetadata(ctx context.Context, b *models.Book) ([]string, string, error) {
-	if b.Author != nil && strings.TrimSpace(b.Author.Name) != "" {
-		return []string{strings.TrimSpace(b.Author.Name)}, strings.TrimSpace(b.Author.SortName), nil
-	}
-	if s.authors == nil || b.AuthorID == 0 {
-		return nil, "", nil
-	}
-	author, err := s.authors.GetByID(ctx, b.AuthorID)
-	if err != nil {
-		return nil, "", err
-	}
-	if author == nil || strings.TrimSpace(author.Name) == "" {
-		return nil, "", nil
-	}
-	return []string{strings.TrimSpace(author.Name)}, strings.TrimSpace(author.SortName), nil
-}
-
-func (s *Syncer) editionForPath(ctx context.Context, b *models.Book, path string) (*models.Edition, error) {
-	if s.editions == nil {
-		return nil, nil
-	}
-	editions, err := s.editions.ListByBook(ctx, b.ID)
-	if err != nil {
-		return nil, err
-	}
+// editionForFile picks the edition that describes the file at path: one whose
+// format matches the file's extension, preferring the book's selected edition
+// among those, then the selected edition, then the first. nil when there are
+// no editions.
+func editionForFile(editions []models.Edition, b *models.Book, path string) *models.Edition {
 	if len(editions) == 0 {
-		return nil, nil
+		return nil
 	}
 
 	ext := strings.TrimPrefix(filepath.Ext(path), ".")
@@ -518,54 +612,32 @@ func (s *Syncer) editionForPath(ctx context.Context, b *models.Book, path string
 				continue
 			}
 			if b.SelectedEditionID != nil && editions[i].ID == *b.SelectedEditionID {
-				return &editions[i], nil
+				return &editions[i]
 			}
 			if firstFormatMatch == nil {
 				firstFormatMatch = &editions[i]
 			}
 		}
 		if firstFormatMatch != nil {
-			return firstFormatMatch, nil
+			return firstFormatMatch
 		}
 	}
 
 	if b.SelectedEditionID != nil {
 		for i := range editions {
 			if editions[i].ID == *b.SelectedEditionID {
-				return &editions[i], nil
+				return &editions[i]
 			}
 		}
 	}
-	return &editions[0], nil
+	return &editions[0]
 }
 
-func (s *Syncer) persistCalibreID(ctx context.Context, b *models.Book, id int64, sameLibrary bool) error {
-	if id <= 0 {
-		return nil
-	}
-	if isCalibreOrigin(b) && !sameLibrary {
-		slog.Debug("calibre sync: not overwriting source calibre_id with target library id",
-			"bookId", b.ID, "targetCalibreId", id)
-		return nil
-	}
-	return s.books.SetCalibreID(ctx, b.ID, id)
-}
-
-func sameCalibreLibrary(ctx context.Context, cfg Config, client pluginPusher) bool {
-	source := cleanLibraryPath(cfg.LibraryPath)
-	if source == "" {
-		return false
-	}
-	target, err := client.Library(ctx)
-	if err != nil {
-		slog.Warn("calibre sync: target library identity unavailable; treating plugin target as separate from import source", "error", err)
-		return false
-	}
-	target = cleanLibraryPath(target)
-	if target == "" {
-		return false
-	}
-	return source == target
+// sameLibraryPath reports whether two library paths name the same library.
+// An empty path on either side is unknown, never a match.
+func sameLibraryPath(a, b string) bool {
+	a, b = cleanLibraryPath(a), cleanLibraryPath(b)
+	return a != "" && a == b
 }
 
 func cleanLibraryPath(path string) string {
@@ -582,18 +654,4 @@ func isCalibreOrigin(b *models.Book) bool {
 	}
 	return strings.EqualFold(strings.TrimSpace(b.MetadataProvider), "calibre") ||
 		strings.HasPrefix(strings.ToLower(strings.TrimSpace(b.ForeignID)), "calibre:book:")
-}
-
-func (s *Syncer) fail(msg string) {
-	slog.Error("calibre sync failed", "error", msg)
-	s.setProgress(func(p *SyncProgress) {
-		p.Error = msg
-		p.Message = "failed"
-	})
-}
-
-func (s *Syncer) setProgress(mutate func(*SyncProgress)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	mutate(&s.progress)
 }

@@ -166,3 +166,156 @@ func TestIsWindowsPath(t *testing.T) {
 		}
 	}
 }
+
+// TestApplyShareDestination is the #2831 shape: a desktop Calibre on Windows
+// opens books through a network share, because a mapped drive letter can be
+// invisible to the running Calibre process. Treated as POSIX, the share got
+// mixed separators, and path.Join collapsed `//nas/books` to `/nas/books`.
+func TestApplyShareDestination(t *testing.T) {
+	tests := []struct {
+		name string
+		spec string
+		in   string
+		want string
+	}{
+		{"backslash share", `/downloads/BOOKS:\\192.168.1.4\MEDIA\BOOKS`, "/downloads/BOOKS/Author/file.epub", `\\192.168.1.4\MEDIA\BOOKS\Author\file.epub`},
+		{"forward-slash share keeps its leading //", "/books://nas/media/books", "/books/Author/file.epub", "//nas/media/books/Author/file.epub"},
+		{"trailing backslash on the share", `/books:\\nas\media\books\`, "/books/Author/file.epub", `\\nas\media\books\Author\file.epub`},
+		{"share root only", `/books:\\nas\books`, "/books/A/b.epub", `\\nas\books\A\b.epub`},
+		{"extended UNC form is not double prefixed", `/books:\\?\UNC\nas\books`, "/books/A/b.epub", `\\?\UNC\nas\books\A\b.epub`},
+		{"exact prefix", `/books:\\nas\books\`, "/books", `\\nas\books`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Parse(tc.spec).Apply(tc.in); got != tc.want {
+				t.Fatalf("Parse(%q).Apply(%q) = %q, want %q", tc.spec, tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyShareSource covers a Windows download client that reports share
+// paths: matched case-insensitively with either separator, like drive letters.
+func TestApplyShareSource(t *testing.T) {
+	r := Parse(`\\NAS\Downloads:/mnt/downloads`)
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"backslash path", `\\NAS\Downloads\bindery\Book`, "/mnt/downloads/bindery/Book"},
+		{"server and share fold case", `\\nas\downloads\Book`, "/mnt/downloads/Book"},
+		{"forward slashes", "//nas/Downloads/Book", "/mnt/downloads/Book"},
+		{"trailing separator", `\\NAS\Downloads\`, "/mnt/downloads"},
+		{"sibling share must not match", `\\NAS\DownloadsOld\Book`, `\\NAS\DownloadsOld\Book`},
+		{"other server untouched", `\\backup\Downloads\Book`, `\\backup\Downloads\Book`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := r.Apply(tc.in); got != tc.want {
+				t.Fatalf("Apply(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyInverseShareRoundTrip proves both directions rebuild the share in
+// the separator style the operator configured, and that the share side is
+// matched case-insensitively on the way back.
+func TestApplyInverseShareRoundTrip(t *testing.T) {
+	for _, tc := range []struct{ spec, local, remote string }{
+		{`/books:\\nas\media\books`, "/books/Author/b.epub", `\\nas\media\books\Author\b.epub`},
+		{"/books://nas/media/books", "/books/Author/b.epub", "//nas/media/books/Author/b.epub"},
+	} {
+		r := Parse(tc.spec)
+		if got := r.Apply(tc.local); got != tc.remote {
+			t.Fatalf("%s: Apply(%q) = %q, want %q", tc.spec, tc.local, got, tc.remote)
+		}
+		if got := r.ApplyInverse(tc.remote); got != tc.local {
+			t.Fatalf("%s: ApplyInverse(%q) = %q, want %q", tc.spec, tc.remote, got, tc.local)
+		}
+		upper := strings.Replace(tc.remote, "nas", "NAS", 1)
+		if got := r.ApplyInverse(upper); got != tc.local {
+			t.Fatalf("%s: ApplyInverse(%q) = %q, want %q (share side is case-insensitive)", tc.spec, upper, got, tc.local)
+		}
+	}
+
+	src := Parse(`\\nas\dl:/mnt/dl`)
+	if got := src.ApplyInverse("/mnt/dl/Author/b.epub"); got != `\\nas\dl\Author\b.epub` {
+		t.Fatalf(`ApplyInverse onto share source = %q, want \\nas\dl\Author\b.epub`, got)
+	}
+}
+
+// TestPosixDoubleSlashStaysPosix pins that a POSIX path opening with `//` but
+// lacking a share segment keeps POSIX semantics: case-sensitive, `/` only.
+func TestPosixDoubleSlashStaysPosix(t *testing.T) {
+	r := Parse("//data:/media")
+
+	if got := r.Apply("//data/Book"); got != "/media/Book" {
+		t.Fatalf("Apply = %q, want /media/Book", got)
+	}
+	if got := r.Apply("//DATA/Book"); got != "//DATA/Book" {
+		t.Fatalf("Apply wrong case = %q, want it unchanged", got)
+	}
+	for _, in := range []string{"//data", "//data/", "///data/books", "/data/books"} {
+		if IsUNCPath(in) {
+			t.Fatalf("IsUNCPath(%q) = true, want false", in)
+		}
+	}
+}
+
+func TestIsUNCPath(t *testing.T) {
+	for _, in := range []string{`\\nas\books`, `\\192.168.1.4\MEDIA\BOOKS`, "//nas/books", `\\?\UNC\nas\books\x`, ` \\nas\books `} {
+		if !IsUNCPath(in) {
+			t.Fatalf("IsUNCPath(%q) = false, want true", in)
+		}
+	}
+	for _, in := range []string{"", `\\nas`, `\\nas\`, `\\?\C:\books`, `\\.\pipe`, `S:\books`, "//data", `\\?\UNC\nas`} {
+		if IsUNCPath(in) {
+			t.Fatalf("IsUNCPath(%q) = true, want false", in)
+		}
+	}
+	// IsWindowsPath keeps its drive-letter-only meaning for its callers.
+	if IsWindowsPath(`\\nas\books`) {
+		t.Fatal(`IsWindowsPath(\\nas\books) = true, want drive letters only`)
+	}
+}
+
+func TestParseExtendedDrivePath(t *testing.T) {
+	r := Parse(`\\?\C:\Books:/books`)
+	if len(r.rules) != 1 || r.rules[0].from != `\\?\C:\Books` || r.rules[0].to != "/books" {
+		t.Fatalf("Parse extended drive path = %+v", r.rules)
+	}
+	if got := r.Apply(`\\?\c:\books\A`); got != "/books/A" {
+		t.Fatalf("Apply = %q, want /books/A", got)
+	}
+}
+
+func TestValidateShares(t *testing.T) {
+	for _, ok := range []string{
+		`/downloads/BOOKS:\\192.168.1.4\MEDIA\BOOKS`,
+		"/books://nas/books",
+		`\\nas\books:/books`,
+		`/books:\\?\UNC\nas\books`,
+		`\\?\C:\Books:/books`,
+		`/downloads:S:\Downloads`,
+	} {
+		if err := Validate(ok); err != nil {
+			t.Fatalf("Validate(%q): %v", ok, err)
+		}
+	}
+	for _, bad := range []string{`/books:\\nas`, `/books:\\nas\`, `\\nas:/books`, `/books:\\?\UNC\nas`, `/books:\\`} {
+		err := Validate(bad)
+		if err == nil {
+			t.Fatalf("Validate(%q) accepted a share with no share segment", bad)
+		}
+		if !strings.Contains(err.Error(), `\\nas\books`) {
+			t.Fatalf("Validate(%q) error %q does not name the working shape", bad, err)
+		}
+	}
+	err := Validate(`\\nas\books`)
+	if err == nil || !strings.Contains(err.Error(), `\\nas\books:/books`) {
+		t.Fatalf("Validate share with no destination = %v, want a share example", err)
+	}
+}

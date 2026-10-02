@@ -19,6 +19,8 @@ Bindery v1.0 introduces per-user library scoping: authors, books, downloads, qua
 
 > **Choosing an auth mode: `local-only` requires `BINDERY_TRUSTED_PROXY` behind a proxy.** In `local-only` mode any client whose resolved IP is private is served with admin rights and no login. Bindery resolves that IP from the TCP peer unless `BINDERY_TRUSTED_PROXY` names the proxies whose `X-Forwarded-For` it may trust, so behind a reverse proxy or a Kubernetes ingress the peer is the proxy's own private address and every proxied request qualifies. Set `BINDERY_TRUSTED_PROXY` to your proxy's IP or CIDR, or pick `enabled` (or `proxy`) mode. Bindery logs a warning at startup and on a mode change when it sees this combination. An instance reached directly on a LAN with no proxy in front is unaffected.
 
+> **The Calibre delivery queue is install wide.** There is one Calibre target per install, so the queue under `/api/v1/calibre/deliveries` is admin only and not scoped by owner: it holds every user's ebooks. The same goes for the Calibre bridge pull routes under `/bridge/v1`: whoever holds the Calibre plugin key can list and download every queued book, whichever account imported it. Treat that key like an admin credential. See [API.md](API.md#calibre-bridge-pull).
+
 For upgrade instructions and migration steps, see [docs/upgrade-v1.md](upgrade-v1.md).
 
 ## Role model

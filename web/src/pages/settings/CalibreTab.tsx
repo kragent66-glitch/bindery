@@ -10,6 +10,7 @@ import {
 } from '../../api/client'
 import Toggle from './Toggle'
 import SaveButton from './SaveButton'
+import CalibreDeliveryPanel from './CalibreDeliveryPanel'
 import { useSaveResult } from './useSaveResult'
 
 export default function CalibreTab() {
@@ -62,8 +63,9 @@ function CalibreSection({
   saveSetting: (key: string) => Promise<string | null>
   saving: string | null
 }) {
+  const { t } = useTranslation()
   const [testing, setTesting] = useState(false)
-  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [testResult, setTestResult] = useState<{ ok: boolean; msg: string; detail?: string; warning?: string } | null>(null)
   const [saveError, setSaveError] = useState<{ key: string; msg: string } | null>(null)
   const [libraryPathSaveResult, libraryPathSave] = useSaveResult()
   const [binaryPathSaveResult, binaryPathSave] = useSaveResult()
@@ -102,6 +104,10 @@ function CalibreSection({
       : legacyEnabled
       ? 'calibredb'
       : 'off'
+  // Pull (#2833) only applies in plugin mode: the plugin connects to
+  // Bindery, so there is no plugin URL to reach and no path to remap.
+  const transport: 'push' | 'pull' = settings['calibre.plugin_transport'] === 'pull' ? 'pull' : 'push'
+  const pulling = mode === 'plugin' && transport === 'pull'
   const libraryImportEnabled = (settings['calibre.library_import_enabled'] ?? 'false').toLowerCase() === 'true'
   const syncOnStartup = (settings['calibre.sync_on_startup'] ?? 'false').toLowerCase() === 'true'
   const lastImportAt = settings['calibre.last_import_at'] ?? ''
@@ -116,10 +122,11 @@ function CalibreSection({
     api.calibreImportStatus().then(setImportProgress).catch(() => {})
     api.calibreSyncStatus().then(p => {
       setSyncProgress(p)
-      // If a sync is already running when the tab mounts, surface the
-      // modal so the user can watch it finish instead of wondering what
-      // the disabled button is doing.
-      if (p.running) setSyncModalOpen(true)
+      // If Push all is still queueing when the tab mounts, surface the
+      // modal so the user can watch it finish. Books merely waiting for
+      // Calibre do not reopen it: that can last as long as Calibre stays
+      // closed, and the delivery queue section shows it anyway.
+      if (p.queueing) setSyncModalOpen(true)
     }).catch(() => {})
     refreshRuns()
   }, [refreshRuns])
@@ -138,7 +145,7 @@ function CalibreSection({
   const pluginURL = settings['calibre.plugin_url'] ?? ''
   const pluginKey = settings['calibre.plugin_api_key'] ?? ''
   useEffect(() => {
-    if (mode !== 'plugin' || !pluginURL) {
+    if (mode !== 'plugin' || pulling || !pluginURL) {
       setBridgeReachable(null)
       return
     }
@@ -147,7 +154,7 @@ function CalibreSection({
       .then(() => { if (!cancelled) setBridgeReachable(true) })
       .catch(() => { if (!cancelled) setBridgeReachable(false) })
     return () => { cancelled = true }
-  }, [mode, pluginURL, pluginKey])
+  }, [mode, pulling, pluginURL, pluginKey])
 
   // Poll while an import is running.
   useEffect(() => {
@@ -158,14 +165,17 @@ function CalibreSection({
     return () => clearInterval(id)
   }, [importProgress?.running])
 
-  // Poll while a bulk sync is running. 2s matches the task spec.
+  // Poll while a bulk sync is running: every 2s while the modal is open or
+  // the run is still queueing, and slowly while books merely wait for
+  // Calibre with the modal closed.
+  const syncFast = syncModalOpen || !!syncProgress?.queueing
   useEffect(() => {
     if (!syncProgress?.running) return
     const id = setInterval(() => {
       api.calibreSyncStatus().then(setSyncProgress).catch(() => {})
-    }, 2000)
+    }, syncFast ? 2000 : 15000)
     return () => clearInterval(id)
-  }, [syncProgress?.running])
+  }, [syncProgress?.running, syncFast])
 
   const startImport = async () => {
     setImportError(null)
@@ -188,15 +198,53 @@ function CalibreSection({
     }
   }
 
+  // In pull there is nothing to probe: the plugin connects to Bindery. The
+  // useful answer is when it last did.
+  const reportLastCheckIn = async () => {
+    try {
+      const s = await api.calibreDeliverySummary()
+      const seen = s.pull?.lastSeen
+      if (!seen) {
+        setTestResult({ ok: false, msg: t('settings.calibre.transport.testNeverCheckedIn') })
+        return
+      }
+      const time = new Date(seen).toLocaleString()
+      setTestResult({
+        ok: true,
+        msg: s.pull?.pluginVersion
+          ? t('settings.calibre.transport.testLastCheckInVersion', { time, version: s.pull.pluginVersion })
+          : t('settings.calibre.transport.testLastCheckIn', { time }),
+      })
+    } catch (err) {
+      setTestResult({
+        ok: false,
+        msg: t('settings.calibre.transport.testFailed', { error: err instanceof Error ? err.message : String(err) }),
+      })
+    }
+  }
+
   const runTest = async () => {
     setTesting(true)
     setTestResult(null)
+    if (pulling) {
+      await reportLastCheckIn()
+      setTesting(false)
+      return
+    }
     const isPlugin = mode === 'plugin'
     try {
       const r = await api.testCalibre()
       const prefix = isPlugin ? '✓ Plugin reachable' : '✓ calibredb reachable'
       const detail = r.version || r.message
-      setTestResult({ ok: true, msg: detail ? `${prefix} — ${detail}` : prefix })
+      setTestResult({
+        ok: true,
+        msg: detail ? `${prefix} — ${detail}` : prefix,
+        // The version wins the headline, which used to hide what the path
+        // probe found. Show it underneath whenever a book was checked, or
+        // when the probe says only the root was (#2831).
+        detail: r.version && r.message && r.message !== 'plugin reachable' ? r.message : undefined,
+        warning: r.warning || undefined,
+      })
       // Mirror into bridgeReachable so the Push-all button flips to enabled
       // on a successful manual test, without waiting for the silent probe
       // to re-fire (which only triggers on mode/url/key *changes*).
@@ -204,7 +252,9 @@ function CalibreSection({
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'Test failed'
       const prefix = isPlugin ? '✗ Could not reach plugin' : '✗ calibredb unreachable'
-      setTestResult({ ok: false, msg: `${prefix} — ${reason}` })
+      const body = (err as { body?: { warning?: unknown } } | null)?.body
+      const warning = typeof body?.warning === 'string' && body.warning ? body.warning : undefined
+      setTestResult({ ok: false, msg: `${prefix} — ${reason}`, warning })
       if (isPlugin) setBridgeReachable(false)
     } finally {
       setTesting(false)
@@ -214,6 +264,12 @@ function CalibreSection({
   const setMode = async (next: 'off' | 'calibredb' | 'plugin') => {
     setSettings(s => ({ ...s, 'calibre.mode': next }))
     await api.setSetting('calibre.mode', next).catch(console.error)
+  }
+
+  const setTransport = async (next: 'push' | 'pull') => {
+    setTestResult(null)
+    setSettings(s => ({ ...s, 'calibre.plugin_transport': next }))
+    await api.setSetting('calibre.plugin_transport', next).catch(console.error)
   }
 
   return (
@@ -260,7 +316,7 @@ function CalibreSection({
             {([
               { v: 'off',       label: 'Off',           desc: 'No Calibre call on import. The file lands in the Bindery library only.' },
               { v: 'calibredb', label: 'calibredb CLI', desc: 'Run calibredb add --with-library after each import. Calibre copies the file into its own library, so it exists twice. Needs calibredb inside the Bindery container or process; the official distroless image does not ship it.' },
-              { v: 'plugin',    label: 'Calibre Bridge plugin', desc: 'POST each import to the Bindery Bridge plugin running inside Calibre, in another container or host. Only the path and metadata are sent, not the file, so both containers must see the Bindery library at the same path, or set a push path remap below.' },
+              { v: 'plugin',    label: 'Calibre Bridge plugin', desc: 'Hand each import to the Bindery Bridge plugin running inside Calibre, in another container or host. With the push transport only the path and metadata are sent, so Calibre must see the Bindery library; with pull the plugin downloads each book from Bindery itself.' },
             ] as const).map(opt => (
               <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
                 <input
@@ -304,6 +360,33 @@ function CalibreSection({
         )}
 
         {mode === 'plugin' && (
+          <div data-testid="calibre-transport">
+            <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">{t('settings.calibre.transport.label')}</label>
+            <div className="space-y-1.5">
+              {([
+                { v: 'push', label: t('settings.calibre.transport.push'), desc: t('settings.calibre.transport.pushDesc') },
+                { v: 'pull', label: t('settings.calibre.transport.pull'), desc: t('settings.calibre.transport.pullDesc') },
+              ] as const).map(opt => (
+                <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="calibre-transport"
+                    value={opt.v}
+                    checked={transport === opt.v}
+                    onChange={() => setTransport(opt.v)}
+                    className="mt-1"
+                  />
+                  <div>
+                    <div className="text-sm text-slate-800 dark:text-zinc-200">{opt.label}</div>
+                    <div className="text-xs text-slate-600 dark:text-zinc-500">{opt.desc}</div>
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {mode === 'plugin' && !pulling && (
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">Plugin URL</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
@@ -332,7 +415,9 @@ function CalibreSection({
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">API key</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
-              Bearer token configured in the plugin&rsquo;s Calibre Preferences dialog.
+              {pulling
+                ? t('settings.calibre.transport.apiKeyPullHelp')
+                : <>Bearer token configured in the plugin&rsquo;s Calibre Preferences dialog.</>}
             </p>
             <div className="flex gap-2">
               <input
@@ -354,13 +439,15 @@ function CalibreSection({
           </div>
         )}
 
-        {mode === 'plugin' && (
+        {mode === 'plugin' && !pulling && (
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">Push path remap</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
               Optional. If the Calibre container mounts your library at a different path than Bindery,
               map Bindery&rsquo;s prefix to Calibre&rsquo;s as <code className="font-mono">from:to</code> pairs
               (comma separated), e.g. <code className="font-mono">/books:/mnt/user/media/books</code>.
+              For Calibre on Windows, map to a network share, e.g. <code className="font-mono">/books:\\nas\media\books</code>;
+              a share address is more reliable than a mapped drive letter, which the running Calibre may not see.
               Leave empty when both containers see the library at the same path.
             </p>
             <div className="flex gap-2">
@@ -390,6 +477,16 @@ function CalibreSection({
                   {testResult.msg}
                 </span>
               )}
+              {testResult?.detail && (
+                <p data-testid="calibre-test-detail" className="text-slate-600 dark:text-zinc-400 mt-1 break-all">
+                  {testResult.detail}
+                </p>
+              )}
+              {testResult?.warning && (
+                <p data-testid="calibre-test-warning" className="text-amber-600 dark:text-amber-400 mt-1">
+                  {testResult.warning}
+                </p>
+              )}
             </div>
             <button
               onClick={runTest}
@@ -401,30 +498,35 @@ function CalibreSection({
           </div>
         )}
 
-        {/* Bulk push: Bindery → Calibre (plugin only). Pushes every imported
-            book's on-disk file to the plugin; 409 is treated as idempotent. */}
+        {/* Bulk push: Bindery → Calibre (plugin only). Queues every imported
+            book the delivery queue does not already hold; the delivery
+            worker sends them, so Calibre does not have to be open now. */}
         {mode === 'plugin' && (
           <div className="pt-3 border-t border-slate-200 dark:border-zinc-800">
             <div className="flex items-center justify-between gap-4">
               <div>
                 <label className="block text-sm font-medium text-slate-800 dark:text-zinc-200">Push all to Calibre</label>
                 <p className="text-xs text-slate-600 dark:text-zinc-500 mt-0.5">
-                  Send every imported book in Bindery to the Calibre Bridge plugin. Books already in Calibre are skipped (idempotent).
+                  Queue every imported book for the Calibre Bridge plugin. Books already delivered are not sent again, and queued books go out as soon as Calibre is reachable.
                 </p>
                 {bridgeReachable === false && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Bridge not reachable — check plugin URL / API key above.</p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">Bridge not reachable right now. Books you push will wait in the queue until it is.</p>
                 )}
               </div>
               <button
                 onClick={startSync}
-                disabled={syncProgress?.running || bridgeReachable !== true}
+                disabled={!!syncProgress?.queueing || (!pulling && !pluginURL)}
                 className="px-4 py-2 bg-sky-600 hover:bg-sky-500 rounded text-sm font-medium disabled:opacity-50 flex-shrink-0"
-                title={bridgeReachable !== true ? 'Enable plugin mode and verify the bridge is reachable first' : ''}
+                title={!pulling && !pluginURL ? 'Set the plugin URL first' : ''}
               >
-                {syncProgress?.running ? 'Pushing…' : 'Push all to Calibre'}
+                {syncProgress?.queueing ? 'Queueing…' : 'Push all to Calibre'}
               </button>
             </div>
           </div>
+        )}
+
+        {(mode === 'calibredb' || mode === 'plugin') && (
+          <CalibreDeliveryPanel refreshKey={`${syncProgress?.running}-${syncProgress?.stats?.processed}`} />
         )}
 
         {/* Library import (read side): Calibre → Bindery */}
@@ -853,8 +955,9 @@ function CalibreRollbackModal({
 }
 
 // CalibreSyncModal renders the live progress of a bulk "Push all to
-// Calibre" job. Stays open while running; once finished, the user
-// dismisses it explicitly so they can read the per-book error and skip lists.
+// Calibre" job, read from the delivery queue. It can be closed at any time:
+// the queue keeps delivering without it. Once finished, the user dismisses it
+// explicitly so they can read the per-book error and skip lists.
 // Exported for its own test.
 export function CalibreSyncModal({
   progress,
@@ -877,9 +980,8 @@ export function CalibreSyncModal({
           <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">Push all to Calibre</h3>
           <button
             onClick={onClose}
-            disabled={running}
             className="text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-40"
-            title={running ? 'Wait for the push to finish' : 'Close'}
+            title={running ? 'Close. Queued books keep going out in the background.' : 'Close'}
           >
             ✕
           </button>
@@ -976,12 +1078,14 @@ export function CalibreSyncModal({
           )}
         </div>
         <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-800 flex justify-end">
+          {/* Closable while running: after the queueing, the run waits on
+              Calibre, which can take as long as Calibre stays closed. The
+              delivery queue carries on without the modal. */}
           <button
             onClick={onClose}
-            disabled={running}
             className="px-3 py-1.5 bg-slate-600 hover:bg-slate-500 rounded text-sm font-medium disabled:opacity-50 text-white"
           >
-            {running ? 'Running…' : 'Close'}
+            {running ? 'Close and keep going' : 'Close'}
           </button>
         </div>
       </div>

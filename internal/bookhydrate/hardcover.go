@@ -5,6 +5,7 @@ package bookhydrate
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/vavallee/bindery/internal/models"
@@ -375,11 +376,17 @@ func isLikelyAudioEdition(edition models.Edition) bool {
 	return editionHasAudioMarker(text) || (unknownFormat && edition.DurationSeconds > 0 && !edition.IsEbook)
 }
 
+// cdMarkerRE matches "cd" or "cds" as a whole word, so "Audio CD", "2 CDs"
+// and "CD-ROM" classify as audio while "McDermott" or "McDonald" in free-text
+// edition info does not.
+var cdMarkerRE = regexp.MustCompile(`\bcds?\b`)
+
 func editionHasAudioMarker(text string) bool {
-	for _, marker := range []string{"audio", "audible", "mp3", "cd", "cassette"} {
+	text = strings.ToLower(text)
+	for _, marker := range []string{"audio", "audible", "mp3", "cassette"} {
 		if strings.Contains(text, marker) {
 			return true
 		}
 	}
-	return false
+	return cdMarkerRE.MatchString(text)
 }

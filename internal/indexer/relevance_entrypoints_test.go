@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vavallee/bindery/internal/indexer/newznab"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -42,6 +43,10 @@ func feedOf(titles ...string) string {
 // filterRelevantDebug, which did not have them, so every release #2502 was
 // written to reject was still grabbed. A unit test on one filter function
 // cannot see that; only running the entry points can.
+//
+// #2863 later copied the author guard across by hand, which fixed the Coup
+// d'Etat case on its own; the title identity gate was never copied, which the
+// Power Down, 12 Rules and same spelling "Volume 16" cases still catch.
 func TestRelevanceGuardsReachEveryProductionEntrypoint(t *testing.T) {
 	cases := []struct {
 		title, author string
@@ -61,6 +66,12 @@ func TestRelevanceGuardsReachEveryProductionEntrypoint(t *testing.T) {
 			title: "12 Rules for Life", author: "Jordan B. Peterson",
 			right: []string{"12 Rules for Life by Jordan B. Peterson EPUB"},
 			wrong: []string{"Beyond Order: 12 More Rules for Life by Jordan B. Peterson EPUB"},
+		},
+		{
+			// #2921's author noted the production path kept this one.
+			title: "The Rising of the Shield Hero Volume 17", author: "Aneko Yusagi",
+			right: []string{shieldHeroRelease},
+			wrong: []string{"Aneko Yusagi - The Rising of the Shield Hero Volume 16 - epub"},
 		},
 	}
 	for _, c := range cases {
@@ -95,6 +106,31 @@ func TestRelevanceGuardsReachEveryProductionEntrypoint(t *testing.T) {
 						t.Errorf("%s dropped the right release %q for %q by %s", name, r, c.title, c.author)
 					}
 				}
+			}
+		})
+	}
+}
+
+// TestFilterRelevantDebugDropReasons pins that the interactive panel is told
+// which relevance check fired, not only that one did.
+func TestFilterRelevantDebugDropReasons(t *testing.T) {
+	const splitReason = "title words appear, but with other words or numbers among them"
+	cases := []struct {
+		title, author, release, reason string
+	}{
+		{"Coup d'Etat", "Ben Coes", "Coup D'Etat by Edward Luttwak EPUB", "release names a different author for this title"},
+		{"12 Rules for Life", "Jordan B. Peterson", "Beyond Order: 12 More Rules for Life by Jordan B. Peterson EPUB", splitReason},
+		{"The Rising of the Shield Hero Volume 17", "Aneko Yusagi", "Aneko Yusagi - The Rising of the Shield Hero Volume 16 - epub", splitReason},
+		{"Power Down", "Ben Coes", "Something Else Entirely by Ben Coes EPUB", "title/author keywords did not match release name"},
+	}
+	for _, c := range cases {
+		t.Run(c.title, func(t *testing.T) {
+			kept, dropped := filterRelevantDebug([]newznab.SearchResult{{Title: c.release}}, c.title, c.author, nil)
+			if len(kept) != 0 || len(dropped) != 1 {
+				t.Fatalf("kept=%d dropped=%d, want 0 and 1", len(kept), len(dropped))
+			}
+			if dropped[0].Reason != c.reason || dropped[0].Stage != "relevance" {
+				t.Errorf("drop = %s/%q, want relevance/%q", dropped[0].Stage, dropped[0].Reason, c.reason)
 			}
 		})
 	}

@@ -1,2 +1,0 @@
-### Fixed
-- **Calibre import aborting on an odd series_index** (#2720) — a library holding the empty string in `series_index` failed the whole import with a scan error before a single book was read. Calibre declares that column as a number but SQLite stores a type per value, so a value written by an older Calibre or a third party tool can be text. An unreadable position now reads as no position, and a NULL title, sort or path on the same row no longer aborts the run either. Thanks phoenix1589 for the report.
