@@ -713,7 +713,19 @@
     "searchPlaceholder": "Search series...",
     "noMatch": "No series match \"{{query}}\"",
     "deleteConfirm": "Delete \"{{title}}\" from Series? Linked books will stay in your library.",
-    "deleteTitle": "Remove series"
+    "deleteTitle": "Remove series",
+    "noFilterMatch": "No series match this filter",
+    "noMatchFiltered": "No series match \"{{query}}\" with this filter",
+    "countFiltered": "{{shown}} of {{total}} series",
+    "filterLabel": "Show series",
+    "filter": {
+      "all": "All",
+      "missing": "Missing books",
+      "complete": "Complete",
+      "unlinked": "Not linked to Hardcover",
+      "shortlisted": "Shortlisted"
+    },
+    "filterMissingHint": "Series showing a missing badge. With Hardcover linking on, this counts catalogue books you do not have yet, exactly as the badge does."
   },
   "importHints": {
     "heading": "Already have files on disk?",
