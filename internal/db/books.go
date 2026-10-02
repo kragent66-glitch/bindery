@@ -900,6 +900,29 @@ func (r *BookRepo) ListAllBookFilePaths(ctx context.Context) ([]string, error) {
 	return r.files.ListAllPaths(ctx)
 }
 
+// BookFilesFingerprint returns a (count, maxID) snapshot read directly from
+// book_files, so a cache derived from it (the manual-import scan's
+// tracked-file index, #2480) can tell whether it needs to rebuild. See
+// BookFileRepo.Fingerprint for why this reads the table instead of an
+// in-process counter.
+func (r *BookRepo) BookFilesFingerprint(ctx context.Context) (int64, int64, error) {
+	return r.files.Fingerprint(ctx)
+}
+
+// BookFilesPathEpoch returns the in place path rewrite counter for book_files
+// (see BookFileRepo.PathEpoch). Fingerprint alone misses the reorganize
+// action's UpdatePath, which changes neither the row count nor the max id.
+func (r *BookRepo) BookFilesPathEpoch() uint64 {
+	return r.files.PathEpoch()
+}
+
+// ListFilesForBooks returns every book_files row for the given book IDs in a
+// single query, grouped by book_id. Replaces an N+1 ListFiles-per-book call
+// (the manual-import scan's confident-match format check, #2480).
+func (r *BookRepo) ListFilesForBooks(ctx context.Context, bookIDs []int64) (map[int64][]models.BookFile, error) {
+	return r.files.ListByBooks(ctx, bookIDs)
+}
+
 // ListBookFiles returns the book_files rows for a single book.
 func (r *BookRepo) ListBookFiles(ctx context.Context, bookID int64) ([]models.BookFile, error) {
 	return r.files.ListByBook(ctx, bookID)
@@ -1153,13 +1176,15 @@ func (r *BookRepo) SetFormatFilePath(ctx context.Context, id int64, mediaType, f
 // infers the format from the book's current media_type. Callers that know the
 // explicit format should use SetFormatFilePath directly.
 func (r *BookRepo) SetFilePath(ctx context.Context, id int64, filePath string) error {
+	// No fallback write when the book can't be loaded: a bare UPDATE of
+	// books.file_path would skip book_files and refreshBookStatus, and for a
+	// missing row it matched nothing yet still reported success (#2819).
 	b, err := r.GetByID(ctx, id)
-	if err != nil || b == nil {
-		// Fall back to the legacy single-column update so existing code paths
-		// never break even if the book can't be loaded.
-		_, err2 := r.db.ExecContext(ctx, "UPDATE books SET file_path=?, status=? WHERE id=?",
-			filePath, models.BookStatusImported, id)
-		return err2
+	if err != nil {
+		return fmt.Errorf("load book %d: %w", id, err)
+	}
+	if b == nil {
+		return fmt.Errorf("book %d not found", id)
 	}
 	mediaType := b.MediaType
 	if mediaType == models.MediaTypeBoth {
@@ -1203,6 +1228,22 @@ func (r *BookRepo) ListWithLocalImagePath(ctx context.Context) ([]models.Book, e
 func (r *BookRepo) SetCalibreID(ctx context.Context, id, calibreID int64) error {
 	_, err := r.db.ExecContext(ctx, "UPDATE books SET calibre_id=? WHERE id=?", calibreID, id)
 	return err
+}
+
+// SetCalibreIDIfUnset stores calibreID only when the book has none yet, and
+// reports whether it did. The Calibre delivery worker (#2832) uses it: it may
+// fill books.calibre_id from a delivery into the source library, but it never
+// replaces an id something else already recorded.
+func (r *BookRepo) SetCalibreIDIfUnset(ctx context.Context, id, calibreID int64) (bool, error) {
+	res, err := r.db.ExecContext(ctx, "UPDATE books SET calibre_id=? WHERE id=? AND calibre_id IS NULL", calibreID, id)
+	if err != nil {
+		return false, fmt.Errorf("set calibre_id if unset for book %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("set calibre_id if unset rows for book %d: %w", id, err)
+	}
+	return n > 0, nil
 }
 
 // GetByCalibreID returns the Bindery book row that currently points at the

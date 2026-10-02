@@ -29,6 +29,8 @@ Non-browser clients (curl, scripts, mobile apps) authenticating via API key do *
 
 The API key lives in **Settings → General → Security**. Regenerating it invalidates every existing consumer.
 
+The Calibre bridge routes under `/bridge/v1` are outside all of this: they take only the Calibre plugin key as a Bearer token, in every auth mode. See [Calibre bridge (pull)](#calibre-bridge-pull).
+
 ## Endpoint catalogue (selection)
 
 ### Authors
@@ -45,8 +47,10 @@ POST   /api/v1/author/{id}/refresh                re-pull profile and works, ski
 GET    /api/v1/author/{id}/catalogue-reconciliation
                                                     preview stale metadata-only Wanted rows
 POST   /api/v1/author/{id}/catalogue-reconciliation
-                                                    recheck and remove selected preview rows
-GET    /api/v1/author/{id}/relink-upstream/candidates
+                                                     recheck and remove selected preview rows
+ GET    /api/v1/author/{id}/duplicate-candidates
+                                                     read-only groups of titles that look like the same book (#1970)
+ GET    /api/v1/author/{id}/relink-upstream/candidates
                                                     search metadata candidates for manual relink
 POST   /api/v1/author/{id}/relink-upstream        re-bind to a different foreign ID
 GET    /api/v1/author/{id}/aliases                list merged-in alias rows
@@ -136,9 +140,19 @@ The field is absent when the providers match or no primary is configured.
 
 Catalogue reconciliation is deliberately separate from refresh. The GET route
 queries the current primary provider without using its cached author catalogue
-and returns `candidates`, a reason-count summary, protection counts, and
-`providerComplete`. A partial provider result never treats absence as a reason
-to remove a row. The POST route accepts the IDs from the preview:
+and returns `candidates`, `indeterminateRows`, a reason-count summary,
+protection counts, and `providerComplete`. Each `indeterminateRows` entry has a
+`bookId`, `title`, `metadataProvider`, and display-only `reason`. These rows are
+informational: they are kept because evidence is incomplete and are never
+deletion candidates. Stable indeterminate reasons are `language_unknown`,
+`language_evidence_lookup_failed`, `edition_evidence_unavailable`,
+`partial_catalogue`, and `unmatched_cross_provider`. A partial provider result
+never treats absence as a reason
+to remove a row. A complete result can make an absent same-provider row a
+candidate, but an unmatched row from another provider is kept as indeterminate:
+provider migration alone is not deletion evidence. Explicit profile rejections
+still apply when the row can be correlated across providers. The POST route
+accepts the IDs from the preview:
 
 ```json
 { "bookIds": [12, 19] }
@@ -175,6 +189,43 @@ move that author onto the fallback (#2271). Retry once the primary is
 answering, or send an explicit `foreignAuthorId`, which skips the search
 entirely.
 
+`GET /api/v1/author/{id}/duplicate-candidates` reports groups of the author's
+books whose titles look like the same book, for human review (#1970). It is
+read-only: it never writes, and the review UI's only action is the existing
+`PUT /book/{id}/exclude`. Titles are compared with an aggressive fold (case,
+punctuation, and diacritics ignored; `&` expanded to "and"), and a pair joins a
+group when any of these match: `alnum-equal` (identical after the fold),
+`article-strip` (identical after dropping a leading article),
+`edition-suffix` (identical after dropping a trailing edition marker), or
+`substring` (one title is the whole main title or subtitle of the other, split
+at a colon, bracket, or spaced dash, with length guards; "Foundation" does not
+match "Foundation and Empire"). `substring` is additionally suppressed when
+both books are known, different positions in the same series, so "Mistborn"
+at position 1 does not match "Mistborn: The Well of Ascension" at position 2.
+Groups are linked transitively, so A≈B and B≈C lands in one group.
+The response is:
+
+```json
+{
+  "authorId": 42,
+  "count": 1,
+  "groups": [
+    {
+      "key": "themartian",
+      "rules": ["article-strip", "substring"],
+      "books": [
+        { "id": 101, "title": "The Martian", "excluded": false, "rules": ["article-strip"] },
+        { "id": 102, "title": "Martian", "excluded": true, "rules": ["article-strip"] }
+      ]
+    }
+  ]
+}
+```
+
+Each `books` entry is the full book object plus a per-book `rules` list; the
+group's `rules` is the union across its members. Groups whose members are all
+excluded are omitted, and `count` is the number of groups returned.
+
 ### Books
 
 ```
@@ -189,6 +240,7 @@ POST   /api/v1/book/{id}/rebind                   re-link to a different metadat
 POST   /api/v1/book/{id}/enrich-audiobook         pull narrator/duration/cover from Audnex
 POST   /api/v1/book/{id}/search                   manual indexer search
 GET    /api/v1/book/{id}/file                     download the imported file (auth required; `?path=…` serves one specific tracked file, for a book holding several of a format; `?format=ebook|audiobook` picks the format on dual-format books; `?path=` wins when both are sent)
+GET    /api/v1/book/{id}/calibre                  where the book stands in the Calibre delivery queue (see Calibre below)
 ```
 
 ### Series
@@ -295,6 +347,30 @@ rolling 24 hours (#2312). Omitted, `null` and `0` all mean no cap. A negative
 value is rejected with 400. `GET /indexer` and `GET /indexer/{id}` also return
 `dailyQueriesUsed` on capped indexers, which is a display figure summed from the
 stored hourly buckets and lags the live tally by up to one flush interval.
+
+#### Per-indexer seed limits
+
+Three optional overrides are applied to a torrent grabbed from the indexer:
+
+| Field | Meaning | Accepted values |
+|---|---|---|
+| `seedRatio` | stop seeding at this upload ratio | a ratio, or `-1` for unlimited |
+| `seedTimeMinutes` | stop seeding after this many minutes in total (#2206) | 1 to 5256000 |
+| `inactiveSeedTimeMinutes` | stop seeding after this many minutes without upload (#2206) | 1 to 5256000 |
+
+Omitted on `PUT` keeps the stored value, and `null` clears it so the download
+client's own rule applies. A seed time below 1 or above 5256000 (ten years) is
+rejected with 400. qBittorrent applies all three; Transmission the ratio and the
+inactive time; Deluge the ratio only; rTorrent none of them. A limit the client
+cannot apply is logged at debug and skipped.
+
+`seedRatioSource` and `seedTimeSource` are read only provenance: `prowlarr`
+when a Prowlarr sync filled the value from that indexer's `seedRatio` or
+`seedTime`, `user` when the value was sent on create or the indexer has been
+updated with `PUT` since, and absent when unset. Anything a client sends in
+either source field is ignored. A Prowlarr sync never overwrites a `user` value, including a value
+cleared to `null`. Prowlarr has no inactive seed time, so that field has no
+source.
 
 #### Rate limit holds
 
@@ -636,6 +712,205 @@ server root (e.g. `https://ntfy.sh`). Bindery then POSTs the JSON body with a
 `topic` field to the root, which ntfy renders natively. Without a topic it POSTs
 to the URL as-is, so a topic URL would show the raw JSON — use the topic field
 or ntfy message-templating headers (`X-Title`, `X-Message`) instead.
+
+### Calibre
+
+```
+POST   /api/v1/calibre/test                       probe calibredb or the Bindery Bridge plugin (admin)
+POST   /api/v1/calibre/import                     start a library import from Calibre (admin)
+GET    /api/v1/calibre/import/status              library import progress (admin)
+POST   /api/v1/calibre/sync                       Push all: queue every eligible book for delivery (admin, plugin mode)
+GET    /api/v1/calibre/sync/status                progress of the last Push all, read from the delivery queue (admin)
+GET    /api/v1/calibre/deliveries/summary         queue counts, last delivery, whether Calibre was reachable (admin)
+GET    /api/v1/calibre/deliveries                 queue rows with book title and author (admin; `?state=&limit=&offset=`)
+POST   /api/v1/calibre/deliveries/retry           put failed or skipped rows back in the queue (admin)
+DELETE /api/v1/calibre/deliveries?state=pending   drop every waiting row (admin)
+POST   /api/v1/calibre/deliveries/reset           forget every delivery, for a new Calibre library (admin; needs {"confirm": true})
+GET    /api/v1/book/{id}/calibre                  one book's delivery state (anyone who can see the book)
+```
+
+Every ebook Bindery sends to Calibre goes through a delivery queue (#2832),
+one row per ebook file. A row is `pending` (waiting, or retrying after an
+error), `delivered`, `failed` (gave up; only a retry puts it back) or
+`skipped` (the book or file went away before it could be sent). Imports queue
+their file, and a worker delivers every minute and straight after an import,
+so a book imported while Calibre is closed goes out once Calibre is back. A
+Calibre that cannot be reached is not counted as an attempt.
+
+**Push all** (`POST /calibre/sync`) queues each imported, monitored book's
+ebook file unless one of the book's ebook files is already in the queue, in
+any state. A delivered book is never queued again and a failed one is not
+rearmed; use retry for that. The response is `202` with the same progress
+shape `GET /calibre/sync/status` returns: `running` stays true while any book
+the run queued is still waiting, and the counts come from the queue
+(`pushed` is newly added by Calibre, `alreadyInCalibre` includes books
+delivered before the run, `failed` holds failures with their error, `skipped`
+holds books the run left out and why). It still needs plugin mode: calibredb
+has no "already in the library" answer, so a bulk run there would turn every
+book the library already holds into a failure. A second Push all while the
+first is still queueing is a `409`.
+
+`GET /calibre/deliveries/summary`:
+
+```json
+{
+  "pending": 3, "delivered": 412, "failed": 1, "skipped": 0,
+  "lastDeliveredAt": "2026-09-27T11:02:13Z",
+  "mode": "plugin",
+  "target": {
+    "lastPassAt": "2026-09-27T12:01:00Z",
+    "checkedAt": "2026-09-27T12:01:00Z",
+    "reachable": false,
+    "lastError": "Get \"http://calibre:8099/v1/health\": dial tcp: connection refused"
+  },
+  "transport": "push",
+  "pull": {}
+}
+```
+
+`target` is what the worker last learned. It only refreshes while something is
+waiting, so with an empty queue `checkedAt` can be old.
+
+`transport` is `calibre.plugin_transport` (`push` or `pull`). In pull the
+worker never contacts Calibre, so `target` stays empty and `pull` says when
+the plugin last reached the bridge routes: `lastSeen`, `pluginVersion`,
+`capabilities`, `remoteAddr`, and `library`, the Calibre library it last
+acknowledged a delivery into. It is kept in memory, so it is empty after a
+restart until the plugin checks in again.
+
+`GET /calibre/deliveries` returns `{items, total}`. `state` is `pending`,
+`delivered`, `failed`, `skipped` or empty for all; `limit` defaults to 50 and
+caps at 500. Each item is the queue row (`filePath`, `format`, `state`,
+`outcome`, `attempts`, `lastError`, `lastErrorCode`, `calibreId`, `updatedAt`,
+`deliveredAt`) plus `bookTitle` and `authorName`.
+
+`POST /calibre/deliveries/retry` takes `{"state": "failed"}`, `"skipped"` or
+`""` for both, resets their attempts and returns `{"requeued": N}`. `DELETE
+/calibre/deliveries` only accepts `state=pending` and returns `{"cleared": N}`;
+the record of what was delivered is never cleared this way, because it is what
+stops a book being sent twice. `POST /calibre/deliveries/reset` deletes every
+row and returns `{"removed": N}`. It is for pointing Bindery at a different
+Calibre library, where the old records would claim books are in a library
+they never reached. Nothing is sent to the new library until Push all or an
+import queues it.
+
+`GET /book/{id}/calibre` answers `{"state": ...}` with `off` when the
+integration is off, `none` when the book was never queued, or the state of
+the row that speaks for the book (delivered first, then pending, failed,
+skipped). Admins also get `outcome`, `lastError`, `lastErrorCode`,
+`attempts`, `calibreId` and `deliveredAt`; other users get the state only,
+since the error text can name server paths. A book the caller cannot see is a
+`404`, as with `GET /book/{id}`.
+
+### Calibre bridge (pull)
+
+With `calibre.mode` set to `plugin` and `calibre.plugin_transport` set to
+`pull` (#2833), the Calibre Bridge plugin (0.8.0 or later) connects out to
+Bindery instead of Bindery connecting to it. The plugin lists the due
+deliveries, downloads each file, adds it to Calibre and acknowledges it. The
+push worker stands down in pull, so a book is never sent both ways.
+
+```
+GET    /bridge/v1/hello                    Bindery version, protocol, page size, transport
+GET    /bridge/v1/deliveries               due deliveries (`?limit=&cursor=`)
+GET    /bridge/v1/deliveries/{id}/file     the book file
+GET    /bridge/v1/deliveries/{id}/cover    the cover image
+POST   /bridge/v1/deliveries/{id}/ack      the plugin added it
+POST   /bridge/v1/deliveries/{id}/nack     the plugin could not add it
+```
+
+These routes sit at the root like `/opds`, outside `/api/v1`, and under
+`BINDERY_URL_BASE` when one is set.
+
+**Authentication.** Every route needs `Authorization: Bearer <key>`, where the
+key is `calibre.plugin_api_key`, the same key push mode sends to the plugin.
+It is required in every auth mode, including Disabled and Local only. The
+global API key, `X-Api-Key`, `?apikey=` and session cookies are not accepted
+here, and the plugin key is accepted nowhere else. A stored key that is empty
+or shorter than 16 characters refuses every request. Failed attempts are
+counted per client address on a limiter of their own, separate from the
+login limiter, so a plugin with a stale key cannot lock the admin out of the
+web UI; past the limit the answer is `429` with `Retry-After`.
+
+The plugin sends `X-Bridge-Version: <plugin version>` and
+`X-Bridge-Capabilities: <comma separated>` (for example
+`book_metadata,cover,add_format`) on every request. Bindery records the last
+contact for the settings page.
+
+Errors are JSON `{"error": "...", "code": "..."}`:
+
+| Status | code | When |
+|---|---|---|
+| 400 | `invalid_request` | bad id, limit, cursor or body |
+| 401 | `unauthorized` | missing or wrong key, or no usable key stored |
+| 403 | `path_forbidden` | the delivery's file is outside the library roots, or not a regular file |
+| 404 | `not_found` | no such pending delivery, the file is gone, or no cover |
+| 409 | `not_in_pull_mode` | a delivery route while mode is not `plugin` or transport is not `pull` |
+| 409 | `not_pending` | ack or nack of a row that already failed, was skipped, or was delivered to another Calibre id |
+| 429 | `rate_limited` | too many failed attempts from this address |
+
+`GET /bridge/v1/hello` answers in push too, so the plugin can report that
+Bindery is not in pull mode:
+
+```json
+{"binderyVersion": "v1.39.0", "protocol": 1, "maxBatch": 20, "transport": "pull"}
+```
+
+`GET /bridge/v1/deliveries` returns the pending rows that are due, a page at
+a time. `limit` defaults to 20 and caps at 50; `cursor` is opaque, and an
+empty `nextCursor` means there is nothing further. `pending` counts every due
+row, not just this page.
+
+```json
+{
+  "deliveries": [
+    {"id": 812, "bookId": 97, "format": "epub", "sizeBytes": 482113,
+     "action": "add", "hasCover": true,
+     "metadata": {"title": "Emma", "authors": ["Jane Austen"],
+                  "identifiers": {"bindery": "97", "isbn": "9780141439587"}}}
+  ],
+  "nextCursor": "97",
+  "pending": 3
+}
+```
+
+`metadata` is the object push mode sends in `POST /v1/books`, without
+`coverPath`. Pages hold whole books and list each book's preferred format
+first (epub, kepub, azw3, mobi, pdf, then the rest), like the push worker.
+`action` is `add` for the first file of a book, and `add_format` for a file of
+a book that already has a delivered file. A book's other files are held back
+until its first is acknowledged, then listed as `add_format`. A plugin that
+does not advertise `add_format` is never offered one: those rows are skipped
+with the same reason push uses, and put back in the queue the next time the
+plugin lists with `add_format` advertised.
+
+`GET /bridge/v1/deliveries/{id}/file` streams the file recorded on the row
+with `Content-Type: application/octet-stream`, `Content-Length` and
+`Content-Disposition: attachment; filename="book.<ext>"`. Range requests
+work. The path must be inside a library root, the same allow list as the
+download route, and must be a regular file. A file that has gone is a `404`
+and the row is skipped. Only pending rows are served.
+
+`GET /bridge/v1/deliveries/{id}/cover` returns the cover image with its
+content type, or `404`.
+
+`POST /bridge/v1/deliveries/{id}/ack` takes
+`{"calibreId": 1234, "outcome": "added" | "already" | "format_added",
+"coverApplied": true, "library": "C:\\Users\\me\\Calibre Library"}` and
+answers `204`. The row is marked delivered against the reported library, and
+`books.calibre_id` follows the push rule: it is filled only when the book has
+none, did not come from a Calibre import, and either no library path is set
+or the library is that one. Sending the same ack again is a `204`.
+
+`POST /bridge/v1/deliveries/{id}/nack` takes `{"code": "calibre_busy",
+"error": "database is locked", "retryable": true}` and answers `204`. It
+counts one attempt. `retryable: false`, or a `bad_format` or
+`path_forbidden` code, fails the row for good; otherwise it backs off on the
+push schedule (1 minute, 5 minutes, 15 minutes, 1 hour, 6 hours, 24 hours)
+and gives up after 8 attempts.
+
+The delivery queue is not per user: it is the install's one Calibre target,
+and every route here is as privileged as an admin reading the queue.
 
 ### Settings
 

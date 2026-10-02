@@ -168,6 +168,35 @@ describe('AdoptionView', () => {
     expect(within(editor).getByRole('button', { name: 'Adopt as The Martian' })).toBeEnabled()
   })
 
+  it('shows an imported suggestion as such and says the files were added alongside (#2879)', async () => {
+    const owned = { ...martian, status: 'imported' }
+    const copy = item({
+      id: 5, parsedTitle: 'The Martian', relPath: 'Andy Weir/The Martian (2)/The Martian.epub',
+      candidates: [{ book: owned, score: 1 }], topScore: 1,
+    })
+    serve(listResponse([copy]))
+    server.use(
+      http.get(apiUrl('/book'), () => HttpResponse.json({ items: [], total: 0 })),
+      http.post(apiUrl('/library/unmatched/5/adopt'), () =>
+        HttpResponse.json({ ...copy, state: 'adopted', book: owned, message: 'This book already had a file of this format.' })),
+    )
+    const table = await renderView()
+    const row = within(table).getByRole('row', { name: 'The Martian' })
+
+    expect(within(row).getByText('Possible match')).toBeInTheDocument()
+    expect(within(row).getByText('Imported')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: 'Confirm' })).toBeNull()
+
+    fireEvent.click(within(row).getByRole('button', { name: 'The Martian' }))
+    const editor = await screen.findByRole('region', { name: 'Which book is The Martian?' })
+    expect(within(editor).getByRole('radio', { name: /The Martian/ })).toBeChecked()
+    expect(within(editor).getByText('Imported')).toBeInTheDocument()
+    expect(within(editor).getByRole('note')).toHaveTextContent('This book already has its files.')
+
+    fireEvent.click(within(editor).getByRole('button', { name: 'Adopt as The Martian' }))
+    expect(await within(table).findByText(/Added alongside the file it already had\./)).toBeInTheDocument()
+  })
+
   it('asks a metadata provider only when the search is submitted', async () => {
     serve(listResponse([unsuggested]))
     server.use(http.get(apiUrl('/search/book'), () => HttpResponse.json([])))

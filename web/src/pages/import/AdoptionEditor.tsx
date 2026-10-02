@@ -4,6 +4,7 @@ import type { AdoptionBookRef, AdoptionItem, AdoptTarget, Book } from '../../api
 import { btn, btnSize } from '../../components/buttons'
 import BookPicker from '../../components/import/BookPicker'
 import CatalogueAdder from '../../components/import/CatalogueAdder'
+import { bookStatusBadge } from '../../components/bookStatus'
 import { adoptionHint, scorePercent, unitDisplayName } from './adoptionHint'
 
 interface Props {
@@ -19,6 +20,18 @@ function refFromBook(b: Book): AdoptionBookRef {
     id: b.id, title: b.title, authorId: b.authorId, authorName: b.author?.authorName ?? '',
     imageUrl: b.imageUrl, status: b.status, mediaType: b.mediaType ?? '', monitored: b.monitored,
   }
+}
+
+// StatusPill shows a suggested book's status, so a book that already has its
+// files or was skipped is visible as such before it is picked (#2879).
+export function StatusPill({ status, monitored }: { status: string; monitored: boolean }) {
+  const { t } = useTranslation()
+  const badge = bookStatusBadge(status, monitored, t)
+  return (
+    <span title={badge.description} className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium ${badge.colorClass}`}>
+      {badge.label}
+    </span>
+  )
 }
 
 // AdoptionEditor opens in place under its row, never as a dialog: the
@@ -80,6 +93,7 @@ export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = fa
                     {o.book.title}
                     {o.book.authorName && <span className="text-xs text-fg-muted"> · {o.book.authorName}</span>}
                   </span>
+                  <StatusPill status={o.book.status} monitored={o.book.monitored} />
                   {pct !== null ? (
                     <span className="flex items-center gap-2" aria-label={t('adoption.editor.score', { percent: pct, defaultValue: '{{percent}}% title match' })}>
                       <span aria-hidden="true" className="hidden sm:block h-1.5 w-24 overflow-hidden rounded-full bg-slate-200 dark:bg-zinc-800">
@@ -95,6 +109,11 @@ export default function AdoptionEditor({ item, onAdopt, onCancel, showFiles = fa
             })}
           </div>
         </fieldset>
+      )}
+      {chosen?.status === 'imported' && (
+        <p role="note" className="-mt-2 text-xs text-amber-800 dark:text-amber-400">
+          {t('adoption.editor.alreadyImported', 'This book already has its files. Adopting adds these alongside them, and nothing is replaced or deleted.')}
+        </p>
       )}
 
       <div className="grid gap-3 md:grid-cols-2">

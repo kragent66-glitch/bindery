@@ -44,10 +44,12 @@ an arbitrary release is unreliable. The escape hatches:
 - **Import** (`/import`): **In your library** lists the books a library scan
   could not match, for you to adopt in place ([Adopting files already in your
   library](#adopting-files-already-in-your-library)). **From a folder** points
-  at a folder of files you already have and matches them to books. Either way a
-  file with no catalogue match gets a metadata search, which creates the book
-  (and its author, if new) and links the file to it, so an unmatched file is no
-  longer a dead end.
+  at a folder of files you already have and matches them to books; files already
+  tracked in the library are skipped by default, and toggling **Show already
+  imported** surfaces them again, e.g. to spot a corrupted file or relink one.
+  Either way a file with no catalogue match gets a metadata search, which
+  creates the book (and its author, if new) and links the file to it, so an
+  unmatched file is no longer a dead end.
 
 Both still end by attaching a file to a catalogue record.
 
@@ -366,11 +368,35 @@ set as one record), matching packs are allowed for it.
 the indexer, and why the category (default `books`) must already exist in the
 client. Bindery fetches the .torrent/NZB itself and hands it over.
 
+**Seeding limits.** A torrent indexer can carry its own seeding rules in
+Settings → Indexers, so a private tracker's minimum is met without changing the
+client's global rules for everything else. **Seed ratio** stops seeding at that
+upload ratio (or never, with *Unlimited*). **Seed time** stops seeding after
+that many minutes in total, and **Inactive seed time** after that many minutes
+without uploading. Leave a field blank to keep the client's own rule. They are
+applied to each torrent as it is grabbed, so changing them affects later grabs,
+not torrents already in the client. Indexers synced from Prowlarr pick up
+Prowlarr's per indexer seed ratio and seed time until you edit them yourself;
+Prowlarr has no inactive seed time. Not every client can hold every limit per
+torrent, and a limit the client cannot take is skipped (with a debug log line)
+rather than approximated:
+
+| Client | Seed ratio | Seed time | Inactive seed time |
+|---|---|---|---|
+| qBittorrent | yes | yes | yes, 4.6 or later |
+| Transmission | yes | no | yes |
+| Deluge | yes | no | no |
+| rTorrent | no | no | no |
+
+Usenet clients have no seeding, so the limits do nothing there.
+
 **Import.** When the client reports the job complete, Bindery matches it to
 the book, places the file per your import mode and naming template, and marks
 the book **In Library**. Ebooks land under the author's root folder (falling
 back to the default root folder, then `BINDERY_LIBRARY_DIR`); audiobooks have
-their own destination chain (`BINDERY_AUDIOBOOK_DIR`, per-author override).
+their own chain (the author's audiobook root folder, then the default audiobook
+root folder, then `BINDERY_AUDIOBOOK_DIR`). Both defaults are set under
+Settings > Root Folders, and the Add Author dialog preselects them.
 Every author added through the UI gets a root folder written on the author
 itself, seeded from the default you set in Settings, so changing that default
 later moves only authors you have not created yet. In 1.32.1 and earlier the
@@ -496,6 +522,17 @@ to the records. Things worth knowing before you judge the results:
   already own it: a cue sheet or notes file next to an audiobook is never taken
   as evidence you own the book, and a real ebook wins over a supplement-class
   file when both match (#2240).
+- That check never takes **another volume of the same series** as the book you
+  are adding. Volume numbers are compared whether they sit in the title or only
+  in the book folder, so in a `Defiance of the Fall 01/…_B094JZMCJX_….m4b`
+  layout, adding volume 17 no longer attaches volume 1's file and skips the
+  search (#2810). A file that already belongs to another book is never
+  attached to the new one either; the new book stays wanted and is searched.
+- The library scan follows the same volume rule. An untracked `Defiance of
+  the Fall 01` folder is never attached to a wanted volume 17, however alike
+  the titles look; it goes to volume 1 if that book is in your library, and
+  otherwise waits on **Import → In your library**, where volume 17 is not
+  offered as its suggestion either (#2860).
 
 ## Adopting files already in your library
 
@@ -520,6 +557,12 @@ How to work through the list:
 - **Possible match** means the title is only similar, or the author differs.
   Click the suggested title to check it in the editor, where it is already
   selected, and adopt it from there.
+- Suggestions come from **every book by the author the scan matched**,
+  whatever its status, and each shows that status. A book you skipped or one
+  that is already **Imported** is never a one click Confirm; adopting into a
+  book that already has a file adds the new file alongside it (#2879).
+  Suggestions are worked out by the scan, so a book added since the last scan
+  appears after the next one; until then, search for it in the editor.
 - **Choose book** opens the row in place: the suggestions with their scores,
   a search of your library (prefilled from the file), and a collapsed
   **Search metadata**. Metadata providers are only asked when you press Search
@@ -575,6 +618,12 @@ Things worth knowing:
 - **From a folder** (`/import?view=folder`) is the other way in: point it at a
   folder anywhere Bindery can read, such as your downloads, and it imports
   what it matches into the library, moving or copying the files.
+- It lists one row per **book**, the same idea as the list above. A folder of
+  audio is one row, and so is a folder whose audio subfolders are all pieces of
+  one recording (`CD1`, `Disc 2`, `Disk 3`, `Part 4`, `Chapter 5`). Subfolders
+  named `Book 1`, `Vol 2` or a bare `1` are separate books, because a series
+  stored that way is several books rather than one long one, so each gets its
+  own row and its own match.
 
 ## Restyling files you already have
 
@@ -671,8 +720,11 @@ When metadata is wrong, you have three levels of fix:
    never overwrite them ([guide](Metadata-Editing-Wiki.md)).
 2. **Re-bind** the book, or **relink** the author ("Find better match"), to a
    different provider record when the match itself is wrong.
-3. A **metadata profile** (languages, minimum page count, skip part books)
-   filters what a catalogue sync lets in.
+3. A **metadata profile** (languages, minimum page count, minimum edition
+   count, skip part books) filters what a catalogue sync lets in. Filling a
+   series skips every metadata profile filter today, the edition count included
+   ([#2208](https://github.com/vavallee/bindery/issues/2208)), so a filled
+   series can still bring in thin works.
 
 Box sets need no setting. A work whose title plainly names a bundle ("... Box
 Set", "3 Books Set", "Carton of 10 Signed Copies") is dropped from every
@@ -801,7 +853,31 @@ skipped. If the provider returns a partial catalogue, missing works are kept
 rather than guessed stale. OpenLibrary's `searchAuthorWorks` lookup currently
 requests at most 200 works (`limit=200`), so authors with more than 200 works
 remain marked partial: the warning may stay visible, and reconciliation will
-not remove their `not_in_current_catalogue` rows.
+not remove their `not_in_current_catalogue` rows. With a complete catalogue,
+an absent row from that same provider may be actionable. A row from a different
+provider is kept as indeterminate when Bindery cannot correlate it to the
+current catalogue; changing providers alone is not evidence that a work is
+obsolete. A correlated work that the metadata profile explicitly rejects can
+still be removed for that rejection reason. The preview lists each
+indeterminate row separately with its provider and the incomplete-evidence
+reason so it can be reviewed manually; these informational rows have no
+selection control and cannot be sent for removal.
+
+**Duplicate titles.** The same book often reaches the catalogue twice under
+slightly different titles — "The Martian" and "Martian", "Dune" and "Dune
+(Unabridged)". Open the author and choose **More → Review duplicates…** to see
+groups of titles that look like the same book. Each group shows which rule
+matched (identical after normalisation, a leading article dropped, an edition
+marker dropped, or one title being the main title or subtitle of the other),
+and each row shows the rules that pulled it in. A main title or subtitle match
+only counts at a colon, bracket or spaced dash, so Asimov's "Foundation" is not
+flagged against "Foundation and Empire", and it is skipped when the two books
+are known, different entries in the same series ("Mistborn" against "Mistborn:
+The Well of Ascension"). Nothing is changed automatically: the only action is
+**Exclude** on a row you judge to be the duplicate, which marks it excluded
+without deleting anything. An excluded row stays in its group, struck through,
+with an **Include** button to undo it; a group leaves the report once fewer
+than two of its rows are still included.
 
 ## How author names are filed
 
@@ -995,6 +1071,90 @@ Nowhere (rule 3). Use **Import** (`/import`) for files it didn't download:
 **From a folder** for files elsewhere, **In your library** for files a library
 scan found but could not match.
 
+**Test connection says the Calibre container cannot see my library path.**
+Calibre cannot open the path your **Push path remap** produces. With Calibre
+on a Windows desktop, the right side of the remap must be the share address,
+for example `/books:\\nas\media\books`, not a mapped drive letter: a mapped
+drive belongs to one logon session and the running Calibre may not see it.
+Check the share opens in Explorer on that PC
+([step 1 of the Windows runbook](Calibre-Windows-Desktop-Wiki.md#1-find-the-share-address-calibre-can-open)).
+For a desktop Calibre, pull mode avoids the share altogether
+([Set up pull](Calibre-Windows-Desktop-Wiki.md#set-up-pull)).
+
+**Pushing to Calibre fails with `[Errno 22] Invalid argument`.**
+The path starts with `\\?\\\` and is over about 200 characters: Calibre
+builds an invalid long path for a network share. Bindery Bridge 0.6.1 works
+around it. Upgrade the plugin, restart Calibre, and click **Retry failed**
+under **Delivery queue** on the Calibre tab
+([troubleshooting](Calibre-Windows-Desktop-Wiki.md#troubleshooting)).
+
+**Push all says a book is already in Calibre, but it has no file there.**
+An earlier failed add left an empty record, and the next push matched it.
+Bindery Bridge 0.6.2 removes the record when an add fails and attaches the
+file on the next push. Upgrade and restart Calibre. Bindery has recorded
+those books as delivered, so click **Reset delivery state** on the Calibre
+tab and then run **Push all to Calibre**
+([troubleshooting](Calibre-Windows-Desktop-Wiki.md#troubleshooting)).
+
+**Calibre says `Cannot determine book format from extension` with a folder.**
+Bindery recorded a folder as the book's ebook file, and Calibre cannot add a
+folder. Fix the book in Bindery rather than the plugin: check its **Files**,
+use **Forget this file** on the wrong entry and import the right ebook. In the
+case this came from, the folder held an audiobook of a different book.
+
+**Books imported while Calibre was closed have not reached it yet.**
+They are waiting. Bindery queues every imported ebook and delivers it when
+Calibre is reachable: with the push transport within about a minute of
+Calibre running again, with pull at the plugin's next check, 60 seconds by
+default. A book Calibre rejects is retried after 1 minute, 5 minutes, 15
+minutes, 1 hour, 6 hours and then daily, and marked failed after 8 attempts.
+The **Delivery queue** section of the Calibre tab shows how many are waiting,
+delivered and failed, and each failed book with its error; the book's own
+page shows **Waiting for Calibre**, **In Calibre** or **Calibre failed**.
+
+**Running Push all to Calibre again does not fix failed books.**
+Expected. Push all only queues books the queue does not hold yet, so it never
+resends a delivered book and leaves failed ones alone. Fix the cause shown in
+**Failed deliveries** on the Calibre tab, then click **Retry failed**
+([the delivery queue](Calibre-Windows-Desktop-Wiki.md#watch-the-delivery-queue)).
+
+**Calibre never picks up new books in pull mode.**
+Open the plugin's **Customize** dialog in Calibre and read **Pull status**.
+"Bindery is set to push" means **Transport** on the Calibre tab is still
+Push. "Bindery rejected the API key" means the keys differ, and the plugin
+then waits an hour; click OK in the dialog to retry at once. "Paused: a
+different library is open" means Calibre has another library open than the
+one pull was turned on in. On Bindery's side, the **Delivery queue** panel
+says when Calibre last checked in
+([pull troubleshooting](Calibre-Windows-Desktop-Wiki.md#pull-troubleshooting)).
+
+**Every request from the Calibre plugin takes about 20 seconds.**
+The plugin's **Bindery URL** says `localhost` and Bindery runs in WSL or
+Docker Desktop on the same Windows PC. Windows tries IPv6 `::1` first, the
+forwarding drops it silently, and the fallback to IPv4 takes about 21
+seconds. Use `127.0.0.1` or the machine's address instead
+([pull troubleshooting](Calibre-Windows-Desktop-Wiki.md#pull-troubleshooting)).
+
+**Only one format of a book reached Calibre.**
+Bindery sends every ebook format of a book to the same Calibre record, which
+needs Bindery Bridge 0.7.0 or later. With an older plugin the first format
+arrives and the rest are skipped with the reason `bridge cannot add a second
+format; update the Calibre plugin to 0.7.0`. Update the plugin and restart
+Calibre; Bindery then delivers the skipped formats on its own
+([Calibre integration](Calibre-Integration-Wiki.md#deliveries-are-queued-and-retried)).
+
+**Audiobooks never appear in Calibre.**
+Expected. The Calibre write integration sends ebooks only, and **Push all to
+Calibre** lists an audiobook with no ebook under Skipped. Use Audiobookshelf
+for audiobooks
+([Calibre integration](Calibre-Integration-Wiki.md#troubleshooting)).
+
+**How do I get books onto a Kobo?**
+Through Calibre: connect the Kobo by USB and use **Send to device**. Kobo
+renders KEPUB better than EPUB; recent Calibre converts to it, and the
+KoboTouchExtended plugin adds it if yours does not
+([Windows runbook](Calibre-Windows-Desktop-Wiki.md#get-books-onto-a-kobo)).
+
 ---
 
 More depth: [QUICKSTART.md](QUICKSTART.md) ·
@@ -1003,4 +1163,5 @@ More depth: [QUICKSTART.md](QUICKSTART.md) ·
 [Troubleshooting](Troubleshooting-Wiki.md) ·
 [Migrating from Readarr](Migrating-From-Readarr-Wiki.md) ·
 [ABS import](ABS-Import-Wiki.md) ·
+[Calibre on Windows](Calibre-Windows-Desktop-Wiki.md) ·
 [Multi-user](multi-user.md)

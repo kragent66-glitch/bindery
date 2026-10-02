@@ -65,7 +65,9 @@ func TestRenamerNarratorSanitized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DestPath: %v", err)
 	}
-	want := filepath.Join("/books", "Author", "Michael Kramer- Narrator", "Some Book.m4b")
+	// ": " is a title boundary and renders as " - " (#2790); the "?" is
+	// dropped. What this pins is that neither survives into the path.
+	want := filepath.Join("/books", "Author", "Michael Kramer - Narrator", "Some Book.m4b")
 	if got != want {
 		t.Errorf("got  %q\nwant %q", got, want)
 	}

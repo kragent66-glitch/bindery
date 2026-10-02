@@ -58,6 +58,14 @@ describe('adoptionHint', () => {
     expect(STRONG_MATCH_SCORE).toBe(0.92)
   })
 
+  it('never offers a one click confirm into a book that already has its files or was skipped (#2879)', () => {
+    for (const status of ['imported', 'skipped']) {
+      const settled = item({ parsedAuthor: 'Andy Weir', candidates: [{ book: { ...martian, status }, score: 1 }] })
+      expect(matchStrength(settled)).toBe('possible')
+      expect(adoptionHint(settled, t).sentence).not.toContain('Confirm')
+    }
+  })
+
   it('matches authors by their words', () => {
     expect(authorsMatch('Weir', 'Andy Weir')).toBe(true)
     expect(authorsMatch('Álvaro Enrigue', 'Alvaro Enrigue')).toBe(true)

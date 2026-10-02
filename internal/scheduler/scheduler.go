@@ -34,6 +34,13 @@ type CalibreSyncer interface {
 	RunSync(ctx context.Context)
 }
 
+// CalibreDeliverer runs one pass of the Calibre delivery queue (#2832).
+// Implemented by *calibre.Deliverer. A pass returns at once when another is
+// already running, so the tick and an import's kick never overlap.
+type CalibreDeliverer interface {
+	RunDeliveries(ctx context.Context)
+}
+
 // bookSearcher is the narrow interface the scheduler uses for indexer
 // searches. *indexer.Searcher satisfies it; the interface keeps the scheduler
 // testable without real network calls.
@@ -349,6 +356,20 @@ func (s *Scheduler) WithStoragePaths(downloadDir, audiobookDownloadDir string) {
 // every 24 hours when Calibre is configured. Must be called before Start.
 func (s *Scheduler) WithCalibreSyncer(syncer CalibreSyncer) {
 	s.calibreSyncer = syncer
+}
+
+// WithCalibreDeliverer registers the Calibre delivery job, every minute
+// under the name calibre-deliver. A pass with Calibre off, an empty queue or
+// an unreachable Calibre does nothing, so the short interval costs one local
+// query when idle. It is what delivers a book imported while Calibre was
+// closed once Calibre is back. A nil deliverer registers nothing.
+func (s *Scheduler) WithCalibreDeliverer(d CalibreDeliverer) {
+	if d == nil {
+		return
+	}
+	s.cron.AddFunc("@every 1m", runJob("calibre-deliver", func() {
+		d.RunDeliveries(s.ctx())
+	}))
 }
 
 // WithRecommender registers a recommendation engine that runs every 24 hours.
@@ -890,19 +911,20 @@ func (s *Scheduler) resolveAllowedLanguages(ctx context.Context, author *models.
 	return models.ParseAllowedLanguages(p.AllowedLanguages)
 }
 
-// resolveSeedRatio looks up the per-indexer seed-ratio override (#883) for the
-// indexer a release was grabbed from. Returns nil (no override) when the
-// indexer repo is unset, the id is zero, the lookup fails, or the indexer has
-// no override stored, so the download client keeps its global ratio rule.
-func (s *Scheduler) resolveSeedRatio(ctx context.Context, indexerID int64) *float64 {
+// resolveSeedLimits looks up the per-indexer seed ratio (#883) and seed time
+// (#2206) overrides for the indexer a release was grabbed from. Each is nil
+// (no override) when the indexer repo is unset, the id is zero, the lookup
+// fails, or the indexer has none stored, so the download client keeps its own
+// rule.
+func (s *Scheduler) resolveSeedLimits(ctx context.Context, indexerID int64) downloader.SeedLimits {
 	if s.indexers == nil || indexerID == 0 {
-		return nil
+		return downloader.SeedLimits{}
 	}
 	idx, err := s.indexers.GetByID(ctx, indexerID)
-	if err != nil || idx == nil {
-		return nil
+	if err != nil {
+		return downloader.SeedLimits{}
 	}
-	return idx.SeedRatio
+	return downloader.SeedLimitsFor(idx)
 }
 
 // freeleechOnlyIndexerIDs returns the set of indexer ids whose freeleech-only
@@ -990,6 +1012,10 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 		// first approved release in ranked order, so this is what decides
 		// which format the sweep picks.
 		Profile: qualityProfile,
+		// The book's stored runtime lets the size term score an audio release
+		// by its density instead of its total size; zero keeps the flat bonus
+		// (#2740).
+		DurationSeconds: book.DurationSeconds,
 	}
 	if book.ReleaseDate != nil {
 		crit.Year = book.ReleaseDate.Year()
@@ -1152,14 +1178,22 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 		outcome = "duplicate check failed"
 		return
 	}
-	// Only an import whose book has since been deleted is reused (#2289):
-	// without this, a book deleted and added back never grabs its old release
-	// automatically when that release ranks first. A failed or blocked row is
-	// different. It is a release that already went wrong once, and while a
-	// user clicking Grab may try it again, the scheduler would pick it on
-	// every sweep and loop on it, so it stays skipped here.
-	if existing != nil && !existing.IsOrphanedImport() {
-		outcome = "already grabbed"
+	// Live work blocks the grab; a failed attempt does not (#2710). A failed
+	// row is reused once deadRegrabCooldown has passed since it died, and an
+	// import whose book has since been deleted is reused whatever its age
+	// (#2289). An importBlocked row is left to the manual grab and the
+	// queue's Retry import. blockingRegrabReason decides, and names the reason
+	// so the skip is not silent: the "auto-grabbing book" line above has
+	// already been written by now.
+	if reason := blockingRegrabReason(existing, time.Now().UTC()); reason != "" {
+		outcome = reason + " (" + string(existing.Status) + ")"
+		slog.Info("skipping a release the queue still holds",
+			"book", book.Title,
+			"release", best.Title,
+			"guid", best.GUID,
+			"existing_status", string(existing.Status),
+			"existing_download_id", existing.ID,
+			"reason", reason)
 		return
 	}
 
@@ -1178,21 +1212,23 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 	}
 
 	if existing != nil {
-		// RetryOrphanedImport resets every per grab column, owner and
-		// import_path included, and claims the row only while it is still an
-		// orphaned import. A manual grab that claimed it first turns this into
-		// a skip, including one that has since failed: the failed or
-		// importBlocked row it leaves is not reclaimed here, as RetryFailed
-		// would do.
+		// RetryDeadForAutoGrab resets every per grab column, owner and
+		// import_path included, so the reused row carries nothing of the
+		// attempt it replaces, and the history row and the queue entry below
+		// describe this grab alone. It re-checks the same conditions in SQL,
+		// so a row a manual grab claimed between the read above and here is a
+		// skip rather than a second send to the client.
 		dl.ID = existing.ID
-		ok, err := s.downloads.RetryOrphanedImport(ctx, dl)
+		ok, err := claimDeadRowForAutoGrab(ctx, s.downloads, dl, time.Now().UTC().Add(-deadRegrabCooldown))
 		if err != nil {
 			slog.Error("SearchAndGrabBook: failed to reuse download record", "download_id", existing.ID, "error", err)
 			outcome = "download record failed"
 			return
 		}
 		if !ok {
-			outcome = "already grabbed"
+			slog.Info("a concurrent grab claimed the release first",
+				"book", book.Title, "guid", best.GUID, "existing_download_id", existing.ID)
+			outcome = "claimed by another grab"
 			return
 		}
 	} else if err := s.downloads.Create(ctx, dl); err != nil {
@@ -1205,8 +1241,7 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 		MediaType:            mediaType,
 		DownloadDir:          s.downloadDir,
 		AudiobookDownloadDir: s.audiobookDownloadDir,
-		SeedRatio:            s.resolveSeedRatio(ctx, best.IndexerID),
-	})
+	}.WithSeedLimits(s.resolveSeedLimits(ctx, best.IndexerID)))
 	if err != nil {
 		slog.Error("SearchAndGrabBook: failed to send to downloader", "client", client.Type, "title", best.Title, "error", err)
 		if setErr := s.downloads.SetError(ctx, dl.ID, err.Error()); setErr != nil {

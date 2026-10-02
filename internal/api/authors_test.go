@@ -1188,6 +1188,63 @@ func TestFetchAuthorBooks_SkipsSearchForOwnedBooks(t *testing.T) {
 	}
 }
 
+// TestHandleNewWantedBook_DoesNotBindAnotherBooksFile is the ownership half of
+// #2810: FindExisting matches on the title alone, so a new book must not take
+// a file that book_files already gives to another book. Volume 1 owns its
+// audiobook folder; the match FindExisting offers volume 17 is the m4b inside
+// it. The book must stay unbound so auto-search runs. A file nobody owns is
+// still bound.
+func TestHandleNewWantedBook_DoesNotBindAnotherBooksFile(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	ctx := context.Background()
+
+	author := &models.Author{ForeignID: "hc:thefirstdefier", Name: "TheFirstDefier", SortName: "TheFirstDefier"}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	vol1Dir := "/books/audiobooks/TheFirstDefier/Defiance of the Fall"
+	vol1 := &models.Book{ForeignID: "hc:defiance-of-the-fall", AuthorID: author.ID, Title: "Defiance of the Fall",
+		Status: models.BookStatusImported, MediaType: models.MediaTypeAudiobook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, vol1); err != nil {
+		t.Fatal(err)
+	}
+	if err := bookRepo.AddBookFile(ctx, vol1.ID, models.MediaTypeAudiobook, vol1Dir); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, title, path string
+		wantBound         bool
+	}{
+		{"track inside an owned folder", "Defiance of the Fall 17", vol1Dir + "/Defiance of the Fall [B094JZMCJX].m4b", false},
+		{"the owned path itself", "Defiance of the Fall 18", vol1Dir, false},
+		{"a file nobody owns", "Defiance of the Fall 19", "/books/audiobooks/TheFirstDefier/Defiance of the Fall 19/Defiance of the Fall 19.m4b", true},
+	} {
+		book := &models.Book{ForeignID: "hc:" + tc.title, AuthorID: author.ID, Title: tc.title,
+			Status: models.BookStatusWanted, MediaType: models.MediaTypeAudiobook, Genres: []string{}}
+		if err := bookRepo.Create(ctx, book); err != nil {
+			t.Fatal(err)
+		}
+		finder := &stubLibraryFinder{ownedTitle: tc.title, ownedPath: tc.path}
+		if got := handleNewWantedBook(ctx, bookRepo, nil, finder, *book, author.Name); got != tc.wantBound {
+			t.Errorf("%s: handleNewWantedBook = %v, want %v", tc.name, got, tc.wantBound)
+		}
+		files, err := bookRepo.ListFiles(ctx, book.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bound := len(files) > 0; bound != tc.wantBound {
+			t.Errorf("%s: book_files rows = %v, want bound=%v", tc.name, files, tc.wantBound)
+		}
+	}
+}
+
 // TestFetchAuthorBooks_SkipsSearchWhenNotMonitored confirms that books added
 // for an unmonitored author do NOT trigger an indexer search — the user has
 // opted out of automatic activity for this author.
@@ -7798,6 +7855,274 @@ func TestFetchAuthorBooks_SkipMissingISBNExemptsAlreadyTrackedBook(t *testing.T)
 
 	if summary := h.syncSummaries.get(author.ID); summary != nil && summary.SkippedMissingISBN != 0 {
 		t.Errorf("summary.SkippedMissingISBN = %d, want 0 (already-tracked book must not be counted as skipped)", summary.SkippedMissingISBN)
+	}
+}
+
+// thinClusterTestWorks is the catalogue for the MinEditionCount tests (#2235).
+// "Thin Novel" sits below a floor of 3 and is the work the filter drops.
+// "Fat Novel" clears it. "Unknown Novel" reports no edition count at all —
+// the Hardcover-primary shape — and must pass. "Clustered Novel" appears as
+// two works under one title, one thin (1) and one well-editioned (5): the
+// filter judges the cluster's best-known count, so both survive.
+func thinClusterTestWorks() []models.Book {
+	return []models.Book{
+		{ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1},
+		{ForeignID: "OL991W", Title: "Fat Novel", SortTitle: "fat novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 5},
+		{ForeignID: "OL992W", Title: "Unknown Novel", SortTitle: "unknown novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary"},
+		{ForeignID: "OL993W", Title: "Clustered Novel", SortTitle: "clustered novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1},
+		{ForeignID: "OL994W", Title: "Clustered Novel", SortTitle: "clustered novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 5},
+	}
+}
+
+// TestFetchAuthorBooks_SkipsThinCluster verifies that once a metadata
+// profile's MinEditionCount is set, works whose title cluster reports fewer
+// editions than the floor are dropped, while works clearing the floor, works
+// with no known edition count (unknown, not zero), and a title cluster that
+// carries at least one well-editioned work all come through.
+func TestFetchAuthorBooks_SkipsThinCluster(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile) failed: %v", err)
+	}
+	profile.MinEditionCount = 3
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{
+		ForeignID: "OL990A", Name: "Editions Author", SortName: "Author, Editions",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	works := thinClusterTestWorks()
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	got, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTitle := make(map[string]bool, len(got))
+	for _, b := range got {
+		byTitle[b.Title] = true
+	}
+
+	if byTitle["Thin Novel"] {
+		t.Error("work below the edition-count floor should have been skipped, but was created")
+	}
+	for _, want := range []string{"Fat Novel", "Unknown Novel", "Clustered Novel"} {
+		if !byTitle[want] {
+			t.Errorf("work %q should have been created, but was skipped", want)
+		}
+	}
+
+	summary := h.syncSummaries.get(author.ID)
+	if summary == nil {
+		t.Fatal("expected a recorded sync summary, got nil")
+	}
+	if want := 1; summary.SkippedThinCluster != want {
+		t.Errorf("summary.SkippedThinCluster = %d, want %d", summary.SkippedThinCluster, want)
+	}
+	if summary.SkippedTotal() < summary.SkippedThinCluster {
+		t.Errorf("summary.SkippedTotal() = %d should include SkippedThinCluster = %d", summary.SkippedTotal(), summary.SkippedThinCluster)
+	}
+	sampleTitles := make(map[string]bool, len(summary.SkippedThinClusterSample))
+	for _, b := range summary.SkippedThinClusterSample {
+		sampleTitles[b.Title] = true
+	}
+	if !sampleTitles["Thin Novel"] {
+		t.Errorf("expected %q in summary.SkippedThinClusterSample, got %+v", "Thin Novel", summary.SkippedThinClusterSample)
+	}
+}
+
+// TestFetchAuthorBooks_ThinClusterKeptWhenZero verifies the inverse of
+// TestFetchAuthorBooks_SkipsThinCluster: with MinEditionCount left at its
+// default (0), no work is dropped by the edition-count filter — it is
+// opt-in, and a profile without it pays nothing.
+func TestFetchAuthorBooks_ThinClusterKeptWhenZero(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	author := &models.Author{
+		ForeignID: "OL991A", Name: "Editions Author Two", SortName: "Author, Editions Two",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	works := thinClusterTestWorks()
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	got, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four books, not five: the two "Clustered Novel" works share a title,
+	// and the sync's pre-existing title dedup folds the second into the
+	// first (matched, not created). That merge is independent of the
+	// edition-count filter — the point here is that nothing is DROPPED.
+	if len(got) != 4 {
+		t.Errorf("got %d books, want 4 (MinEditionCount defaults to 0, nothing should be dropped; the twin Clustered Novel works merge via title dedup)", len(got))
+	}
+	if summary := h.syncSummaries.get(author.ID); summary != nil && summary.SkippedThinCluster != 0 {
+		t.Errorf("summary.SkippedThinCluster = %d, want 0 (filter is opt-in)", summary.SkippedThinCluster)
+	}
+}
+
+// TestFetchAuthorBooks_ThinClusterExemptsAlreadyTrackedBook verifies that the
+// edition-count filter screens works out of discovery without stopping the
+// maintenance of a book the user already owns: a thin work that resolves to
+// an existing row is refreshed, not dropped, and not counted as skipped.
+func TestFetchAuthorBooks_ThinClusterExemptsAlreadyTrackedBook(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile) failed: %v", err)
+	}
+	profile.MinEditionCount = 3
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{
+		ForeignID: "OL992A", Name: "Editions Author Three", SortName: "Author, Editions Three",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	owned := &models.Book{
+		ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel",
+		AuthorID: author.ID, Language: "eng", Status: models.BookStatusWanted,
+		MediaType: models.MediaTypeEbook, MetadataProvider: "openlibrary",
+	}
+	if err := bookRepo.Create(ctx, owned); err != nil {
+		t.Fatal(err)
+	}
+
+	works := []models.Book{
+		{ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1, AverageRating: 4.2, RatingsCount: 250},
+	}
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	updated, err := bookRepo.GetByForeignID(ctx, "OL990W")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == nil {
+		t.Fatal("already-tracked thin work was deleted, want it kept")
+	}
+	if updated.RatingsCount != 250 {
+		t.Errorf("RatingsCount = %d, want 250 (already-tracked book should still receive updates)", updated.RatingsCount)
+	}
+
+	if summary := h.syncSummaries.get(author.ID); summary != nil && summary.SkippedThinCluster != 0 {
+		t.Errorf("summary.SkippedThinCluster = %d, want 0 (already-tracked book must not be counted as skipped)", summary.SkippedThinCluster)
+	}
+}
+
+// TestFetchAuthorBooks_ThinClusterSingleWorkExempt verifies the #1612
+// exemption on the edition-count filter: an explicit add of one specific
+// work must not be vetoed by catalogue-sync heuristics, so a single-work run
+// creates the requested work even when it sits below the profile's floor.
+func TestFetchAuthorBooks_ThinClusterSingleWorkExempt(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile) failed: %v", err)
+	}
+	profile.MinEditionCount = 3
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{
+		ForeignID: "OL993A", Name: "Editions Author Four", SortName: "Author, Editions Four",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	works := []models.Book{
+		{ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1},
+	}
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.fetchAuthorBooks(ctx, author, catalogueSyncOptions{mediaType: models.MediaTypeEbook, onlyForeignID: "OL990W"})
+
+	created, err := bookRepo.GetByForeignID(ctx, "OL990W")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created == nil {
+		t.Fatal("explicitly added single work was vetoed by the edition-count filter, want it created (#1612)")
 	}
 }
 

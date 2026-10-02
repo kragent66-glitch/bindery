@@ -10,6 +10,7 @@ import Section from '../components/Section'
 import Switch from '../components/Switch'
 import { btn, btnSize, dangerLink } from '../components/buttons'
 import MediaBadge from '../components/MediaBadge'
+import CalibreDeliveryChip from '../components/CalibreDeliveryChip'
 import { bookStatusBadge } from '../components/bookStatus'
 import RebindModal from '../components/RebindModal'
 import RenameFilesModal from '../components/RenameFilesModal'
@@ -312,7 +313,7 @@ function BookDetailPageInner() {
   // book; `paths` is exactly what the dialog shows, so the confirmation and
   // the request can never disagree.
   const [deleteTarget, setDeleteTarget] = useState<
-    { format?: 'ebook' | 'audiobook'; paths: string[] } | null
+    { format?: 'ebook' | 'audiobook'; paths: string[]; singlePath?: string } | null
   >(null)
   // The pending DB-only deregistration (#1692).
   const [deregisterTarget, setDeregisterTarget] = useState<FileRow | null>(null)
@@ -529,7 +530,9 @@ function BookDetailPageInner() {
     setDeletingFile(true)
     setError(null)
     try {
-      const params = deleteTarget.format ? `?format=${deleteTarget.format}` : ''
+      const params = deleteTarget.singlePath
+        ? `?path=${encodeURIComponent(deleteTarget.singlePath)}&delete=true`
+        : deleteTarget.format ? `?format=${deleteTarget.format}` : ''
       const updated = await api.deleteBookFile(book.id, params)
       setBook(updated)
       setDeleteTarget(null)
@@ -867,6 +870,7 @@ function BookDetailPageInner() {
                 {t('bookDetail.excludedBadge')}
               </span>
             )}
+            <CalibreDeliveryChip bookId={book.id} />
             {publishedDate && (
               <>
                 <span aria-hidden className="text-slate-400 dark:text-zinc-600">·</span>
@@ -1159,6 +1163,16 @@ function BookDetailPageInner() {
                                     : t('bookDetail.deregister.untracked'),
                                   disabled: !row.tracked || deletingFile || deregistering || deletingBook,
                                   onSelect: () => setDeregisterTarget(row),
+                                },
+                                {
+                                  label: t('bookDetail.deleteThisFile', 'Delete this file'),
+                                  title: t('bookDetail.deleteThisFileHint', 'Permanently delete only this file from disk'),
+                                  danger: true,
+                                  disabled: !row.tracked || deletingFile || deregistering || deletingBook,
+                                  onSelect: () => setDeleteTarget({
+                                    singlePath: row.path,
+                                    paths: [row.path],
+                                  }),
                                 },
                               ]}
                             />
@@ -1466,9 +1480,11 @@ function BookDetailPageInner() {
           type while a format-less DELETE removed every file on the book. */}
       {deleteTarget && (
         <ConfirmDialog
-          title={deleteTarget.format
-            ? t('bookDetail.deleteFilesTitle', { format: t(`common.${deleteTarget.format}`) })
-            : t('bookDetail.deleteAllFiles.button')}
+          title={deleteTarget.singlePath
+            ? t('bookDetail.deleteThisFile', 'Delete this file')
+            : deleteTarget.format
+              ? t('bookDetail.deleteFilesTitle', { format: t(`common.${deleteTarget.format}`) })
+              : t('bookDetail.deleteAllFiles.button')}
           body={
             <div className="space-y-2">
               <p>{t('bookDetail.deleteFilesBody', { count: deleteTarget.paths.length })}</p>
@@ -1479,7 +1495,7 @@ function BookDetailPageInner() {
                   </li>
                 ))}
               </ul>
-              <p>{t('bookDetail.deleteFilesSiblingNote')}</p>
+              {!deleteTarget.singlePath && <p>{t('bookDetail.deleteFilesSiblingNote')}</p>}
               <p>{t('bookDetail.deleteFilesStatusNote')}</p>
             </div>
           }

@@ -116,7 +116,10 @@
     "scan": "Scan folder",
     "scanning": "Scanning…",
     "empty": "No book files or folders found here.",
+    "emptyHidesImported": "Nothing new to import here. Files already in your library are hidden; tick Show already imported to list them.",
     "truncated": "Showing the first 1000 units; narrow the folder to see the rest.",
+    "showImported": "Show already imported",
+    "alreadyImported": "already imported",
     "selectAll": "Select all matched",
     "importSelected": "Import {{count}} selected",
     "group": {
@@ -206,7 +209,8 @@
       "ignored": "Ignored. Later scans keep it out of this list.",
       "undoing": "Undoing…",
       "restored": "Back in Needs a decision.",
-      "keptBook": "Files removed. The book stayed because it is now in use."
+      "keptBook": "Files removed. The book stayed because it is now in use.",
+      "addedAlongside": "Added alongside the file it already had."
     },
     "editor": {
       "heading": "Which book is {{name}}?",
@@ -222,7 +226,8 @@
       "moreFiles": "and {{count}} more",
       "inPlace": "Files stay where they are. Picking a book already in your library leaves its owner and monitoring as they are.",
       "adoptAs": "Adopt as {{title}}",
-      "pickFirst": "Pick a book"
+      "pickFirst": "Pick a book",
+      "alreadyImported": "This book already has its files. Adopting adds these alongside them, and nothing is replaced or deleted."
     },
     "col": {
       "book": "Book",
@@ -451,6 +456,7 @@
       "missingDate": "{{count}} skipped for having no release date",
       "minPages": "{{count}} skipped for falling below the minimum page count",
       "missingIsbn": "{{count}} skipped for having no ISBN on any edition",
+      "thinCluster": "{{count}} skipped because their title reported fewer editions than the minimum",
       "examples": "For example: {{titles}}",
       "sampleUnknownLanguage": "{{title}} (no language)",
       "anyLanguage": "any",
@@ -481,6 +487,8 @@
       "mergeHint": "Merge another author into this one",
       "reconcileCatalogue": "Reconcile catalogue…",
       "reconcileCatalogueHint": "Preview stale metadata-only Wanted rows before removing them",
+      "reviewDuplicates": "Review duplicates…",
+      "reviewDuplicatesHint": "Find titles that look like the same book; nothing changes until you exclude a row",
       "delete": "Delete",
       "refreshHint": "Fetch this author's catalogue from the metadata provider again. Books you do not have are added according to Monitor new items. Nothing is downloaded until the next wanted search."
     },
@@ -517,12 +525,12 @@
     "indeterminate": "{{count}} row(s) were kept because provider or profile evidence was incomplete.",
     "partialWarning": "The provider returned a partial catalogue. Missing works are protected; only explicit profile rejections can be removed.",
     "applied": "Removed {{deleted}} row(s). {{skipped}} were skipped because they were no longer eligible.",
-    "clean": "No metadata-only Wanted rows need reconciliation.",
+    "noSafeCandidates": "No metadata-only Wanted rows are safe to remove.",
+    "indeterminateHeading": "Kept because evidence is incomplete",
     "selectCandidate": "Select {{title}}",
     "applying": "Rechecking and removing…",
     "apply": "Remove {{count}} stale row(s)",
     "reasons": {
-      "provider_changed": "From the previous metadata provider",
       "not_in_current_catalogue": "No longer in the current provider catalogue",
       "language_not_allowed": "Rejected by the language filter",
       "part_book": "Rejected as a box set or part-book",
@@ -530,6 +538,32 @@
       "below_minimum_pages": "Below the minimum page count",
       "missing_isbn": "No edition has an ISBN",
       "catalogue_filter": "Rejected by the catalogue filter"
+    },
+    "indeterminateReasons": {
+      "language_unknown": "Language could not be confirmed",
+      "language_evidence_lookup_failed": "Language evidence could not be retrieved",
+      "edition_evidence_unavailable": "Edition evidence could not be confirmed",
+      "partial_catalogue": "The provider returned only part of its catalogue",
+      "unmatched_cross_provider": "Could not match this row to the current provider"
+    }
+  },
+  "duplicateCandidates": {
+    "title": "Review duplicate titles",
+    "description": "Titles for {{author}} that look like the same book. Nothing changes until you exclude a row.",
+    "loading": "Scanning the catalogue…",
+    "loadFailed": "Loading duplicates failed",
+    "toggleFailed": "Changing the exclusion failed",
+    "empty": "No duplicate titles found.",
+    "group": "{{count}} row(s)",
+    "excluded": "Excluded",
+    "exclude": "Exclude",
+    "include": "Include",
+    "refresh": "Rescan",
+    "rules": {
+      "alnum-equal": "Identical once punctuation, case, and diacritics are ignored",
+      "article-strip": "Same title with a leading article (The, A, An…) dropped",
+      "edition-suffix": "Same title with an edition marker (Unabridged, Audiobook…) dropped",
+      "substring": "One title is the main title or subtitle of the other"
     }
   },
   "books": {
@@ -687,7 +721,19 @@
     "searchPlaceholder": "Search series...",
     "noMatch": "No series match \"{{query}}\"",
     "deleteConfirm": "Delete \"{{title}}\" from Series? Linked books will stay in your library.",
-    "deleteTitle": "Remove series"
+    "deleteTitle": "Remove series",
+    "noFilterMatch": "No series match this filter",
+    "noMatchFiltered": "No series match \"{{query}}\" with this filter",
+    "countFiltered": "{{shown}} of {{total}} series",
+    "filterLabel": "Show series",
+    "filter": {
+      "all": "All",
+      "missing": "Missing books",
+      "complete": "Complete",
+      "unlinked": "Not linked to Hardcover",
+      "shortlisted": "Shortlisted"
+    },
+    "filterMissingHint": "Series showing a missing badge. With Hardcover linking on, this counts catalogue books you do not have yet, exactly as the badge does."
   },
   "importHints": {
     "heading": "Already have files on disk?",
@@ -757,6 +803,18 @@
       }
     },
     "calibre": {
+      "transport": {
+        "label": "Transport",
+        "push": "Push: Bindery sends books to Calibre",
+        "pushDesc": "Bindery connects to the plugin's HTTP server and hands it each file's path. Calibre must see the Bindery library, at the same path or through a push path remap, and accept a connection from Bindery.",
+        "pull": "Pull: Calibre fetches books from Bindery",
+        "pullDesc": "The plugin connects out to Bindery, downloads each queued book and adds it. No shared drive, path remap, inbound firewall rule or fixed address for the Calibre machine. Needs Calibre Bridge 0.8.0 or later.",
+        "apiKeyPullHelp": "Enter this same key, together with Bindery's URL, in the plugin's Bindery settings inside Calibre. The plugin sends it to authenticate, so use at least 16 characters and only point the plugin at a Bindery you trust.",
+        "testLastCheckIn": "Calibre last checked in {{time}}",
+        "testLastCheckInVersion": "Calibre last checked in {{time}}, plugin {{version}}",
+        "testNeverCheckedIn": "Calibre has not checked in since Bindery started. Check the Bindery URL and key in the plugin, and that Calibre is open.",
+        "testFailed": "Could not read the delivery queue: {{error}}"
+      },
       "runs": {
         "heading": "Recent imports",
         "description": "Bindery tracks every live import so you can preview and undo it. Files on disk are never touched — only the metadata rows Bindery created or modified.",
@@ -788,6 +846,47 @@
         "cancel": "Cancel",
         "error": "Rollback failed: {{error}}",
         "appliedSummary": "Rollback complete — {{deleted}} deleted, {{unlinked}} link(s) removed, {{skipped}} skipped, {{failed}} failures."
+      },
+      "deliveries": {
+        "heading": "Delivery queue",
+        "description": "Every ebook Bindery sends to Calibre goes through this queue. When Calibre is closed or unreachable, books wait here and go out once it is back.",
+        "loading": "Loading the queue…",
+        "loadFailed": "Could not load the delivery queue: {{error}}",
+        "waiting": "Waiting {{count}}",
+        "delivered": "Delivered {{count}}",
+        "failed": "Failed {{count}}",
+        "lastDelivered": "Last delivered {{time}}",
+        "neverDelivered": "Nothing delivered yet",
+        "reachable": "Calibre reachable",
+        "unreachable": "Calibre not reachable",
+        "unreachableWithError": "Calibre not reachable: {{error}}",
+        "reachableUnknown": "Calibre not checked yet",
+        "checkedAt": "checked {{time}}",
+        "failedHeading": "Failed deliveries",
+        "failedEmpty": "Nothing has failed.",
+        "failedMore": "Showing {{shown}} of {{total}}.",
+        "colTitle": "Title",
+        "colAuthor": "Author",
+        "colCode": "Code",
+        "colError": "Error",
+        "colAttempts": "Attempts",
+        "colLastTry": "Last try",
+        "retryFailed": "Retry failed",
+        "retrying": "Retrying…",
+        "retried": "{{count}} queued again.",
+        "clearWaiting": "Clear waiting",
+        "clearing": "Clearing…",
+        "cleared": "{{count}} removed from the queue.",
+        "reset": "Reset delivery state",
+        "resetTitle": "Reset delivery state?",
+        "resetBody": "Use this when you point Bindery at a different Calibre library. Bindery forgets every delivery it recorded, so books it sent to the old library are no longer marked as in Calibre. Nothing is sent to the new library until you run Push all or import new books.",
+        "resetConfirm": "Reset",
+        "resetting": "Resetting…",
+        "resetDone": "Delivery state reset. {{count}} records removed.",
+        "cancel": "Cancel",
+        "actionFailed": "That did not work: {{error}}",
+        "lastCheckIn": "Calibre last checked in {{time}}",
+        "neverCheckedIn": "Calibre has not checked in since Bindery started"
       }
     },
     "indexers": {
@@ -828,6 +927,12 @@
         "seedRatioUnlimited": "Unlimited",
         "seedRatioFromProwlarr": "Auto-filled from Prowlarr. Edit and save to override; Prowlarr won't change it again.",
         "seedRatioHint": "Per-indexer seed-ratio limit applied to torrents grabbed from this indexer (qBittorrent, Transmission, Deluge). Leave blank to use the download client's global rule, or check Unlimited to seed forever. Ignored for Usenet, and for rTorrent, which has no per-torrent ratio limit — configure a ratio group in .rtorrent.rc instead.",
+        "seedTime": "Seed time (minutes)",
+        "seedTimePlaceholder": "e.g. 4320",
+        "inactiveSeedTime": "Inactive seed time (minutes)",
+        "inactiveSeedTimePlaceholder": "e.g. 1440",
+        "seedTimeFromProwlarr": "Seed time auto-filled from Prowlarr. Edit and save to override; Prowlarr won't change it again.",
+        "seedTimeHint": "Stop seeding torrents from this indexer after this many minutes in total, or after this many minutes without uploading. Leave blank to use the download client's own rule. qBittorrent applies both (inactive needs 4.6 or later). Transmission applies only the inactive time, as its idle limit. Deluge and rTorrent apply neither. Ignored for Usenet.",
         "freeleechOnly": "Only auto-grab freeleech releases",
         "freeleechOnlyHint": "Automatic grabs from this indexer are limited to freeleech releases; anything else is held in the Pending queue for manual approval. Interactive search still shows everything. For private trackers where ratio matters — leave off for public trackers and Usenet.",
         "dailyQueryLimit": "Daily query limit",
@@ -877,6 +982,8 @@
       "pathNotVisible": "Connected, but Bindery can't read the client's completed-downloads folder. Configure a path remap or a shared mount so both point at the same storage, otherwise downloads won't import.",
       "loopbackHint": "The host is localhost — if Bindery runs in Docker, localhost is the Bindery container itself, not the machine. Use the host's LAN IP or the client's container/service name instead.",
       "rtorrentCategoryHelp": "Stored as the ruTorrent label (d.custom1) and used to filter which torrents Bindery polls. Leave blank to poll every torrent in the client.",
+      "removeOnImportLabel": "Remove torrent after import",
+      "removeOnImportHelp": "When Bindery imports a download from this client, remove the torrent from it. The downloaded files are left on disk. Off by default: on a private tracker this stops the torrent seeding, which can cost you ratio.",
       "rtorrentUrlBaseHelp": "Full path of rTorrent's XML-RPC endpoint, not a prefix. Usually /RPC2; ruTorrent installs often expose /plugins/rpc/rpc.php instead. Leave blank to use /RPC2. For a plain rTorrent with no web server in front of it, use rTorrent's own SCGI listener: scgi:// for the host and port above, scgi://host:port, or scgi:///path/to/socket. SCGI carries no credentials, so keep it off-network.",
       "rtorrentScgiIgnoredHint": "{{fields}} will be ignored — rTorrent's SCGI listener has no TLS and no authentication. Put rTorrent behind a web server and use an HTTP path instead if you need either.",
       "passwordEditLabel": "Password (leave blank to keep current)",
@@ -1002,6 +1109,7 @@
       "empty": "No metadata profiles configured.",
       "description": "Books in languages outside the profile's allowed list are filtered out when an author is added or refreshed. Leave the list empty to accept any language. A metadata profile decides which books enter an author's catalogue. It does not filter releases: to stop a search grabbing another language, set Preferred language under General.",
       "minPages": "Min pages:",
+      "minEditionCount": "Min editions:",
       "languages": "Languages:",
       "skipMissingDate": "Skip missing date",
       "skipMissingIsbn": "Skip missing ISBN",
@@ -1016,6 +1124,8 @@
       "formUnknownLanguageFail": "Fail — skip the book",
       "formUnknownLanguageHint": "Some metadata sources (notably OpenLibrary) omit the language on some works. Pass imports them silently; Fail rejects them with a log entry.",
       "formMinPages": "Min pages",
+      "formMinEditionCount": "Min editions",
+      "formMinEditionCountHint": "Only cataloged when the work’s title reports at least this many editions; works with no known edition count pass, so a Hardcover-only catalogue is never dropped. 0 disables the filter.",
       "formSkipMissingDate": "Skip missing release date",
       "formSkipMissingIsbn": "Skip missing ISBN",
       "formSkipPartBooks": "Skip part books",
@@ -1033,7 +1143,11 @@
       "defaultLabel": "Default root folder",
       "defaultHint": "Authors without an explicit root folder land here. Leave unset to fall back to the BINDERY_LIBRARY_DIR startup path.",
       "defaultUnset": "Use startup default (BINDERY_LIBRARY_DIR)",
-      "defaultBadge": "Default"
+      "defaultBadge": "Default",
+      "audiobookDefaultLabel": "Default audiobook root folder",
+      "audiobookDefaultHint": "Audiobooks of authors without their own audiobook root folder land here. Leave unset to fall back to the BINDERY_AUDIOBOOK_DIR startup path, which itself defaults to BINDERY_LIBRARY_DIR.",
+      "audiobookDefaultUnset": "Use startup default (BINDERY_AUDIOBOOK_DIR)",
+      "audiobookDefaultBadge": "Audiobook default"
     },
     "logs": {
       "heading": "Logs",
@@ -1077,6 +1191,11 @@
       "flattenMultiDiscHint": "When a completed audiobook download has multiple disc folders (Disc 1, CD 2, …), place its tracks into one flat folder named Part 001, Part 002, … so audiobook players sort them correctly. Available only in Copy or Hardlink mode; the source is never moved and torrents keep seeding. Single-disc audiobooks are unaffected.",
       "dropFolder": "Drop folder",
       "dropFolderHint": "Optional. In External mode, Bindery renames each finished download into this folder for a watch-folder tool (Calibre-Web-Automated, Storyteller) to ingest, instead of leaving it in the download dir. The source is never moved, so torrents keep seeding. Bindery still reconciles the managed copy on the next library scan. Leave empty to hand off in place.",
+      "audiobookImportMode": "Audiobook import mode",
+      "audiobookImportModeHint": "Leave on Same as ebooks to handle every download with the Import Mode above. Pick another mode to treat audiobooks differently, for example External for ebooks so Calibre-Web-Automated ingests them, and Copy or Hardlink for audiobooks so they land in the audiobook folder where Audiobookshelf finds them.",
+      "audiobookImportModeSame": "Same as ebooks",
+      "audiobookDropFolder": "Audiobook drop folder",
+      "audiobookDropFolderHint": "Optional. Where External mode hands off audiobooks, for example a folder Audiobookshelf or Storyteller watches. Leave empty to use the ebook Drop folder, or to hand off in place when that is empty too. Layout and Placement below apply to both formats.",
       "dropLayout": "Layout",
       "dropLayoutFlat": "Flat (file in folder root)",
       "dropLayoutTemplated": "Templated ({Author}/{Title}…)",
@@ -1111,7 +1230,7 @@
       "googleBooksKey": "Google Books API Key",
       "googleBooksKeyHiddenPlaceholder": "Saved key is hidden. Enter a new key to replace it.",
       "storage": "Storage",
-      "storageHint": "Paths Bindery reads from and writes to. The download directories are where your download client leaves finished files: the client decides that, and Bindery only reads there. The library directories are where Bindery moves or copies each import: only Bindery writes there. Configure via environment variables (or your config file) before starting the container; the running process captures them at startup.",
+      "storageHint": "Paths Bindery reads from and writes to. The download directories are where your download client leaves finished files: the client decides that, and Bindery only reads there. The library directories are where Bindery moves or copies each import: only Bindery writes there. Set them with the BINDERY_* environment variables shown below, then restart Bindery: it reads them once, at startup.",
       "downloadDir": "Download directory",
       "audiobookDownloadDir": "Audiobook download directory",
       "audiobookDownloadDirFallback": "Unset — audiobook downloads use the main download directory.",
@@ -1388,6 +1507,8 @@
       "confirmAdd": "Add author",
       "metadataProfile": "Metadata profile",
       "rootFolder": "Root folder",
+      "audiobookRootFolder": "Audiobook root folder",
+      "audiobookRootFolderDefault": "Use global audiobook folder",
       "mediaType": "Media type",
       "monitorMode": "Monitor mode",
       "monitorModeHint": "The whole catalogue is added either way. This only decides which of those books Bindery searches for and downloads.",
@@ -1723,7 +1844,7 @@
     "deleteFilesBody": "Permanently delete {{count}} file(s) from disk:",
     "deleteFilesConfirm": "Delete from disk",
     "deleteFilesSiblingNote": "Any sibling file with the same name in the same format is also removed.",
-    "deleteFilesStatusNote": "The book record stays and flips back to “wanted”.",
+    "deleteFilesStatusNote": "If this was the last file for a monitored format, an imported book returns to “wanted”.",
     "deleteAllFiles": {
       "button": "Delete all files",
       "hint": "Delete every file on this book, both formats"
@@ -1761,6 +1882,8 @@
     "excludeHint": "Exclude this book from searches and the Wanted page",
     "unexcludeHint": "Un-exclude this book from searches and the Wanted page",
     "deleteFile": "Delete file",
+    "deleteThisFile": "Delete this file",
+    "deleteThisFileHint": "Permanently delete only this file from disk",
     "deletingFile": "Deleting…",
     "fixMatch": {
       "button": "Fix match",
@@ -1840,6 +1963,11 @@
       "removeBody2": "It does not delete the book, its files, or the series itself.",
       "setPrimaryFailed": "Could not change the series used for naming",
       "removeFailed": "Could not remove the book from that series"
+    },
+    "calibreChip": {
+      "pending": "Waiting for Calibre",
+      "delivered": "In Calibre",
+      "failed": "Calibre failed"
     }
   },
   "bookRebind": {
