@@ -17,13 +17,14 @@ type EditionFetcher func(context.Context, string) ([]models.Edition, error)
 // EditionUpserter stores metadata editions without overwriting existing
 // non-empty imported or curated fields.
 type EditionUpserter interface {
-	UpsertMetadata(context.Context, *models.Edition) (bool, error)
+	UpsertMetadata(context.Context, *models.Edition, string, string) (bool, error)
 }
 
 // BookUpdater persists book-level fields promoted during hydration.
 type BookUpdater interface {
-	Update(context.Context, *models.Book) error
-	FillMissingAudiobookDuration(context.Context, *models.Book) (bool, int, error)
+	UpdateHydratedMetadata(context.Context, *models.Book, string) (bool, error)
+	FillMissingAudiobookDuration(context.Context, *models.Book) (bool, error)
+	ReloadHydratedBook(context.Context, *models.Book) error
 }
 
 // AudiobookEnricher fills audiobook metadata once an ASIN is known.
@@ -97,6 +98,11 @@ func HydrateHardcoverEditions(ctx context.Context, opts Options) Result {
 	if err != nil {
 		result.Err = err
 		slog.Warn("hardcover edition hydration failed", "bookID", book.ID, "foreignID", editionForeignID, "bookForeignID", book.ForeignID, "error", err)
+		if opts.Books != nil {
+			if reloadErr := opts.Books.ReloadHydratedBook(ctx, book); reloadErr != nil {
+				slog.Warn("hardcover book reload after fetch failure failed", "bookID", book.ID, "error", reloadErr)
+			}
+		}
 		return result
 	}
 	result.Fetched = len(editions)
@@ -108,7 +114,7 @@ func HydrateHardcoverEditions(ctx context.Context, opts Options) Result {
 		if strings.TrimSpace(edition.Title) == "" {
 			edition.Title = book.Title
 		}
-		ok, err := opts.Editions.UpsertMetadata(ctx, &edition)
+		ok, err := opts.Editions.UpsertMetadata(ctx, &edition, before.ForeignID, before.MetadataProvider)
 		if err != nil {
 			if result.Err == nil {
 				result.Err = err
@@ -117,7 +123,7 @@ func HydrateHardcoverEditions(ctx context.Context, opts Options) Result {
 			continue
 		}
 		if !ok {
-			slog.Debug("hardcover edition skipped because it belongs to another book", "bookID", book.ID, "foreignID", editionForeignID, "bookForeignID", book.ForeignID, "editionID", edition.ForeignID)
+			slog.Debug("hardcover edition skipped after parent identity or edition ownership conflict", "bookID", book.ID, "foreignID", editionForeignID, "bookForeignID", book.ForeignID, "editionID", edition.ForeignID)
 			continue
 		}
 		result.Upserted++
@@ -171,24 +177,34 @@ func HydrateHardcoverEditions(ctx context.Context, opts Options) Result {
 	// Persist when Hardcover-edition derivation or ASIN promotion changed the
 	// book. Derivation alone (e.g. ASIN already set) is enough to warrant a
 	// write so the language/cover/duration we pulled isn't lost.
-	if (result.ASINPromoted || result.MetadataDerived) && opts.Books != nil {
+	metadataChanged := result.ASINPromoted || result.MetadataDerived
+	if opts.Books != nil {
 		var err error
 		updated := false
-		if !result.ASINPromoted && before.DurationSeconds <= 0 && book.DurationSeconds > 0 &&
+		if !metadataChanged {
+			// Even an empty fetch or unchanged edition can overlap a book edit.
+			// Refresh the caller when there is no metadata write to guard.
+			err = opts.Books.ReloadHydratedBook(ctx, book)
+		} else if !result.ASINPromoted && before.DurationSeconds <= 0 && book.DurationSeconds > 0 &&
 			before.ASIN == book.ASIN && before.MediaType == book.MediaType && before.Status == book.Status &&
 			before.Language == book.Language && before.ImageURL == book.ImageURL {
-			var currentDuration int
-			updated, currentDuration, err = opts.Books.FillMissingAudiobookDuration(ctx, book)
+			updated, err = opts.Books.FillMissingAudiobookDuration(ctx, book)
 			if !updated {
-				book.DurationSeconds = currentDuration
 				result.MetadataDerived = false
 				if err == nil {
 					slog.Debug("hardcover duration write skipped after concurrent book update", "bookID", book.ID)
 				}
 			}
 		} else {
-			err = opts.Books.Update(ctx, book)
-			updated = err == nil
+			updated, err = opts.Books.UpdateHydratedMetadata(ctx, book, before.UpdatedAtRaw)
+			if err == nil && !updated {
+				// The repository reloaded the concurrent edit; none of this
+				// attempt's derived fields or enrichment were persisted.
+				result.ASINPromoted = false
+				result.MetadataDerived = false
+				result.AudiobookEnriched = false
+				slog.Debug("hardcover metadata write skipped after concurrent book update", "bookID", book.ID)
+			}
 		}
 		if err != nil {
 			if result.Err == nil {

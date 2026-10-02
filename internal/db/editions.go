@@ -157,8 +157,10 @@ func (r *EditionRepo) Upsert(ctx context.Context, e *models.Edition) error {
 // successful insert or update, e is hydrated with the stored row so callers
 // that promote edition fields use the persisted values. It deliberately refuses
 // to re-parent a foreign edition ID that already belongs to another book;
-// callers can treat ok=false as a benign skipped conflict.
-func (r *EditionRepo) UpsertMetadata(ctx context.Context, e *models.Edition) (bool, error) {
+// callers can treat ok=false as a benign skipped conflict. The parent must
+// still have the foreign ID and provider observed before the metadata fetch;
+// this check is atomic with both inserts and conflict updates.
+func (r *EditionRepo) UpsertMetadata(ctx context.Context, e *models.Edition, expectedForeignID, expectedProvider string) (bool, error) {
 	if e == nil || strings.TrimSpace(e.ForeignID) == "" || e.BookID == 0 {
 		return false, nil
 	}
@@ -201,7 +203,8 @@ func (r *EditionRepo) UpsertMetadata(ctx context.Context, e *models.Edition) (bo
 		                      publisher, publish_date, format, num_pages, language,
 		                      image_url, is_ebook, edition_info, monitored,
 		                      created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+		WHERE EXISTS (SELECT 1 FROM books WHERE id = ? AND foreign_id = ? AND metadata_provider = ?)
 		ON CONFLICT(foreign_id) DO UPDATE SET
 		    title       = %s,
 		    isbn_13     = %s,
@@ -223,7 +226,7 @@ func (r *EditionRepo) UpsertMetadata(ctx context.Context, e *models.Edition) (bo
 		e.ForeignID, e.BookID, e.Title, e.ISBN13, e.ISBN10, e.ASIN,
 		e.Publisher, timeArg(e.PublishDate), e.Format, e.NumPages, e.Language,
 		e.ImageURL, isEbook, e.EditionInfo, monitored, timeValueArg(now), timeValueArg(now),
-		sql.Named("whitespace", metadataWhitespace))
+		e.BookID, expectedForeignID, expectedProvider, sql.Named("whitespace", metadataWhitespace))
 	if err != nil {
 		return false, fmt.Errorf("upsert metadata edition %s: %w", e.ForeignID, err)
 	}

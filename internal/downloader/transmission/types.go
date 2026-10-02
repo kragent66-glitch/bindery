@@ -17,7 +17,18 @@ type Torrent struct {
 	UploadRate   int64   `json:"rateUpload"`
 	ETA          int64   `json:"eta"`
 	PercentDone  float64 `json:"percentDone"`
-	DownloadDir  string  `json:"downloadDir"`
+	// MetadataPercentComplete is how much of the torrent's metadata
+	// Transmission holds, from 0 to 1. A magnet sits at 0 until a peer serves
+	// it the torrent file; a real .torrent is 1 from the start. Reported since
+	// RPC version 14 (Transmission 2.80); an older daemon simply omits it and
+	// it decodes as 0.
+	MetadataPercentComplete float64 `json:"metadataPercentComplete"`
+	// PeersConnected is the number of peers Transmission currently has a
+	// connection to. Bindery only reports it, never decides on it: a magnet
+	// with peers that will not serve its metadata is just as dead as one with
+	// no peers at all.
+	PeersConnected int    `json:"peersConnected"`
+	DownloadDir    string `json:"downloadDir"`
 	// AddedDate is the Unix time Transmission accepted the torrent. It is the
 	// only field besides hashString that survives a daemon restart unchanged,
 	// which makes it the reconciliation key for downloads grabbed before the
