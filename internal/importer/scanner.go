@@ -1391,7 +1391,13 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 	// mount (#1254). Usenet downloads remap auto/hardlink to move first —
 	// nothing seeds from a finished usenet job, so leaving the source behind
 	// is a pure disk leak (#1542); see effectiveConfiguredMode.
-	configuredMode := effectiveConfiguredMode(s.configuredImportMode(ctx), cleanupClientType)
+	//
+	// The mode is per format (#1632): audiobooks can override import.mode, so
+	// a CWA + Audiobookshelf library drops ebooks into CWA's ingest folder
+	// (external) while audiobooks land in the audiobook root. With no override
+	// both formats share import.mode and this is the same single read as
+	// before.
+	configuredMode := effectiveConfiguredMode(s.downloadImportMode(ctx, downloadPath, formatHint, explicitFiles), cleanupClientType)
 
 	// External mode: skip all file operations and leave the book Wanted so the
 	// library scan can reconcile it after the user's external tool (Calibre,

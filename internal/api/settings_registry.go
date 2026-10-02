@@ -209,8 +209,19 @@ var settingDescriptors = []SettingDescriptor{
 	// Import placement and naming.
 	{
 		Key: SettingImportMode, Type: SettingTypeEnum, Default: "auto",
-		Values:      []string{"auto", "move", "copy", "hardlink", "external"},
+		Values:      importModeValues,
 		Description: "How a finished download reaches the library. auto hardlinks when source and destination share a filesystem and copies otherwise, so seeding survives.",
+		State:       SettingStateActive,
+	},
+	{
+		Key: SettingImportAudiobookMode, Type: SettingTypeEnum, Default: "",
+		Values:      importModeValues,
+		Description: "Import mode for audiobooks only. Empty uses import.mode for both formats; set it to send audiobooks somewhere else, such as copy into the Audiobookshelf library while ebooks go external to Calibre-Web-Automated.",
+		State:       SettingStateActive,
+	},
+	{
+		Key: SettingImportAudiobookDropFolder, Type: SettingTypeString, Default: "",
+		Description: "Drop folder for audiobooks when their import mode is external. Must exist inside the container. Empty uses import.drop_folder.",
 		State:       SettingStateActive,
 	},
 	{

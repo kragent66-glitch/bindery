@@ -198,6 +198,65 @@ const SettingNamingAudiobookFileTemplate = "naming.audiobook_file_template"
 // (configuredImportMode) to avoid an import cycle; keep the literal in sync.
 const SettingImportMode = "import.mode"
 
+// Per format import routing (#1632). A Calibre-Web-Automated + Audiobookshelf
+// library needs ebooks handed to CWA's ingest folder (external) while
+// audiobooks land in the audiobook root where ABS scans them, and one global
+// import.mode cannot say that. The importer reads both keys as string
+// literals (configuredImportModeFor, dropFolderFor) to avoid an import cycle;
+// keep the literals in sync.
+const (
+	// SettingImportAudiobookMode overrides SettingImportMode for audiobooks.
+	// Empty/unset (the default) means "same as import.mode", so an install
+	// that never sets it behaves exactly as before. Otherwise it takes the
+	// same values as import.mode; an explicit "auto" means auto for
+	// audiobooks even when import.mode names a mode.
+	SettingImportAudiobookMode = "import.audiobook.mode"
+	// SettingImportAudiobookDropFolder is the drop folder audiobooks are
+	// handed off into when their effective mode is external. Empty/unset
+	// falls back to SettingImportDropFolder, which keeps one shared folder
+	// (what Storyteller pair gating, #942, wants).
+	SettingImportAudiobookDropFolder = "import.audiobook.drop_folder"
+)
+
+// importModeValues are the values import.mode and import.audiobook.mode both
+// accept, in the order the UI offers them.
+var importModeValues = []string{"auto", "move", "copy", "hardlink", "external"}
+
+// validateImportModeValue checks one import mode value for key. Empty is
+// accepted: for import.mode it means auto, for import.audiobook.mode it means
+// "same as import.mode". A typo must fail loudly here rather than silently
+// fall through at import time, where the operator would think Move or
+// External was in effect.
+func validateImportModeValue(key, value string) error {
+	if value == "" {
+		return nil
+	}
+	for _, v := range importModeValues {
+		if value == v {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s %q is not one of: %s", key, value, strings.Join(importModeValues, ", "))
+}
+
+// validateDropFolderValue checks one drop folder path for key. Empty is
+// accepted (feature off, or for the audiobook folder, use import.drop_folder);
+// a non-empty value must resolve to an existing directory so a typo fails
+// loudly here, not silently at import time.
+func validateDropFolderValue(key, value string) error {
+	if value == "" {
+		return nil
+	}
+	info, err := os.Stat(value)
+	if err != nil {
+		return fmt.Errorf("%s %q: %w (ensure the path is accessible inside the bindery container, check volume mounts)", key, value, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s %q is not a directory", key, value)
+	}
+	return nil
+}
+
 // SettingGoogleBooksAPIKey and LegacySettingGoogleBooksAPIKey are the two keys
 // the Google Books API key has been stored under. Neither matches the naming
 // convention isSecretSetting's patterns expect (camelCase in one, no dot
@@ -353,6 +412,7 @@ func isAdminOnlySetting(key string) bool {
 	case SettingCalibreLibraryPath,
 		SettingCalibreBinaryPath,
 		SettingImportDropFolder,
+		SettingImportAudiobookDropFolder,
 		SettingCWAIngestPath,
 		SettingCalibrePushPathRemap,
 		SettingABSPathRemap,
@@ -647,19 +707,11 @@ func validateSettingValue(key, value string) error {
 		if !info.IsDir() {
 			return fmt.Errorf("cwa.ingest_path %q is not a directory", value)
 		}
-	case SettingImportDropFolder:
-		// Empty = feature off. Non-empty must resolve to an existing writable
-		// directory so a typo fails loudly here, not silently at import time.
-		if value == "" {
-			return nil
-		}
-		info, err := os.Stat(value)
-		if err != nil {
-			return fmt.Errorf("import.drop_folder %q: %w (ensure the path is accessible inside the bindery container, check volume mounts)", value, err)
-		}
-		if !info.IsDir() {
-			return fmt.Errorf("import.drop_folder %q is not a directory", value)
-		}
+	case SettingImportDropFolder, SettingImportAudiobookDropFolder:
+		// Empty = feature off (or, for audiobooks, use import.drop_folder).
+		// Both folders get the same check so neither can be saved pointing
+		// at a path the other would refuse (#1632).
+		return validateDropFolderValue(key, value)
 	case SettingImportDropLayout:
 		if value == "" {
 			return nil
@@ -712,19 +764,10 @@ func validateSettingValue(key, value string) error {
 		if err != nil || n <= 0 {
 			return fmt.Errorf("import.drop_pair_gating_timeout_hours %q must be a positive integer number of hours", value)
 		}
-	case SettingImportMode:
-		// Empty = auto (same as "auto"); a typo must fail loudly here rather
-		// than silently fall through to auto at import time, where the operator
-		// would think Move/External was in effect.
-		if value == "" {
-			return nil
-		}
-		switch value {
-		case "auto", "move", "copy", "hardlink", "external":
-			return nil
-		default:
-			return fmt.Errorf("import.mode %q is not one of: auto, move, copy, hardlink, external", value)
-		}
+	case SettingImportMode, SettingImportAudiobookMode:
+		// Empty = auto for import.mode, "same as import.mode" for the
+		// audiobook override (#1632). Both accept exactly the same values.
+		return validateImportModeValue(key, value)
 	case SettingCalibreMode:
 		// Canonical values only. An empty string falls through to the
 		// default (off) handled by LoadCalibreMode; anything else must

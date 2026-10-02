@@ -638,6 +638,54 @@ func TestSettings_MetadataPrimaryProviderHardcoverRequiresToken(t *testing.T) {
 	})
 }
 
+// TestSettings_AudiobookImportRoutingValidation covers the per format import
+// keys (#1632) through the real PUT handler. The audiobook mode takes exactly
+// the values import.mode takes, plus empty for "same as import.mode", and the
+// audiobook drop folder gets the same existence check as import.drop_folder,
+// so neither can be saved in a state the importer would misread.
+func TestSettings_AudiobookImportRoutingValidation(t *testing.T) {
+	h, repo, ctx := settingsFixture(t)
+
+	put := func(key, value string) int {
+		body := bytes.NewBufferString(`{"value":` + mustJSON(value) + `}`)
+		req := withKey(httptest.NewRequest(http.MethodPut, "/api/v1/settings/"+key, body), key)
+		rec := httptest.NewRecorder()
+		h.Set(rec, req)
+		return rec.Code
+	}
+
+	for _, v := range []string{"", "auto", "move", "copy", "hardlink", "external"} {
+		if code := put(SettingImportAudiobookMode, v); code != http.StatusOK {
+			t.Errorf("audiobook mode %q: got %d, want 200", v, code)
+		}
+	}
+	if code := put(SettingImportAudiobookMode, "symlink"); code != http.StatusBadRequest {
+		t.Errorf("audiobook mode symlink: got %d, want 400", code)
+	}
+
+	dir := t.TempDir()
+	notADir := filepath.Join(dir, "afile")
+	if err := os.WriteFile(notADir, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code := put(SettingImportAudiobookDropFolder, ""); code != http.StatusOK {
+		t.Errorf("empty audiobook drop folder: got %d, want 200", code)
+	}
+	if code := put(SettingImportAudiobookDropFolder, dir); code != http.StatusOK {
+		t.Errorf("valid audiobook drop folder: got %d, want 200", code)
+	}
+	got, _ := repo.Get(ctx, SettingImportAudiobookDropFolder)
+	if got == nil || got.Value != dir {
+		t.Errorf("audiobook drop folder not persisted: %+v", got)
+	}
+	if code := put(SettingImportAudiobookDropFolder, filepath.Join(dir, "does-not-exist")); code != http.StatusBadRequest {
+		t.Errorf("missing audiobook drop folder: got %d, want 400", code)
+	}
+	if code := put(SettingImportAudiobookDropFolder, notADir); code != http.StatusBadRequest {
+		t.Errorf("audiobook drop folder pointing at a file: got %d, want 400", code)
+	}
+}
+
 // TestSettings_ImportDropValidation covers the three drop-folder handoff keys
 // (#941): the folder must be an existing directory (empty disables), and the
 // layout / link-mode enums reject typos.
@@ -1038,6 +1086,7 @@ func TestIsAdminOnlySetting_AgreesWithIsSecretSetting(t *testing.T) {
 		SettingCalibreLibraryPath,
 		SettingCalibreBinaryPath,
 		SettingImportDropFolder,
+		SettingImportAudiobookDropFolder,
 		SettingCWAIngestPath,
 		SettingCalibrePushPathRemap,
 		SettingABSPathRemap,
@@ -1057,6 +1106,7 @@ func TestIsAdminOnlySetting_AgreesWithIsSecretSetting(t *testing.T) {
 	for _, key := range []string{
 		SettingCalibreEnabled,
 		SettingImportMode,
+		SettingImportAudiobookMode,
 		SettingImportDropLayout,
 		SettingMetadataPrimaryProvider,
 		"ui.theme",

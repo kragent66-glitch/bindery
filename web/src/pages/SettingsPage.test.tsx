@@ -733,6 +733,52 @@ describe('SettingsPage', () => {
     await waitFor(() => expect(api.setSetting).toHaveBeenCalledWith('import.mode', 'auto'))
   })
 
+  it('defaults the audiobook import mode to Same as ebooks and shows only the drop folders that apply (#1632)', async () => {
+    renderSettings({
+    settings: [
+      { key: 'import.mode', value: 'external' },
+      { key: 'import.drop_folder', value: '/cwa-book-ingest' },
+    ],
+    })
+
+    expect(await screen.findByText('Import Mode')).toBeInTheDocument()
+    const fileNaming = sectionForHeading('settings.general.fileNaming')
+
+    // Unset override: "same as ebooks", and since both formats are external
+    // the audiobook drop folder input is offered alongside the ebook one.
+    const select = fileNaming.getByTestId('import-audiobook-mode') as HTMLSelectElement
+    expect(select.value).toBe('')
+    expect(fileNaming.getByText('settings.general.audiobookImportModeSame')).toBeInTheDocument()
+    expect(fileNaming.getByDisplayValue('/cwa-book-ingest')).toBeInTheDocument()
+    expect(fileNaming.getByTestId('import-audiobook-drop-folder')).toBeInTheDocument()
+
+    // The CWA + Audiobookshelf split: audiobooks copy into the library, so the
+    // audiobook drop folder goes away while the ebook one stays.
+    fireEvent.change(select, { target: { value: 'copy' } })
+    await waitFor(() => expect(api.setSetting).toHaveBeenCalledWith('import.audiobook.mode', 'copy'))
+    expect(fileNaming.queryByTestId('import-audiobook-drop-folder')).not.toBeInTheDocument()
+    expect(fileNaming.getByDisplayValue('/cwa-book-ingest')).toBeInTheDocument()
+  })
+
+  it('shows only the audiobook drop folder when just audiobooks are external (#1632)', async () => {
+    renderSettings({
+    settings: [
+      { key: 'import.mode', value: 'copy' },
+      { key: 'import.audiobook.mode', value: 'external' },
+    ],
+    })
+
+    expect(await screen.findByText('Import Mode')).toBeInTheDocument()
+    const fileNaming = sectionForHeading('settings.general.fileNaming')
+
+    expect(fileNaming.queryByPlaceholderText('/cwa-book-ingest')).not.toBeInTheDocument()
+    const input = fileNaming.getByTestId('import-audiobook-drop-folder')
+    fireEvent.change(input, { target: { value: '/audiobook-ingest' } })
+    const row = input.parentElement as HTMLElement
+    fireEvent.click(within(row).getByRole('button'))
+    await waitFor(() => expect(api.setSetting).toHaveBeenCalledWith('import.audiobook.drop_folder', '/audiobook-ingest'))
+  })
+
   it('refreshes library scan status', async () => {
     vi.mocked(api.libraryScanStatus)
     .mockResolvedValueOnce({ ran_at: new Date(Date.now() - 10_000).toISOString(), files_found: 2, reconciled: 1, unmatched: 1 })
