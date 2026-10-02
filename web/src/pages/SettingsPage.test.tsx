@@ -1846,6 +1846,10 @@ describe('SettingsPage', () => {
         enabled: true,
         useSsl: false,
         urlBase: '',
+        // qBittorrent and Transmission carry the remove-on-import toggle, off
+        // by default. The other clients have no removal wired up, so the form
+        // omits it.
+        ...(type === 'qbittorrent' || type === 'transmission' ? { removeOnImport: false } : {}),
       })
     })
   })
@@ -1885,6 +1889,9 @@ describe('SettingsPage', () => {
         category: 'ebooks',
         categoryAudiobook: '',
         pathRemap: '/media:/books',
+        // The type switched to a torrent client, so the toggle is now part of
+        // the payload; the form leaves it off unless the user ticks it.
+        removeOnImport: false,
         useSsl: true,
         urlBase: '/qbittorrent',
       })

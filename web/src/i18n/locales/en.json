@@ -525,7 +525,8 @@
     "indeterminate": "{{count}} row(s) were kept because provider or profile evidence was incomplete.",
     "partialWarning": "The provider returned a partial catalogue. Missing works are protected; only explicit profile rejections can be removed.",
     "applied": "Removed {{deleted}} row(s). {{skipped}} were skipped because they were no longer eligible.",
-    "clean": "No metadata-only Wanted rows need reconciliation.",
+    "noSafeCandidates": "No metadata-only Wanted rows are safe to remove.",
+    "indeterminateHeading": "Kept because evidence is incomplete",
     "selectCandidate": "Select {{title}}",
     "applying": "Rechecking and removing…",
     "apply": "Remove {{count}} stale row(s)",
@@ -537,6 +538,13 @@
       "below_minimum_pages": "Below the minimum page count",
       "missing_isbn": "No edition has an ISBN",
       "catalogue_filter": "Rejected by the catalogue filter"
+    },
+    "indeterminateReasons": {
+      "language_unknown": "Language could not be confirmed",
+      "language_evidence_lookup_failed": "Language evidence could not be retrieved",
+      "edition_evidence_unavailable": "Edition evidence could not be confirmed",
+      "partial_catalogue": "The provider returned only part of its catalogue",
+      "unmatched_cross_provider": "Could not match this row to the current provider"
     }
   },
   "duplicateCandidates": {
@@ -713,7 +721,19 @@
     "searchPlaceholder": "Search series...",
     "noMatch": "No series match \"{{query}}\"",
     "deleteConfirm": "Delete \"{{title}}\" from Series? Linked books will stay in your library.",
-    "deleteTitle": "Remove series"
+    "deleteTitle": "Remove series",
+    "noFilterMatch": "No series match this filter",
+    "noMatchFiltered": "No series match \"{{query}}\" with this filter",
+    "countFiltered": "{{shown}} of {{total}} series",
+    "filterLabel": "Show series",
+    "filter": {
+      "all": "All",
+      "missing": "Missing books",
+      "complete": "Complete",
+      "unlinked": "Not linked to Hardcover",
+      "shortlisted": "Shortlisted"
+    },
+    "filterMissingHint": "Series showing a missing badge. With Hardcover linking on, this counts catalogue books you do not have yet, exactly as the badge does."
   },
   "importHints": {
     "heading": "Already have files on disk?",
@@ -962,6 +982,8 @@
       "pathNotVisible": "Connected, but Bindery can't read the client's completed-downloads folder. Configure a path remap or a shared mount so both point at the same storage, otherwise downloads won't import.",
       "loopbackHint": "The host is localhost — if Bindery runs in Docker, localhost is the Bindery container itself, not the machine. Use the host's LAN IP or the client's container/service name instead.",
       "rtorrentCategoryHelp": "Stored as the ruTorrent label (d.custom1) and used to filter which torrents Bindery polls. Leave blank to poll every torrent in the client.",
+      "removeOnImportLabel": "Remove torrent after import",
+      "removeOnImportHelp": "When Bindery imports a download from this client, remove the torrent from it. The downloaded files are left on disk. Off by default: on a private tracker this stops the torrent seeding, which can cost you ratio.",
       "rtorrentUrlBaseHelp": "Full path of rTorrent's XML-RPC endpoint, not a prefix. Usually /RPC2; ruTorrent installs often expose /plugins/rpc/rpc.php instead. Leave blank to use /RPC2. For a plain rTorrent with no web server in front of it, use rTorrent's own SCGI listener: scgi:// for the host and port above, scgi://host:port, or scgi:///path/to/socket. SCGI carries no credentials, so keep it off-network.",
       "rtorrentScgiIgnoredHint": "{{fields}} will be ignored — rTorrent's SCGI listener has no TLS and no authentication. Put rTorrent behind a web server and use an HTTP path instead if you need either.",
       "passwordEditLabel": "Password (leave blank to keep current)",
@@ -1811,7 +1833,7 @@
     "deleteFilesBody": "Permanently delete {{count}} file(s) from disk:",
     "deleteFilesConfirm": "Delete from disk",
     "deleteFilesSiblingNote": "Any sibling file with the same name in the same format is also removed.",
-    "deleteFilesStatusNote": "The book record stays and flips back to “wanted”.",
+    "deleteFilesStatusNote": "If this was the last file for a monitored format, an imported book returns to “wanted”.",
     "deleteAllFiles": {
       "button": "Delete all files",
       "hint": "Delete every file on this book, both formats"
@@ -1849,6 +1871,8 @@
     "excludeHint": "Exclude this book from searches and the Wanted page",
     "unexcludeHint": "Un-exclude this book from searches and the Wanted page",
     "deleteFile": "Delete file",
+    "deleteThisFile": "Delete this file",
+    "deleteThisFileHint": "Permanently delete only this file from disk",
     "deletingFile": "Deleting…",
     "fixMatch": {
       "button": "Fix match",

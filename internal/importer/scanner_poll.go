@@ -201,37 +201,48 @@ func transmissionCompletion(status int, percentDone float64) (complete, stopped 
 func (s *Scanner) checkTransmissionDownloads(ctx context.Context, client *models.DownloadClient) {
 	trans := downloader.TransmissionFor(client)
 
-	// Get torrents — Category is used as a download-directory / label filter so
-	// Bindery only sees its own torrents on a shared instance. GetTorrents
-	// normalises the path comparison and also accepts Transmission 3.0+ labels,
-	// so "books" matches both a downloadDir of "/data/books/" and a label "books".
-	torrents, err := trans.GetTorrents(ctx, client.Category)
-	if err != nil {
-		// Warn, not Debug: see checkSABnzbdDownloads (#1019 failure mode).
-		slog.Warn("download poll: failed to fetch Transmission torrents — downloads will not be imported",
-			"client", client.Name, "error", err)
-		return
-	}
-
+	// Poll every category this client may have grabbed under. Audiobook grabs use
+	// CategoryAudiobook (when set) while ebook grabs use Category; polling only
+	// Category leaves audiobook torrents invisible and their downloads hang at
+	// "downloading" forever. CategoriesToPoll returns both. GetTorrents normalises
+	// the path comparison and also accepts Transmission 3.0+ labels, so "books"
+	// matches both a downloadDir of "/data/books/" and a label "books".
 	// Torrents are indexed by info hash, which is stable for the life of the
-	// torrent. The numeric id is not: Transmission renumbers every torrent when
-	// the daemon restarts, so an id stored at grab time either matches nothing
-	// (the download strands at "downloading" forever) or matches whichever
-	// unrelated torrent inherited the number.
-	torrentsByHash := make(map[string]transmission.Torrent, len(torrents))
-	for _, t := range torrents {
-		if hash := strings.ToLower(strings.TrimSpace(t.HashString)); hash != "" {
-			torrentsByHash[hash] = t
+	// torrent. The session-scoped numeric id is indexed separately and used
+	// only to reconcile rows grabbed before hashes were persisted: Transmission
+	// renumbers every torrent when the daemon restarts, so an id stored at grab
+	// time either matches nothing (the download strands at "downloading"
+	// forever) or matches whichever unrelated torrent inherited the number.
+	torrentsByHash := make(map[string]transmission.Torrent)
+	var allTorrents []transmission.Torrent
+	seenTorrentIDs := make(map[int64]bool)
+	for _, cat := range downloader.CategoriesToPoll(client) {
+		torrents, err := trans.GetTorrents(ctx, cat)
+		if err != nil {
+			// Warn, not Debug: see checkSABnzbdDownloads (#1019 failure mode).
+			slog.Warn("download poll: failed to fetch Transmission torrents — downloads will not be imported",
+				"client", client.Name, "category", cat, "error", err)
+			return
+		}
+		for _, t := range torrents {
+			if seenTorrentIDs[t.ID] {
+				continue
+			}
+			seenTorrentIDs[t.ID] = true
+			allTorrents = append(allTorrents, t)
+			if hash := strings.ToLower(strings.TrimSpace(t.HashString)); hash != "" {
+				torrentsByHash[hash] = t
+			}
 		}
 	}
 
 	// Surface a misconfiguration when the Category filter returns nothing but the
 	// daemon actually holds torrents (#1091). A silent zero-match means every
 	// Bindery grab permanently sits at "downloading" with no indication of why.
-	if client.Category != "" && len(torrents) == 0 {
+	if client.Category != "" && len(allTorrents) == 0 {
 		if all, allErr := trans.GetTorrents(ctx, ""); allErr == nil && len(all) > 0 {
 			slog.Warn("transmission: Category filter matched zero torrents — verify Category matches the torrent download directory path or a torrent label",
-				"client", client.Name, "category", client.Category, "total_torrents", len(all))
+				"client", client.Name, "category", client.Category, "category_audiobook", client.CategoryAudiobook, "total_torrents", len(all))
 		}
 	}
 
@@ -263,7 +274,7 @@ func (s *Scanner) checkTransmissionDownloads(ctx context.Context, client *models
 		}
 	}
 
-	legacyMatches := s.reconcileLegacyTransmissionIDs(ctx, client, allDownloads, torrents, claimedHashes)
+	legacyMatches := s.reconcileLegacyTransmissionIDs(ctx, client, allDownloads, allTorrents, claimedHashes)
 
 	for _, dl := range allDownloads {
 		if dl.DownloadClientID == nil || *dl.DownloadClientID != client.ID || dl.TorrentID == nil {
@@ -296,7 +307,7 @@ func (s *Scanner) checkTransmissionDownloads(ctx context.Context, client *models
 			bookFiles := s.transmissionFilesFor(ctx, trans, client, torrent)
 			slog.Info("download completed", "title", dl.Title, "path", downloadPath, "files", len(bookFiles))
 			s.updateDownloadStatus(ctx, dl.ID, models.StateCompleted)
-			s.tryImportTransmission(ctx, &dl, downloadPath, bookFiles)
+			s.tryImportTransmission(ctx, trans, client, &dl, downloadPath, bookFiles)
 		} else if isComplete && dl.Status == models.StateImportFailed && dl.ImportRetryCount < importRetryLimit {
 			// Bug #7: retry a previously failed import.
 			downloadPath := s.remapDownloadClientPath(client, torrent.DownloadDir)
@@ -310,7 +321,7 @@ func (s *Scanner) checkTransmissionDownloads(ctx context.Context, client *models
 			if err := s.downloads.IncrementImportRetryCount(ctx, dl.ID); err != nil {
 				slog.Warn("failed to increment import retry count", "download_id", dl.ID, "error", err)
 			}
-			s.tryImportTransmission(ctx, &dl, downloadPath, bookFiles)
+			s.tryImportTransmission(ctx, trans, client, &dl, downloadPath, bookFiles)
 		} else if isStopped && !isComplete && dl.Status != models.StateFailed {
 			if stopError == "" {
 				// Transmission also reports user-paused torrents as stopped.
@@ -612,6 +623,11 @@ func (s *Scanner) checkQbittorrentDownloads(ctx context.Context, client *models.
 					}
 					s.updateDownloadStatus(ctx, dl.ID, models.StateImporting)
 					s.updateDownloadStatus(ctx, dl.ID, models.StateImported)
+					if cleanup := qbittorrentRemoveOnImportCleanup(ctx, qb, client, &dl); cleanup != nil {
+						if err := cleanup(); err != nil {
+							slog.Warn("cleanup failed", cleanupWarnAttrs("qbittorrent", safeRemoteID(dl.TorrentID), err)...)
+						}
+					}
 					continue
 				}
 				// Path doesn't exist on disk yet (qBittorrent may sanitise characters
@@ -649,7 +665,7 @@ func (s *Scanner) checkQbittorrentDownloads(ctx context.Context, client *models.
 			if dl.Status == models.StateDownloading || dl.Status == models.StateGrabbed {
 				s.updateDownloadStatus(ctx, dl.ID, models.StateCompleted)
 			}
-			s.tryImportQbittorrent(ctx, &dl, downloadPath, bookFiles)
+			s.tryImportQbittorrent(ctx, qb, client, &dl, downloadPath, bookFiles)
 		} else if isComplete && dl.Status == models.StateImportFailed && dl.ImportRetryCount < importRetryLimit {
 			// Bug #7: a previous import attempt failed (e.g. transient filesystem
 			// error, path mismatch). The torrent is still seeding so we have the
@@ -665,6 +681,11 @@ func (s *Scanner) checkQbittorrentDownloads(ctx context.Context, client *models.
 					s.updateDownloadStatus(ctx, dl.ID, models.StateImportPending)
 					s.updateDownloadStatus(ctx, dl.ID, models.StateImporting)
 					s.updateDownloadStatus(ctx, dl.ID, models.StateImported)
+					if cleanup := qbittorrentRemoveOnImportCleanup(ctx, qb, client, &dl); cleanup != nil {
+						if err := cleanup(); err != nil {
+							slog.Warn("cleanup failed", cleanupWarnAttrs("qbittorrent", safeRemoteID(dl.TorrentID), err)...)
+						}
+					}
 					continue
 				}
 				// The files are still not here. Count the miss through the same
@@ -687,7 +708,7 @@ func (s *Scanner) checkQbittorrentDownloads(ctx context.Context, client *models.
 			if err := s.downloads.IncrementImportRetryCount(ctx, dl.ID); err != nil {
 				slog.Warn("failed to increment import retry count", "download_id", dl.ID, "error", err)
 			}
-			s.tryImportQbittorrent(ctx, &dl, downloadPath, bookFiles)
+			s.tryImportQbittorrent(ctx, qb, client, &dl, downloadPath, bookFiles)
 		} else if isFailed && dl.Status != models.StateFailed {
 			slog.Warn("download failed", "title", dl.Title, "state", torrent.State)
 			s.markDownloadFailed(ctx, &dl, "Torrent failed in qBittorrent")
@@ -995,8 +1016,21 @@ func (s *Scanner) tryImportSABnzbd(ctx context.Context, sab *sabnzbd.Client, dl 
 // of bug where a single-file torrent at a shared download root would cause
 // every unrelated sibling to be imported. Pass nil to fall back to the
 // directory walk.
-func (s *Scanner) tryImportTransmission(ctx context.Context, dl *models.Download, downloadPath string, explicitFiles []string) {
-	s.tryImportInternal(ctx, dl, downloadPath, "transmission", safeRemoteID(dl.TorrentID), "", nil, explicitFiles)
+func (s *Scanner) tryImportTransmission(ctx context.Context, trans *transmission.Client, client *models.DownloadClient, dl *models.Download, downloadPath string, explicitFiles []string) {
+	var cleanup func() error
+	if client.RemoveOnImport && dl.TorrentID != nil && strings.TrimSpace(*dl.TorrentID) != "" {
+		ref := strings.TrimSpace(*dl.TorrentID)
+		cleanup = func() error {
+			slog.Info("removing torrent from Transmission after import", "torrent", ref, "title", dl.Title)
+			// deleteFiles=false: the payload has been imported (hard linked or
+			// copied) but the torrent may still be seeding from those files.
+			if err := downloader.RemoveTransmissionTorrent(ctx, trans, ref, false); err != nil {
+				return fmt.Errorf("remove torrent %s: %w", ref, err)
+			}
+			return nil
+		}
+	}
+	s.tryImportInternal(ctx, dl, downloadPath, "transmission", safeRemoteID(dl.TorrentID), "", cleanup, explicitFiles)
 }
 
 // legacyTransmissionMatchWindow is how far apart Bindery's grab timestamp and
@@ -1193,8 +1227,28 @@ func normaliseReleaseName(s string) string {
 
 // tryImportQbittorrent attempts to import a completed qBittorrent download. See
 // tryImportTransmission for the semantics of explicitFiles.
-func (s *Scanner) tryImportQbittorrent(ctx context.Context, dl *models.Download, downloadPath string, explicitFiles []string) {
-	s.tryImportInternal(ctx, dl, downloadPath, "qbittorrent", safeRemoteID(dl.TorrentID), "", nil, explicitFiles)
+func (s *Scanner) tryImportQbittorrent(ctx context.Context, qb *qbittorrent.Client, client *models.DownloadClient, dl *models.Download, downloadPath string, explicitFiles []string) {
+	cleanup := qbittorrentRemoveOnImportCleanup(ctx, qb, client, dl)
+	s.tryImportInternal(ctx, dl, downloadPath, "qbittorrent", safeRemoteID(dl.TorrentID), "", cleanup, explicitFiles)
+}
+
+// qbittorrentRemoveOnImportCleanup builds the post-import removal callback
+// shared by tryImportQbittorrent and the "book already in library" shortcuts
+// in checkQbittorrentDownloads (issue #2046) — those shortcuts close out a
+// download without ever calling tryImportInternal, so they need the same
+// cleanup construction rather than only the normal import path getting it.
+func qbittorrentRemoveOnImportCleanup(ctx context.Context, qb *qbittorrent.Client, client *models.DownloadClient, dl *models.Download) func() error {
+	if !client.RemoveOnImport || dl.TorrentID == nil {
+		return nil
+	}
+	hash := *dl.TorrentID
+	return func() error {
+		slog.Info("removing torrent from qBittorrent after import", "hash", hash, "title", dl.Title)
+		if err := qb.DeleteTorrent(ctx, hash, false); err != nil {
+			return fmt.Errorf("remove torrent %s: %w", hash, err)
+		}
+		return nil
+	}
 }
 
 // torrentFile is the minimal shape resolveTorrentFiles consumes; it matches
