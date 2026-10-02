@@ -1143,7 +1143,11 @@
       "defaultLabel": "Default root folder",
       "defaultHint": "Authors without an explicit root folder land here. Leave unset to fall back to the BINDERY_LIBRARY_DIR startup path.",
       "defaultUnset": "Use startup default (BINDERY_LIBRARY_DIR)",
-      "defaultBadge": "Default"
+      "defaultBadge": "Default",
+      "audiobookDefaultLabel": "Default audiobook root folder",
+      "audiobookDefaultHint": "Audiobooks of authors without their own audiobook root folder land here. Leave unset to fall back to the BINDERY_AUDIOBOOK_DIR startup path, which itself defaults to BINDERY_LIBRARY_DIR.",
+      "audiobookDefaultUnset": "Use startup default (BINDERY_AUDIOBOOK_DIR)",
+      "audiobookDefaultBadge": "Audiobook default"
     },
     "logs": {
       "heading": "Logs",
@@ -1503,6 +1507,8 @@
       "confirmAdd": "Add author",
       "metadataProfile": "Metadata profile",
       "rootFolder": "Root folder",
+      "audiobookRootFolder": "Audiobook root folder",
+      "audiobookRootFolderDefault": "Use global audiobook folder",
       "mediaType": "Media type",
       "monitorMode": "Monitor mode",
       "monitorModeHint": "The whole catalogue is added either way. This only decides which of those books Bindery searches for and downloads.",

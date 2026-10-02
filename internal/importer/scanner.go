@@ -240,33 +240,51 @@ func (s *Scanner) effectiveLibraryDir(ctx context.Context, author *models.Author
 			return rf.Path
 		}
 	}
-	if s.settings != nil && s.rootFolders != nil {
-		if setting, err := s.settings.Get(ctx, "library.defaultRootFolderId"); err == nil && setting != nil && setting.Value != "" {
-			if id, err := strconv.ParseInt(setting.Value, 10, 64); err == nil && id > 0 {
-				if rf, err := s.rootFolders.GetByID(ctx, id); err == nil && rf != nil {
-					return rf.Path
-				}
-			}
-		}
+	if path := s.defaultRootFolderPath(ctx, "library.defaultRootFolderId"); path != "" {
+		return path
 	}
 	return s.libraryDir
 }
 
 // effectiveAudiobookDir returns the audiobook root to use for the given author.
-// Priority: (1) author's explicit AudiobookRootFolderID, (2) global
-// audiobookDir from env-var. It deliberately mirrors effectiveLibraryDir but
-// consults a separate per-author field: routing audiobooks through the ebook
-// RootFolderID would send them into the ebook root whenever an author has any
-// custom ebook root folder assigned, silently ignoring BINDERY_AUDIOBOOK_DIR
-// (#421). There is no audiobook equivalent of library.defaultRootFolderId, so
-// the only override is the per-author column.
+// Priority: (1) author's explicit AudiobookRootFolderID, (2)
+// library.defaultAudiobookRootFolderId setting (#2166), (3) global audiobookDir
+// from env-var. It deliberately mirrors effectiveLibraryDir but consults a
+// separate per-author field and a separate default: routing audiobooks through
+// the ebook RootFolderID or the ebook default would send them into the ebook
+// root whenever either is set, silently ignoring BINDERY_AUDIOBOOK_DIR (#421).
 func (s *Scanner) effectiveAudiobookDir(ctx context.Context, author *models.Author) string {
 	if author != nil && author.AudiobookRootFolderID != nil && s.rootFolders != nil {
 		if rf, err := s.rootFolders.GetByID(ctx, *author.AudiobookRootFolderID); err == nil && rf != nil {
 			return rf.Path
 		}
 	}
+	if path := s.defaultRootFolderPath(ctx, "library.defaultAudiobookRootFolderId"); path != "" {
+		return path
+	}
 	return s.audiobookDir
+}
+
+// defaultRootFolderPath resolves a default root folder setting to its path.
+// Empty when the setting is unset, malformed, or names a root folder that no
+// longer exists, so callers fall through to the env-var default.
+func (s *Scanner) defaultRootFolderPath(ctx context.Context, key string) string {
+	if s.settings == nil || s.rootFolders == nil {
+		return ""
+	}
+	setting, err := s.settings.Get(ctx, key)
+	if err != nil || setting == nil || setting.Value == "" {
+		return ""
+	}
+	id, err := strconv.ParseInt(setting.Value, 10, 64)
+	if err != nil || id <= 0 {
+		return ""
+	}
+	rf, err := s.rootFolders.GetByID(ctx, id)
+	if err != nil || rf == nil {
+		return ""
+	}
+	return rf.Path
 }
 
 // effectiveRootForFormat picks the correct root (ebook or audiobook) to
@@ -1659,8 +1677,9 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 			return
 		}
 		// effectiveAudiobookDir resolves the per-author audiobook root folder
-		// (#579) and falls back to BINDERY_AUDIOBOOK_DIR. It deliberately does
-		// NOT consult the author's ebook RootFolderID: routing audiobooks
+		// (#579), then the default audiobook root folder setting (#2166), and
+		// falls back to BINDERY_AUDIOBOOK_DIR. It deliberately does NOT consult
+		// the author's ebook RootFolderID or the ebook default: routing audiobooks
 		// through that would send them into the ebook root whenever an author
 		// has any custom ebook root folder assigned (#421).
 		audiobookRoot := s.effectiveAudiobookDir(ctx, author)

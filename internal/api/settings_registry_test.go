@@ -357,6 +357,11 @@ func TestValidateSettingValue_KnownKeysUnchanged(t *testing.T) {
 		{"default root folder rejects zero", SettingDefaultLibraryRootFolderID, "0", true},
 		{"default root folder rejects text", SettingDefaultLibraryRootFolderID, "library", true},
 
+		{"default audiobook root folder accepts an id", SettingDefaultAudiobookRootFolderID, "3", false},
+		{"default audiobook root folder accepts empty", SettingDefaultAudiobookRootFolderID, "", false},
+		{"default audiobook root folder rejects zero", SettingDefaultAudiobookRootFolderID, "0", true},
+		{"default audiobook root folder rejects text", SettingDefaultAudiobookRootFolderID, "audiobooks", true},
+
 		{"primary provider accepts dnb", SettingMetadataPrimaryProvider, "dnb", false},
 		{"primary provider accepts empty", SettingMetadataPrimaryProvider, "", false},
 		{"primary provider rejects goodreads", SettingMetadataPrimaryProvider, "goodreads", true},
@@ -471,6 +476,7 @@ var webSettingKeys = []string{
 	"import.drop_link_mode",
 	"import.mode",
 	"import.write_opf_sidecar",
+	"library.defaultAudiobookRootFolderId",
 	"library.defaultRootFolderId",
 	"log.retention_days",
 	"metadata.primary_provider",

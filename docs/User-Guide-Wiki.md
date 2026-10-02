@@ -394,7 +394,9 @@ Usenet clients have no seeding, so the limits do nothing there.
 the book, places the file per your import mode and naming template, and marks
 the book **In Library**. Ebooks land under the author's root folder (falling
 back to the default root folder, then `BINDERY_LIBRARY_DIR`); audiobooks have
-their own destination chain (`BINDERY_AUDIOBOOK_DIR`, per-author override).
+their own chain (the author's audiobook root folder, then the default audiobook
+root folder, then `BINDERY_AUDIOBOOK_DIR`). Both defaults are set under
+Settings > Root Folders, and the Add Author dialog preselects them.
 Every author added through the UI gets a root folder written on the author
 itself, seeded from the default you set in Settings, so changing that default
 later moves only authors you have not created yet. In 1.32.1 and earlier the

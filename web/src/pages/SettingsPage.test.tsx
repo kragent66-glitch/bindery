@@ -943,6 +943,55 @@ describe('SettingsPage', () => {
     })
   })
 
+  // #2166: the audiobook twin of the default root folder picker. Before it the
+  // only install wide audiobook location was BINDERY_AUDIOBOOK_DIR.
+  it('persists the default audiobook root folder from the Root Folders tab', async () => {
+    renderSettings({
+    rootFolders: [makeRootFolder({ id: 7, path: '/mnt/books' }), makeRootFolder({ id: 8, path: '/mnt/audiobooks' })],
+    settings: [
+      { key: 'library.defaultRootFolderId', value: '7' },
+      { key: 'hardcover.enhanced_series_enabled', value: 'false' },
+    ],
+    })
+
+    await openRootFoldersTab()
+    const select = await screen.findByLabelText('settings.rootfolders.audiobookDefaultLabel')
+    expect(select).toHaveValue('')
+    fireEvent.change(select, { target: { value: '8' } })
+    await waitFor(() => {
+    expect(api.setSetting).toHaveBeenCalledWith('library.defaultAudiobookRootFolderId', '8')
+    })
+    // The ebook default is left alone.
+    expect(api.setSetting).not.toHaveBeenCalledWith('library.defaultRootFolderId', expect.anything())
+    expect(screen.getByLabelText('settings.rootfolders.defaultLabel')).toHaveValue('7')
+    expect(screen.getByText('settings.rootfolders.audiobookDefaultBadge')).toBeInTheDocument()
+  })
+
+  it('clears the default audiobook root folder when that folder is deleted', async () => {
+    const a = makeRootFolder({ id: 7, path: '/mnt/books' })
+    const b = makeRootFolder({ id: 8, path: '/mnt/audiobooks' })
+    vi.mocked(api.deleteRootFolder).mockResolvedValue(undefined)
+
+    renderSettings({
+    rootFolders: [a, b],
+    settings: [
+      { key: 'library.defaultRootFolderId', value: '7' },
+      { key: 'library.defaultAudiobookRootFolderId', value: '8' },
+      { key: 'hardcover.enhanced_series_enabled', value: 'false' },
+    ],
+    })
+
+    await openRootFoldersTab()
+    await waitFor(() => expect(screen.getByLabelText('settings.rootfolders.audiobookDefaultLabel')).toHaveValue('8'))
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'common.remove' })[1])
+    await waitFor(() => expect(api.deleteRootFolder).toHaveBeenCalledWith(8))
+    await waitFor(() => {
+    expect(api.setSetting).toHaveBeenCalledWith('library.defaultAudiobookRootFolderId', '')
+    })
+    expect(api.setSetting).not.toHaveBeenCalledWith('library.defaultRootFolderId', '')
+  })
+
   it('persists author/metadata default choices from the Metadata tab', async () => {
     renderSettings({
     settings: [

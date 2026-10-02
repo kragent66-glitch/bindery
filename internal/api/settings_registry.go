@@ -145,6 +145,11 @@ var settingDescriptors = []SettingDescriptor{
 		State:       SettingStateActive,
 	},
 	{
+		Key: SettingDefaultAudiobookRootFolderID, Type: SettingTypeInt, Default: "", Min: "1",
+		Description: "root_folder.id used as the audiobook path for authors with no audiobook root folder of their own. Empty falls back to BINDERY_AUDIOBOOK_DIR, then BINDERY_LIBRARY_DIR.",
+		State:       SettingStateActive,
+	},
+	{
 		Key: SettingMetadataPrimaryProvider, Type: SettingTypeEnum, Default: "openlibrary",
 		Values:          MetadataPrimaryProviders,
 		Description:     "Provider that decides what an author catalogue looks like. The others stay wired as enrichers. Selecting hardcover requires a stored Hardcover API token.",

@@ -71,18 +71,26 @@ To import such a download, either rename one of the files at the source and retr
 | `BINDERY_LIBRARY_DIR` | Ebook library destination. |
 | `BINDERY_AUDIOBOOK_DIR` | Audiobook library destination. |
 
+## Default audiobook root folder
+
+Settings > Root Folders has two default pickers: **Default root folder** for ebooks and **Default audiobook root folder** for audiobooks. Either one takes priority over its env var, so you can leave `BINDERY_AUDIOBOOK_DIR` unset and choose the folder in the UI instead, which is handy on the Windows binary. Removing a root folder that is a default also clears that default, and Bindery falls back to the env var.
+
+The two are independent: the ebook default never moves audiobooks, and the audiobook default never moves ebooks.
+
 ## Per-author audiobook root folder
 
-By default, every author's audiobooks are imported to the global audiobook destination (`BINDERY_AUDIOBOOK_DIR`, which itself falls back to the ebook library when unset). You can override that destination for a single author.
+By default, every author's audiobooks are imported to the global audiobook destination: the **Default audiobook root folder** when one is set, otherwise `BINDERY_AUDIOBOOK_DIR`, which itself falls back to the ebook library when unset. You can override that destination for a single author.
 
 Open the author, click **Edit**, and use the **Audiobook root folder** selector in the Edit Author modal:
 
 - Pick any configured root folder to send **that author's** audiobooks there instead of the global audiobook destination.
-- Leave it on **Use global audiobook folder** (the default) to fall back to `BINDERY_AUDIOBOOK_DIR`.
+- Leave it on **Use global audiobook folder** to fall back to the Default audiobook root folder, then `BINDERY_AUDIOBOOK_DIR`.
+
+The Add Author dialog shows the same picker when the media type includes audiobooks, preselected with the Default audiobook root folder.
 
 This is a separate setting from the author's ebook **Root folder** — choosing a custom ebook root never changes where the author's audiobooks land, and vice versa. That keeps audiobooks out of the ebook tree even when an author has a custom ebook root.
 
-The override applies wherever Bindery decides an audiobook's location: regular imports of completed downloads, Library Scan matching, and the Audiobookshelf importer's file-visibility checks. When the per-author audiobook root is unset, all of those fall back to the global audiobook directory.
+The override applies wherever Bindery decides an audiobook's location: regular imports of completed downloads, Library Scan matching, and the Audiobookshelf importer's file-visibility checks. When the per-author audiobook root is unset, all of those fall back to the Default audiobook root folder, then the global audiobook directory.
 
 ## Torrent vs Usenet folders
 

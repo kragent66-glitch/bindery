@@ -245,6 +245,7 @@ export interface AddAuthorRequest {
   metadataProfileId?: number | null
   qualityProfileId?: number | null
   rootFolderId?: number | null
+  audiobookRootFolderId?: number | null
   mediaType?: MediaType
 }
 

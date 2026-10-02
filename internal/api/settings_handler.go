@@ -63,6 +63,13 @@ const (
 // empty or unset means fall back to cfg.LibraryDir (the env-var default).
 const SettingDefaultLibraryRootFolderID = "library.defaultRootFolderId"
 
+// SettingDefaultAudiobookRootFolderID is the audiobook counterpart of
+// SettingDefaultLibraryRootFolderID: the root_folder.id audiobooks land under
+// when an author has no per-author AudiobookRootFolderID. Empty or unset means
+// fall back to cfg.AudiobookDir (BINDERY_AUDIOBOOK_DIR, itself defaulting to
+// the library dir) (#2166).
+const SettingDefaultAudiobookRootFolderID = "library.defaultAudiobookRootFolderId"
+
 // SettingMetadataPrimaryProvider is the KV key that selects the primary
 // metadata provider used for author/book search and lookup. Valid values are
 // "openlibrary" (default), "dnb", and "hardcover". Empty or unset falls back to
@@ -833,7 +840,7 @@ func validateSettingValue(key, value string) error {
 		if err != nil || n <= 0 || n > 10000 {
 			return fmt.Errorf("requests.max_pending_per_user %q must be an integer from 1 to 10000", value)
 		}
-	case SettingDefaultLibraryRootFolderID:
+	case SettingDefaultLibraryRootFolderID, SettingDefaultAudiobookRootFolderID:
 		// Empty = unset (fall back to env-var default); non-empty must be a
 		// positive integer representing an existing root_folder.id.
 		if value == "" {
@@ -841,7 +848,7 @@ func validateSettingValue(key, value string) error {
 		}
 		id, err := strconv.ParseInt(value, 10, 64)
 		if err != nil || id <= 0 {
-			return fmt.Errorf("library.defaultRootFolderId %q must be a positive integer or empty", value)
+			return fmt.Errorf("%s %q must be a positive integer or empty", key, value)
 		}
 	case SettingMetadataPrimaryProvider:
 		// Empty falls back to "openlibrary"; non-empty must be a known provider.
