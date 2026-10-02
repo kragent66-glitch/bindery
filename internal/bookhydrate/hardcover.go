@@ -5,6 +5,7 @@ package bookhydrate
 import (
 	"context"
 	"log/slog"
+	"regexp"
 	"strings"
 
 	"github.com/vavallee/bindery/internal/models"
@@ -22,6 +23,7 @@ type EditionUpserter interface {
 // BookUpdater persists book-level fields promoted during hydration.
 type BookUpdater interface {
 	Update(context.Context, *models.Book) error
+	FillMissingAudiobookDuration(context.Context, *models.Book) (bool, int, error)
 }
 
 // AudiobookEnricher fills audiobook metadata once an ASIN is known.
@@ -79,6 +81,7 @@ func HydrateHardcoverEditions(ctx context.Context, opts Options) Result {
 	if book == nil || book.ID == 0 {
 		return result
 	}
+	before := *book
 	editionForeignID := strings.TrimSpace(opts.ProviderForeignID)
 	if editionForeignID == "" {
 		editionForeignID = book.ForeignID
@@ -118,18 +121,32 @@ func HydrateHardcoverEditions(ctx context.Context, opts Options) Result {
 			continue
 		}
 		result.Upserted++
+		// UpsertMetadata reloads persisted fields; runtime exists only in the provider response.
+		edition.DurationSeconds = editions[i].DurationSeconds
+		if !isLikelyAudioEdition(editions[i]) {
+			// A retained unknown format must not hide a fetched print format and
+			// turn that print edition into audio solely through its runtime.
+			edition.DurationSeconds = 0
+		}
 		if isLikelyAudioEdition(edition) {
+			if editions[i].ASIN != nil && edition.ASIN != nil && strings.TrimSpace(*editions[i].ASIN) != "" &&
+				!strings.EqualFold(strings.TrimSpace(*editions[i].ASIN), strings.TrimSpace(*edition.ASIN)) {
+				// The stored ASIN belongs to a different narration than the fetched runtime.
+				edition.DurationSeconds = 0
+			}
 			acceptedAudioEditions = append(acceptedAudioEditions, edition)
 		}
 	}
 
 	// #806: derive audiobook metadata from the chosen Hardcover edition BEFORE
-	// running Audnex, so Hardcover's deterministic edition data fills the book
-	// and Audnex is left to cover only the gaps (narrator, refined duration,
-	// summary, cover-if-missing). preferredAudioEdition picks the same edition
-	// maybePromoteASIN promotes the ASIN from, keeping the two derivations
-	// consistent.
-	if edition, ok := preferredAudioEdition(acceptedAudioEditions); ok {
+	// running Audnex, so its edition data fills missing book fields. Audnex can
+	// then refine duration and fill narrator, summary, or a missing cover.
+	// Prefer the edition matching the book's ASIN or the one promoted below.
+	if edition, ok := preferredAudioEdition(acceptedAudioEditions, book.ASIN); ok {
+		if strings.TrimSpace(book.ASIN) != "" && (edition.ASIN == nil || !strings.EqualFold(strings.TrimSpace(*edition.ASIN), strings.TrimSpace(book.ASIN))) {
+			// A different known ASIN may be a different narration; leave runtime unknown.
+			edition.DurationSeconds = 0
+		}
 		if deriveAudiobookMetadataFromEdition(book, edition, opts.MediaTypePinned) {
 			result.MetadataDerived = true
 		}
@@ -155,31 +172,72 @@ func HydrateHardcoverEditions(ctx context.Context, opts Options) Result {
 	// book. Derivation alone (e.g. ASIN already set) is enough to warrant a
 	// write so the language/cover/duration we pulled isn't lost.
 	if (result.ASINPromoted || result.MetadataDerived) && opts.Books != nil {
-		if err := opts.Books.Update(ctx, book); err != nil {
+		var err error
+		updated := false
+		if !result.ASINPromoted && before.DurationSeconds <= 0 && book.DurationSeconds > 0 &&
+			before.ASIN == book.ASIN && before.MediaType == book.MediaType && before.Status == book.Status &&
+			before.Language == book.Language && before.ImageURL == book.ImageURL {
+			var currentDuration int
+			updated, currentDuration, err = opts.Books.FillMissingAudiobookDuration(ctx, book)
+			if !updated {
+				book.DurationSeconds = currentDuration
+				result.MetadataDerived = false
+				if err == nil {
+					slog.Debug("hardcover duration write skipped after concurrent book update", "bookID", book.ID)
+				}
+			}
+		} else {
+			err = opts.Books.Update(ctx, book)
+			updated = err == nil
+		}
+		if err != nil {
 			if result.Err == nil {
 				result.Err = err
 			}
 			slog.Warn("hardcover book hydration persist failed", "bookID", book.ID, "asin", book.ASIN, "error", err)
 		} else {
-			result.BookUpdated = true
+			result.BookUpdated = updated
 		}
 	}
 
 	return result
 }
 
-// preferredAudioEdition returns the audio-looking edition the hydrator should
-// derive book metadata from — the same edition maybePromoteASIN promotes the
-// ASIN from (highest audioEditionScore, first on ties). Returns ok=false when
-// there is no audio edition to derive from.
-func preferredAudioEdition(editions []models.Edition) (models.Edition, bool) {
+// preferredAudioEdition returns the audio-looking edition whose ASIN matches
+// the book, or the edition maybePromoteASIN will use when the book has no ASIN.
+// Among matching ASINs, prefer the highest audioEditionScore, then an edition
+// with a known runtime (first on ties).
+func preferredAudioEdition(editions []models.Edition, bookASIN string) (models.Edition, bool) {
 	best := -1
-	bestScore := -1
+	targetASIN := strings.TrimSpace(bookASIN)
+	if targetASIN == "" {
+		targetASIN = preferredEditionASIN(editions)
+	}
 	for i := range editions {
-		score := audioEditionScore(editions[i])
-		if best == -1 || score > bestScore {
+		matchesASIN := targetASIN != "" && editions[i].ASIN != nil && strings.EqualFold(strings.TrimSpace(*editions[i].ASIN), targetASIN)
+		if best == -1 {
 			best = i
-			bestScore = score
+			continue
+		}
+		bestMatchesASIN := targetASIN != "" && editions[best].ASIN != nil && strings.EqualFold(strings.TrimSpace(*editions[best].ASIN), targetASIN)
+		if matchesASIN != bestMatchesASIN {
+			if matchesASIN {
+				best = i
+			}
+			continue
+		}
+		score, bestScore := audioEditionScore(editions[i]), audioEditionScore(editions[best])
+		if score != bestScore {
+			if score > bestScore {
+				best = i
+			}
+			continue
+		}
+		if (matchesASIN || targetASIN == "") && (editions[i].DurationSeconds > 0) != (editions[best].DurationSeconds > 0) {
+			if editions[i].DurationSeconds > 0 {
+				best = i
+			}
+			continue
 		}
 	}
 	if best == -1 {
@@ -191,9 +249,12 @@ func preferredAudioEdition(editions []models.Edition) (models.Edition, bool) {
 // deriveAudiobookMetadataFromEdition fills book-level audiobook fields from a
 // Hardcover edition, preferring Hardcover's deterministic edition data before
 // Audnex runs (#806). It only ever fills unknown fields — known values are
-// never overwritten ("unknown ⇒ don't clobber known"). It also makes sure an
-// audio-bearing book carries an audiobook MediaType so the Audnex path is
-// eligible. Returns whether it changed anything.
+// never overwritten ("unknown ⇒ don't clobber known"), and a field the user
+// locked is left alone even when empty, because clearing it was a manual edit
+// (#2757). Emptiness and ownership are separate tests: Book.CanWrite answers
+// only the second (#2767). It also makes sure an audio-bearing book carries
+// an audiobook MediaType so the Audnex path is eligible. Returns whether it
+// changed anything.
 //
 // mediaTypePinned means the caller set MediaType deliberately (a list's
 // per-list format override): the promotion below must not run, or an
@@ -227,18 +288,28 @@ func deriveAudiobookMetadataFromEdition(book *models.Book, edition models.Editio
 		}
 	}
 
-	if book.Language == "" {
+	if book.Language == "" && book.CanWrite(models.BookFieldLanguage) {
 		if lang := strings.TrimSpace(edition.Language); lang != "" {
 			book.Language = lang
 			changed = true
 		}
 	}
 
+	// ImageURL is deliberately unguarded: it is not in
+	// models.LockableBookFields and there is no way for a user to lock it,
+	// because the edit dialog has no cover field to lock by editing. Adding it
+	// to the lockable set would be a user visible capability change needing the
+	// edit UI and docs/Metadata-Editing-Wiki.md to match, so it stays a
+	// fill-empty write (#2767).
 	if book.ImageURL == "" {
 		if cover := strings.TrimSpace(edition.ImageURL); cover != "" {
 			book.ImageURL = cover
 			changed = true
 		}
+	}
+	if bookAcceptsAudiobookASIN(book) && book.DurationSeconds <= 0 && edition.DurationSeconds > 0 {
+		book.DurationSeconds = edition.DurationSeconds
+		changed = true
 	}
 
 	return changed
@@ -300,14 +371,22 @@ func isLikelyAudioEdition(edition models.Edition) bool {
 		edition.Format,
 		edition.EditionInfo,
 	}, " "))
-	return editionHasAudioMarker(text)
+	format := strings.TrimSpace(edition.Format)
+	unknownFormat := format == "" || strings.EqualFold(format, "unknown")
+	return editionHasAudioMarker(text) || (unknownFormat && edition.DurationSeconds > 0 && !edition.IsEbook)
 }
 
+// cdMarkerRE matches "cd" or "cds" as a whole word, so "Audio CD", "2 CDs"
+// and "CD-ROM" classify as audio while "McDermott" or "McDonald" in free-text
+// edition info does not.
+var cdMarkerRE = regexp.MustCompile(`\bcds?\b`)
+
 func editionHasAudioMarker(text string) bool {
-	for _, marker := range []string{"audio", "audible", "mp3", "cd", "cassette"} {
+	text = strings.ToLower(text)
+	for _, marker := range []string{"audio", "audible", "mp3", "cassette"} {
 		if strings.Contains(text, marker) {
 			return true
 		}
 	}
-	return false
+	return cdMarkerRE.MatchString(text)
 }

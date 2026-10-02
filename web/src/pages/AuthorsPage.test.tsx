@@ -73,6 +73,9 @@ vi.mock('react-i18next', () => ({
         'common.delete': 'Delete',
         'common.refresh': 'Refresh',
         'common.cancel': 'Cancel',
+        'common.apply': 'Apply',
+        'authors.bulkApplyMonitoringToExisting': 'Also apply to their existing books',
+        'authors.bulkApplyMonitoringToExistingHint': 'Rewrites every book of the selected authors to match. Leave it off to change the authors only.',
         'bulkActionBar.clear': 'Clear',
         'bulkActionBar.selected': 'Selected',
         'search.autoGrabDisabled': 'No search was run. Automatic grabbing is off.',
@@ -147,7 +150,7 @@ describe('AuthorsPage', () => {
     const listCallsBefore = vi.mocked(api.listAuthors).mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: 'Search' }))
 
-    await waitFor(() => expect(api.bulkActionAuthors).toHaveBeenCalledWith([7], 'search'))
+    await waitFor(() => expect(api.bulkActionAuthors).toHaveBeenCalledWith([7], 'search', undefined, false))
     expect(await screen.findByRole('alert')).toHaveTextContent('No search was run. Automatic grabbing is off.')
     // The selection survives and the list is not reloaded, because nothing
     // happened.
@@ -230,7 +233,7 @@ describe('AuthorsPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Refresh metadata' }))
 
     await waitFor(() =>
-      expect(api.bulkActionAuthors).toHaveBeenCalledWith([7], 'refresh'),
+      expect(api.bulkActionAuthors).toHaveBeenCalledWith([7], 'refresh', undefined, false),
     )
   })
 
@@ -752,5 +755,74 @@ describe('AuthorsPage — Previous/Next router state (#2548)', () => {
     fireEvent.click(await screen.findByText('Vernor Vinge'))
 
     await waitFor(() => expect(capturedState).toEqual({ ids: [7, 8], index: 1 }))
+  })
+})
+
+// The Authors page bulk Unmonitor wrote only the author flag, so a user who
+// turned off 200 authors was left with every book under them still monitored
+// and no bulk way to change that (#2742). The action now offers the cascade the
+// single author path has, unticked by default.
+describe('AuthorsPage bulk monitoring cascade', () => {
+  const oneAuthor = {
+    items: [
+      {
+        id: 7,
+        foreignAuthorId: 'OL7',
+        authorName: 'Andy Weir',
+        sortName: 'Weir, Andy',
+        description: '',
+        imageUrl: '',
+        disambiguation: '',
+        ratingsCount: 0,
+        averageRating: 0,
+        monitored: true,
+      },
+    ],
+    total: 1,
+    limit: 100,
+    offset: 0,
+  }
+
+  it('leaves the books alone by default', async () => {
+    vi.mocked(api.listAuthors).mockResolvedValue(oneAuthor)
+    vi.mocked(api.bulkActionAuthors).mockResolvedValue({ results: {} })
+
+    render(
+      <MemoryRouter>
+        <AuthorsPage />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(await screen.findByTitle('Select Andy Weir'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Unmonitor' }))
+
+    const box = await screen.findByRole('checkbox', { name: /also apply to their existing books/i })
+    expect(box).not.toBeChecked()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(api.bulkActionAuthors).toHaveBeenCalledWith([7], 'unmonitor', undefined, false),
+    )
+  })
+
+  it('cascades to the existing books when asked', async () => {
+    vi.mocked(api.listAuthors).mockResolvedValue(oneAuthor)
+    vi.mocked(api.bulkActionAuthors).mockResolvedValue({ results: {} })
+
+    render(
+      <MemoryRouter>
+        <AuthorsPage />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(await screen.findByTitle('Select Andy Weir'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Unmonitor' }))
+    fireEvent.click(await screen.findByRole('checkbox', { name: /also apply to their existing books/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }))
+
+    await waitFor(() =>
+      expect(api.bulkActionAuthors).toHaveBeenCalledWith([7], 'unmonitor', undefined, true),
+    )
   })
 })

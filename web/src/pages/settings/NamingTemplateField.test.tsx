@@ -43,10 +43,10 @@ describe('namingTemplate renderer (renamer.go mirror)', () => {
   })
 
   it('renders all tokens', () => {
-    const out = renderTemplate('{Author}|{SortAuthor}|{Title}|{Year}|{ASIN}|{Series}|{SeriesNumber}|{Genre}|{Lang}|{ext}', 'book')
+    const out = renderTemplate('{Author}|{SortAuthor}|{Title}|{Year}|{ASIN}|{Series}|{SeriesNumber}|{Genre}|{Lang}|{Narrator}|{ext}', 'book')
     // "|" is stripped by sanitize only inside a substituted field, not in the
     // literal template, so the separators survive between tokens.
-    expect(out).toBe('Jane Doe|Doe, Jane|Sample Book|2024|B01ABCDEFG|Demo Series|2|Fantasy|en|epub')
+    expect(out).toBe('Jane Doe|Doe, Jane|Sample Book|2024|B01ABCDEFG|Demo Series|2|Fantasy|en|Michael Kramer|epub')
   })
 
   it('renders the {Lang} token and collapses its glue when empty', () => {
@@ -62,8 +62,8 @@ describe('namingTemplate renderer (renamer.go mirror)', () => {
 
   it('sanitizes characters that would break a path inside a field', () => {
     const out = renderTemplate('{Title}', 'book', { ...SAMPLE_BOOK, title: 'A: B / C? <D>' })
-    // ":" and "/" -> "-", "?<>" stripped; result is one segment
-    expect(out).toBe('A- B - C D')
+    // ":" boundary -> " - ", "/" -> "-", "?<>" stripped; result is one segment
+    expect(out).toBe('A - B - C D')
   })
 
   it('drops dangling leading separators when a leading token is empty', () => {

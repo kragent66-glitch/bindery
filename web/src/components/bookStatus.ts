@@ -22,16 +22,36 @@ const mutedColor = 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-
 
 import type { TFunction } from 'i18next'
 
-// bookStatusBadge returns the label and colour classes for a book's status
-// pill, made monitored-aware. Pass i18next's `t`. Callers supply their own
-// sizing/layout classes and append `colorClass`.
+// One sentence per pill saying what the state means for the user, in the
+// terms they ask about: is a file missing, and will Bindery go and get it.
+// "Wanted" versus "monitored" is the single most asked question in support,
+// and the legend used to show the four swatches with no explanation at all.
+const statusDescriptions: Record<string, [string, string]> = {
+  wanted: ['bookStatus.wantedDescription', 'A format is missing and Bindery will search for it on the next sweep.'],
+  imported: ['bookStatus.importedDescription', 'Every format this book wants is on disk.'],
+  skipped: ['bookStatus.skippedDescription', 'Blocklisted or excluded. Bindery will not search for it and it stays off the Wanted page.'],
+}
+
+// bookStatusBadge returns the label, colour classes and a one-line
+// description for a book's status pill, made monitored-aware. Pass i18next's
+// `t`. Callers supply their own sizing/layout classes and append `colorClass`;
+// `description` goes on the pill's title and in the legend.
 export function bookStatusBadge(
   status: string,
   monitored: boolean,
   t: TFunction,
-): { label: string; colorClass: string } {
+): { label: string; colorClass: string; description: string } {
   if (status === 'wanted' && !monitored) {
-    return { label: t('bookStatus.notMonitored', { defaultValue: 'Not monitored' }), colorClass: mutedColor }
+    return {
+      label: t('bookStatus.notMonitored', { defaultValue: 'Not monitored' }),
+      colorClass: mutedColor,
+      description: t('bookStatus.notMonitoredDescription', { defaultValue: 'A format is missing, but Bindery will not search for it. Turn monitoring on to fetch it.' }),
+    }
   }
-  return { label: t(`bookStatus.${status}`, { defaultValue: status }), colorClass: statusColors[status] ?? mutedColor }
+  const [key, fallback] = statusDescriptions[status] ?? ['', '']
+  return {
+    label: t(`bookStatus.${status}`, { defaultValue: status }),
+    colorClass: statusColors[status] ?? mutedColor,
+    description: key ? t(key, { defaultValue: fallback }) : '',
+  }
 }

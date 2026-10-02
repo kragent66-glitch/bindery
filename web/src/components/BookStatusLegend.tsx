@@ -18,14 +18,15 @@ export default function BookStatusLegend() {
       <summary className="cursor-pointer select-none hover:text-slate-900 dark:hover:text-white">
         {t('books.legendTitle', 'What do the status labels mean?')}
       </summary>
-      <ul className="mt-2 flex flex-wrap gap-x-4 gap-y-2">
+      <ul className="mt-2 flex flex-col gap-y-1.5">
         {ENTRIES.map(({ status, monitored }) => {
           const badge = bookStatusBadge(status, monitored, t)
           return (
-            <li key={`${status}-${monitored}`}>
-              <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${badge.colorClass}`}>
+            <li key={`${status}-${monitored}`} className="flex items-baseline gap-2">
+              <span className={`shrink-0 px-2 py-0.5 rounded text-[10px] font-medium ${badge.colorClass}`}>
                 {badge.label}
               </span>
+              <span>{badge.description}</span>
             </li>
           )
         })}

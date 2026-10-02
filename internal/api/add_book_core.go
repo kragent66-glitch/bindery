@@ -426,7 +426,9 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 				}
 			} else {
 				bookInserted = true
-				h.hydrateHardcoverEditions(ctx, primary, nil)
+				// An explicit request format is a pin; a provider- or
+				// default-derived one is not (see addBookParams.MediaType above).
+				h.hydrateHardcoverEditions(ctx, primary, nil, req.MediaType != "")
 				// Same post-create work every other creation path does
 				// (recommendations.go, series.go): check the library for a
 				// file we already have and link the book into its series.
@@ -533,8 +535,12 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 	// 4. Optionally trigger an indexer search. Use the process-lifecycle
 	// context so the search goroutine is cancelled on shutdown rather than
 	// running against context.Background(). See #846.
+	// OriginAdd, not OriginAuthor (#2742): this is one book the user named and
+	// explicitly asked to search on add, so the author monitoring rule must
+	// leave it alone. The other OriginAuthor site is the catalogue sync fanning
+	// out over works it discovered by itself, which the rule does suppress.
 	if req.SearchOnAdd && h.searcher != nil {
-		go h.searcher.SearchAndGrabBook(indexer.WithSearchOrigin(h.bgCtx(), indexer.OriginAuthor), *book) // #nosec G118 -- intentional: search must outlive the request
+		go h.searcher.SearchAndGrabBook(indexer.WithSearchOrigin(h.bgCtx(), indexer.OriginAdd), *book) // #nosec G118 -- intentional: search must outlive the request
 	}
 
 	return addBookResult{

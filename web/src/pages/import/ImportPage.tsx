@@ -81,6 +81,16 @@ export default function ImportPage() {
         </div>
       </div>
 
+      {/* One line under the tab strip saying what each view is for. Users
+          arriving with an existing library could not tell which of the two
+          to use, or thought the library scan would create books (#1617,
+          #2164, Discord "Importing a library of folders and files"). */}
+      <p className="mb-4 text-xs text-fg-muted">
+        {view === 'folder'
+          ? t('importPage.viewFolderHint', 'Files anywhere else on disk. Each one is matched to a book in your catalogue and imported into your library.')
+          : t('importPage.viewLibraryHint', 'Files already inside your library folders that the last scan could not place. Nothing moves; you say which book each one is.')}
+      </p>
+
       <div role="tabpanel" id={`import-panel-${view}`} aria-labelledby={`import-tab-${view}`}>
         {view === 'folder' ? (
           <FolderImportView />

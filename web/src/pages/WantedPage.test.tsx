@@ -64,6 +64,7 @@ vi.mock('react-i18next', () => ({
         'wanted.colActions': 'Actions',
         'wanted.noCover': 'No cover',
         'wanted.authorUnknown': 'Author unknown',
+        'wanted.authorNotMonitored': 'Author not monitored, so this is not searched automatically',
         'search.autoGrabDisabled': 'No search was run. Automatic grabbing is off.',
       }
       return labels[key] ?? key
@@ -546,5 +547,27 @@ describe('WantedPage — book link nav state (#2548, book side)', () => {
 
     await waitFor(() => expect(located?.pathname).toBe('/book/2'))
     expect(located?.state).toEqual({ ids: [2], index: 0, hopDepth: 1 })
+  })
+})
+
+// A book whose author is unmonitored is never searched by the sweep (#2742),
+// so on this page it is indistinguishable from one whose grab is slow. The row
+// says which it is, and only for the rows it applies to.
+describe('WantedPage author monitoring hint', () => {
+  it('explains a row the sweep will not search, and leaves the others alone', async () => {
+    vi.mocked(api.listWanted).mockResolvedValue([
+      makeBook({ id: 1, title: 'Dune', authorUnmonitored: true }),
+      makeBook({ id: 2, title: 'Messiah' }),
+    ])
+
+    render(
+      <MemoryRouter>
+        <WantedPage />
+      </MemoryRouter>,
+    )
+
+    await screen.findByText('Dune')
+    const hints = screen.getAllByText('Author not monitored, so this is not searched automatically')
+    expect(hints).toHaveLength(1)
   })
 })

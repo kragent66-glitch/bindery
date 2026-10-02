@@ -2,7 +2,7 @@
 
 ## Importing a readarr.db
 
-In **Settings → Import**, upload your `readarr.db`. The import brings in:
+In **Settings → Import / Migrate**, upload your `readarr.db`. The import brings in:
 
 - **Authors**, with their monitored state
 - **Indexers**
@@ -13,7 +13,7 @@ Each imported author's catalogue is populated from metadata. Nothing is auto-gra
 
 The import dedupes by metadata id, so re-running it is safe: authors that already exist are skipped.
 
-Each author is matched against your primary metadata provider and its fallbacks, and linked to the provider whose record matched. If your primary metadata provider does not answer during the import, an author it did not match is listed as failed rather than linked to another provider, because the link decides for good which provider the author's catalogue syncs from. The reason says the primary did not answer. Nothing is wrong with the name, so run the import again once the provider responds. Once the primary has failed to answer three lookups in a row, the import stops asking it and lists the remaining authors as failed with the same reason straight away, so an outage costs a few timeouts rather than one per author. A name that no provider matched while they were all answering is listed with the providers that were asked. A pasted or uploaded author list (**Settings → Import**) works the same way.
+Each author is matched against your primary metadata provider and its fallbacks, and linked to the provider whose record matched. If your primary metadata provider does not answer during the import, an author it did not match is listed as failed rather than linked to another provider, because the link decides for good which provider the author's catalogue syncs from. The reason says the primary did not answer. Nothing is wrong with the name, so run the import again once the provider responds. Once the primary has failed to answer three lookups in a row, the import stops asking it and lists the remaining authors as failed with the same reason straight away, so an outage costs a few timeouts rather than one per author. A name that no provider matched while they were all answering is listed with the providers that were asked. A pasted or uploaded author list (**Settings → Import / Migrate**) works the same way.
 
 An indexer or download client whose address Bindery will not call (link-local and cloud-metadata addresses) is reported as failed rather than imported, with the same message you would get typing it into the Add form.
 
@@ -43,8 +43,8 @@ If you tracked your reading on Goodreads, you can seed Bindery's wanted list fro
 
 ### 2. Upload it in Bindery
 
-1. Open **Settings → Import**.
-2. Under **Import from Goodreads CSV**, first pick which shelves to import using the **shelf filter** (see below), then click **Upload** and choose your exported `.csv`.
+1. Open **Settings → Import / Migrate**.
+2. Under **Goodreads library CSV**, first pick which shelves to import using **Shelves to import** (see below), then click **Upload Goodreads CSV** and choose your exported `.csv`.
 
 The importer reads columns by name, so it tolerates the few header spellings Goodreads has shipped over the years and any column reordering. It only needs a **Title** column; ISBN/ISBN13 columns are used when present but are not required — books with no ISBN fall through to a title+author search.
 
@@ -65,7 +65,7 @@ The import is a two-step, dry-run-first flow — nothing is written until you co
    - **skippedExisting** — already in your library (deduped by metadata id, so re-running an import is safe)
    - **skippedShelf** — filtered out by the shelf filter
    - **unresolved** — no provider could match the row
-2. **Commit.** Click **Commit** to persist the resolved books. Each is added as a **monitored, wanted** book — nothing is auto-grabbed; grab from the **Wanted** page when you are ready. The resolved preview is held server-side for 30 minutes; commit within that window or re-upload.
+2. **Commit.** Click **Add N books** to persist the resolved books. Each is added as a **monitored, wanted** book — nothing is auto-grabbed; grab from the **Wanted** page when you are ready. The resolved preview is held server-side for 30 minutes; commit within that window or re-upload.
 
 ### 5. Failed rows
 

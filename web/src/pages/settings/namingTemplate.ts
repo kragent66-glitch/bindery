@@ -29,6 +29,7 @@ export const NAMING_TOKENS: readonly NamingToken[] = [
   { token: '{SeriesNumber}', descKey: 'tokenSeriesNumber' },
   { token: '{Genre}', descKey: 'tokenGenre' },
   { token: '{Lang}', descKey: 'tokenLang' },
+  { token: '{Narrator}', descKey: 'tokenNarrator' },
   { token: '{ext}', descKey: 'tokenExt', ebookOnly: true },
 ] as const
 
@@ -48,6 +49,7 @@ export interface SampleBook {
   seriesNumber: string
   genre: string
   lang: string
+  narrator: string
   ext: string
 }
 
@@ -62,6 +64,7 @@ export const SAMPLE_BOOK: SampleBook = {
   seriesNumber: '2',
   genre: 'Fantasy',
   lang: 'en',
+  narrator: 'Michael Kramer',
   ext: 'epub',
 }
 
@@ -71,6 +74,12 @@ export const SAMPLE_BOOK: SampleBook = {
 const SEP = '/'
 
 export function sanitizePath(s: string): string {
+  // Colon as a "Title: Subtitle" boundary renders " - ", mirroring the
+  // strings.ReplaceAll calls at the top of renamer.go sanitizePath. " : "
+  // must run first, else "Title : Subtitle" would become "Title  - Subtitle"
+  // (double space). "A:B" keeps falling through to the char replacer's "-".
+  s = s.split(' : ').join(' - ')
+  s = s.split(': ').join(' - ')
   // strings.NewReplacer: "/"->"-", "\\"->"-", ":"->"-", and *?"<>| -> "".
   let cleaned = ''
   for (const ch of s) {
@@ -123,6 +132,7 @@ export function renderTemplate(
     SeriesNumber: sanitizePath(sample.seriesNumber),
     Genre: sanitizePath(sample.genre),
     Lang: sanitizePath(sample.lang),
+    Narrator: sanitizePath(sample.narrator),
     ext,
   }
   return template

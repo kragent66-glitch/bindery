@@ -41,7 +41,7 @@ first run (see [DEPLOYMENT.md → First-run setup](DEPLOYMENT.md#first-run-setup
 Open <http://localhost:8787>. The first page load redirects to **`/setup`**.
 Create the administrator account (username + password, **8-character
 minimum**). There is no public self-registration: the first account is the
-administrator. Additional users are created by an admin (Settings → Users) or
+administrator. Additional users are created by an admin on the **Users** page (the people icon in the header) or
 auto-provisioned via OIDC — see [docs/multi-user.md](multi-user.md). After
 setup you are signed in automatically.
 
@@ -89,7 +89,7 @@ returns categories.
 
 ## 4. Add a download client
 
-Go to **Settings → Download Clients → Add**. Pick the **Client Type**:
+Go to **Settings → Download Clients** and press **+ Add Client**. Pick the **Client Type**:
 
 | Indexer protocol | Compatible download clients |
 |------------------|-----------------------------|
@@ -167,8 +167,9 @@ explicit-address spellings, which ignore them. Put anything valid there
 
 Two rTorrent-specific limits, both from the protocol rather than Bindery:
 
-- **Per-indexer seed ratios are ignored.** rTorrent has no per-torrent ratio
-  limit over XML-RPC; configure a ratio group in `.rtorrent.rc` instead.
+- **Per-indexer seed ratios and seed times are ignored.** rTorrent has no
+  per-torrent ratio or seeding time limit over XML-RPC; configure a ratio group
+  in `.rtorrent.rc` instead.
 - **Removing a download with its data** deletes the files from *Bindery's*
   side, because rTorrent's `d.erase` deliberately leaves the payload on disk.
   That needs a path remap that resolves — either the client's own, or the
@@ -203,9 +204,12 @@ books), and add them. Adding an author **populates their catalogue** —
 Bindery fetches the full book list regardless of auto-grab. Selecting a book
 row instead adds just that one book.
 
-Monitored books that are still missing become **wanted**. With "Search for
-books on add" enabled (the default), Bindery immediately queries your indexers
-and hands matching releases to the download client. To do it by hand, open
+Monitored books that are still missing become **wanted**. With **Auto-grab
+books on add** ticked in the Add dialog (it is on by default), Bindery
+immediately queries your indexers and hands matching releases to the download
+client. The instance wide switch behind it is **Enable automatic grabbing** in
+`Settings → Metadata Profiles`; with that off, no search runs at all, including
+the bulk Search buttons. To do it by hand, open
 **Activity** in the top bar for the **Wanted** page, hit **Search** on a book,
 and **Grab** a result. The
 completed download is imported into `/books` with metadata.
@@ -237,6 +241,13 @@ button on each to confirm they connect, and verify the client's category
 exists. If a download completes but never imports, see
 [DEPLOYMENT.md → Path remapping](DEPLOYMENT.md#path-remapping-multi-container--multi-pod-setups)
 and the [Troubleshooting wiki](https://github.com/vavallee/bindery/wiki/Troubleshooting).
+
+**The Search buttons refuse to run.**
+Automatic grabbing is the instance wide switch, **Enable automatic grabbing** in
+`Settings → Metadata Profiles`, and it gates the bulk Search actions on the
+Authors, Books, author and Wanted pages as well as the scheduled sweep. With it
+off those buttons say so and keep your selection. A single book's **Search
+Indexers** still runs, and grabbing a result by hand still works.
 
 ---
 

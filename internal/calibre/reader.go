@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -254,8 +255,8 @@ func (r *Reader) Books(ctx context.Context, fn func(CalibreBook) error) error {
 // outer iterator never holds rows open while child queries fire.
 func (r *Reader) listBookHeaders(ctx context.Context) ([]CalibreBook, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT b.id, b.title, b.sort, b.pubdate, b.path, b.series_index,
-		       COALESCE(s.name, '')
+		SELECT b.id, COALESCE(b.title, ''), COALESCE(b.sort, ''), b.pubdate,
+		       COALESCE(b.path, ''), b.series_index, COALESCE(s.name, '')
 		FROM books b
 		LEFT JOIN books_series_link bsl ON bsl.book = b.id
 		LEFT JOIN series s               ON s.id   = bsl.series
@@ -271,7 +272,7 @@ func (r *Reader) listBookHeaders(ctx context.Context) ([]CalibreBook, error) {
 			cb          CalibreBook
 			pubdate     sql.NullString
 			relPath     string
-			seriesIndex sql.NullFloat64
+			seriesIndex sql.NullString
 			seriesName  string
 		)
 		if err := rows.Scan(&cb.CalibreID, &cb.Title, &cb.SortTitle, &pubdate,
@@ -283,7 +284,7 @@ func (r *Reader) listBookHeaders(ctx context.Context) ([]CalibreBook, error) {
 		if seriesName != "" {
 			cb.Series = &CalibreSeries{
 				Name:     seriesName,
-				Position: seriesIndex.Float64,
+				Position: parseSeriesIndex(seriesIndex.String),
 			}
 		}
 		out = append(out, cb)
@@ -394,6 +395,23 @@ func (r *Reader) loadLanguage(ctx context.Context, bookID int64) (string, error)
 		return "", fmt.Errorf("load language for book %d: %w", bookID, err)
 	}
 	return lang, nil
+}
+
+// parseSeriesIndex reads Calibre's series_index column. The column is declared
+// REAL NOT NULL DEFAULT 1.0, but SQLite assigns a storage class per value, not
+// per column, so a library edited by an older Calibre or by a third-party tool
+// can hold the text "" (or any other non-numeric string) there. Scanning that
+// straight into a float aborted the whole import on the first such row (#2720),
+// which is a worse outcome than losing one position, so an unreadable value
+// reads as 0 — the same "no position" the importer already uses for a book with
+// no series_index at all (attachBookToSeries only writes a position when it is
+// greater than zero).
+func parseSeriesIndex(raw string) float64 {
+	f, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil {
+		return 0
+	}
+	return f
 }
 
 // parseCalibreDate tolerates the three pubdate formats Calibre has shipped:

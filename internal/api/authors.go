@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -21,6 +22,7 @@ import (
 	"github.com/vavallee/bindery/internal/bookhydrate"
 	"github.com/vavallee/bindery/internal/concurrency"
 	"github.com/vavallee/bindery/internal/db"
+	"github.com/vavallee/bindery/internal/importer"
 	"github.com/vavallee/bindery/internal/indexer"
 	"github.com/vavallee/bindery/internal/jobs"
 	"github.com/vavallee/bindery/internal/metadata"
@@ -286,15 +288,22 @@ func (c *editionPrefetch) wrap(target editionTarget, live bookhydrate.EditionFet
 	}
 }
 
-func (h *AuthorHandler) hydrateHardcoverEditions(ctx context.Context, book *models.Book, cache *editionPrefetch) {
-	h.hydrateHardcoverEditionsFrom(ctx, book, "", cache)
+// hydrateHardcoverEditions and hydrateMatchedHardcoverEditions fill a book's
+// editions from Hardcover. mediaTypePinned forwards the caller's "this format
+// was chosen, not guessed" signal so hydration leaves the media type alone
+// (#2768). The created-books sync passes false (the format is the provider's or
+// default.media_type, the same kind of guess a series fill makes when its
+// request names none); the paths that hydrate an existing library row, or a row
+// an explicit add named a format for, pass true.
+func (h *AuthorHandler) hydrateHardcoverEditions(ctx context.Context, book *models.Book, cache *editionPrefetch, mediaTypePinned bool) {
+	h.hydrateHardcoverEditionsFrom(ctx, book, "", cache, mediaTypePinned)
 }
 
-func (h *AuthorHandler) hydrateMatchedHardcoverEditions(ctx context.Context, book *models.Book, hardcoverForeignID string, cache *editionPrefetch) {
-	h.hydrateHardcoverEditionsFrom(ctx, book, hardcoverForeignID, cache)
+func (h *AuthorHandler) hydrateMatchedHardcoverEditions(ctx context.Context, book *models.Book, hardcoverForeignID string, cache *editionPrefetch, mediaTypePinned bool) {
+	h.hydrateHardcoverEditionsFrom(ctx, book, hardcoverForeignID, cache, mediaTypePinned)
 }
 
-func (h *AuthorHandler) hydrateHardcoverEditionsFrom(ctx context.Context, book *models.Book, hardcoverForeignID string, cache *editionPrefetch) {
+func (h *AuthorHandler) hydrateHardcoverEditionsFrom(ctx context.Context, book *models.Book, hardcoverForeignID string, cache *editionPrefetch, mediaTypePinned bool) {
 	target, ok := h.resolveEditionTarget(ctx, book, hardcoverForeignID)
 	if !ok {
 		return
@@ -321,6 +330,7 @@ func (h *AuthorHandler) hydrateHardcoverEditionsFrom(ctx context.Context, book *
 		Books:             h.books,
 		FetchEditions:     cache.wrap(target, fetcher),
 		Enricher:          h.meta,
+		MediaTypePinned:   mediaTypePinned,
 	})
 }
 
@@ -1133,8 +1143,13 @@ func applyMonitorModeToExistingBooks(ctx context.Context, booksRepo *db.BookRepo
 	today := dateOnly(time.Now().UTC())
 	for i := range books {
 		next := shouldMonitorBookForAuthor(author, books[i], latestKeys, today)
+		// Series mode recomputes next from membership alone, so it has to
+		// re-apply the one rule that outranks every mode: an unmonitored
+		// author monitors nothing (#2742). shouldMonitorBookForAuthor says so
+		// for the other four modes already, and without this a cascade over an
+		// unmonitored author in series mode monitored their books back on.
 		if author.MonitorMode == models.AuthorMonitorModeSeries {
-			next = bookInMonitoredSeries(books[i].ID, bookSeries, monitoredSet)
+			next = author.Monitored && bookInMonitoredSeries(books[i].ID, bookSeries, monitoredSet)
 		}
 		// Excluded wins over every mode — a user-excluded book must never
 		// flip back to monitored regardless of series membership.
@@ -1870,6 +1885,17 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	skipPartBooks := h.resolveSkipPartBooks(ctx, author)
 	skipMissingDate := h.resolveSkipMissingDate(ctx, author)
 	minPages, skipMissingISBN := h.resolveEditionFilters(ctx, author)
+	minEditionCount := h.resolveMinEditionCount(ctx, author)
+	var languageEvidence map[string]metadata.AuthorWorkLanguageEvidence
+	if !singleWork {
+		var languageEvidenceErr error
+		languageEvidence, languageEvidenceErr = h.meta.GetAuthorWorkLanguageEvidence(ctx, books, allowedLangs)
+		if languageEvidenceErr != nil {
+			languageEvidence = nil
+			slog.Warn("author work language evidence lookup failed; using existing language fallbacks",
+				"author", author.Name, "error", languageEvidenceErr)
+		}
+	}
 	// Both minPages>0 and skipMissingISBN require a real edition lookup per
 	// candidate work (page count and ISBN live on Edition, not Book, and
 	// aren't populated until an edition fetch runs). Gate the fetch on
@@ -2118,7 +2144,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// the write. Both were invisible, which made Total minus everything else
 	// look like a hole.
 	var added, matched, failed, skippedLang, skippedJunk, skippedMediaType, skippedNotAccepted, skippedExcluded int
-	var skippedPartBooks, skippedMissingDate, skippedMinPages, skippedMissingISBN int
+	var skippedPartBooks, skippedMissingDate, skippedMinPages, skippedMissingISBN, skippedThinCluster int
 	// Names of the first few language-rejected works, reported to the user
 	// alongside the count (#1889): "65 books skipped" is alarming, but it is
 	// the titles and their language codes that tell them whether the profile
@@ -2129,6 +2155,20 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// again for these filters specifically in PR review, vavallee).
 	var skippedPartBooksSample, skippedMissingDateSample []models.AuthorSyncSkippedBook
 	var skippedMinPagesSample, skippedMissingISBNSample []models.AuthorSyncSkippedBook
+	var skippedThinClusterSample []models.AuthorSyncSkippedBook
+	// clusterEditions maps a normalised title to the highest known edition
+	// count among the works carrying that title, built as the candidates
+	// accumulate below. It backs the MinEditionCount filter in the loop that
+	// follows (#2235): a title whose works all report fewer editions than the
+	// profile's floor is the noise shape that filter drops. It is only
+	// populated when the filter is actually on, so a profile without it pays
+	// nothing. A title absent from the map, or mapped to 0, means "no work in
+	// the cluster reported an edition count" — unknown, not zero — and the
+	// filter lets it through, the same unknown-passes semantics MinPages uses.
+	var clusterEditions map[string]int
+	if minEditionCount > 0 {
+		clusterEditions = make(map[string]int, len(books))
+	}
 	// candidates accumulates every work that survives the free (in-memory)
 	// filters below and would otherwise reach the MinPages/SkipMissingISBN
 	// check. Splitting the loop here lets the edition lookups those two
@@ -2195,7 +2235,8 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		// filed for: a heavily-translated work whose edition-sampled language
 		// falls outside the profile became permanently un-addable, because the
 		// only path that could create it kept refusing to.
-		if !singleWork && !models.IsLanguageAllowed(b.Language, allowedLangs, unknownFail) {
+		languageAllowed, _ := authorWorkPassesLanguageFilter(&b, allowedLangs, unknownFail, languageEvidence)
+		if !singleWork && !languageAllowed {
 			skippedLang++
 			if len(skippedLangSample) < authorSyncSkippedSampleLimit {
 				skippedLangSample = append(skippedLangSample, models.AuthorSyncSkippedBook{Title: b.Title, Language: b.Language})
@@ -2204,6 +2245,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			continue
 		}
 
+		if clusterEditions != nil && b.EditionCount > clusterEditions[normalizedTitle] {
+			clusterEditions[normalizedTitle] = b.EditionCount
+		}
 		candidates = append(candidates, b)
 	}
 
@@ -2299,6 +2343,37 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			}
 			slog.Debug("skipping work with no release date", "title", b.Title, "foreignId", b.ForeignID)
 			continue
+		}
+
+		// Filter works whose title cluster is thinner than the profile's
+		// MinEditionCount floor (#2235). Edition count only separates real
+		// works from one-off noise once records are grouped by title, so the
+		// judgement is made on the cluster's best-known count, not each work's
+		// own: a title with at least one well-editioned work is a real book
+		// even if this particular record is thin. The cluster map was built in
+		// the loop above from works that already survived the junk and
+		// language filters.
+		//
+		// The exemptions mirror the other discovery filters: a book the user
+		// already owns (existing != nil) is maintained, never dropped, and a
+		// single-work run is exempt per #1612 — an explicit add of one
+		// specific work must not be vetoed by catalogue-sync heuristics.
+		// A cluster with no known edition count (map miss, or 0) is unknown,
+		// not zero, and passes: only OpenLibrary search results populate
+		// EditionCount, so a Hardcover-primary author's catalogue — where
+		// every work reports none — must survive a profile that turned this
+		// filter on.
+		if existing == nil && !singleWork && minEditionCount > 0 {
+			clusterKey := strings.ToLower(strings.TrimSpace(b.Title))
+			if count, ok := clusterEditions[clusterKey]; ok && count > 0 && count < minEditionCount {
+				skippedThinCluster++
+				if len(skippedThinClusterSample) < authorSyncSkippedSampleLimit {
+					skippedThinClusterSample = append(skippedThinClusterSample, models.AuthorSyncSkippedBook{Title: b.Title})
+				}
+				slog.Debug("skipping work from a title cluster below the edition-count floor",
+					"title", b.Title, "foreignId", b.ForeignID, "clusterEditions", count, "minEditionCount", minEditionCount)
+				continue
+			}
 		}
 
 		// MinPages / SkipMissingISBN both need edition data (page count and
@@ -2503,7 +2578,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			// may not after either side edits one (#1705).
 			h.recordBookIdentities(ctx, existing, b.ForeignID, b.HardcoverForeignID)
 			if hydrateExistingFromMatchedHardcover {
-				h.hydrateMatchedHardcoverEditions(ctx, existing, b.HardcoverForeignID, nil)
+				// The row is already in the library, so its format belongs to
+				// the user and hydration must not widen it (#2768).
+				h.hydrateMatchedHardcoverEditions(ctx, existing, b.HardcoverForeignID, nil, true)
 			}
 			// Same treatment as the id-resolved branch, for the row this run
 			// recognised by title instead: a calibre stub just upgraded to a
@@ -2625,8 +2702,10 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		b := createdBooks[i]
 		// Order within a book is unchanged: hydration can widen MediaType and
 		// promote an ASIN, and the on-disk lookup below matches on media type,
-		// so it has to see the hydrated value.
-		h.hydrateHardcoverEditions(ctx, &b, editionCache)
+		// so it has to see the hydrated value. The format here is the
+		// provider's or default.media_type, not a caller's choice, so the
+		// widening stays available (#2768).
+		h.hydrateHardcoverEditions(ctx, &b, editionCache, false)
 
 		if fileFound := handleNewWantedBook(ctx, h.books, h.series, finder, b, author.Name); fileFound {
 			continue // don't auto-search for a book we already have
@@ -2686,6 +2765,8 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		SkippedMinPagesSample:    skippedMinPagesSample,
 		SkippedMissingISBN:       skippedMissingISBN,
 		SkippedMissingISBNSample: skippedMissingISBNSample,
+		SkippedThinCluster:       skippedThinCluster,
+		SkippedThinClusterSample: skippedThinClusterSample,
 		AllowedLanguages:         allowedLangs,
 		UnknownLanguageFail:      unknownFail,
 		SkippedLanguageSample:    skippedLangSample,
@@ -2703,6 +2784,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		"skipped_part_books", skippedPartBooks,
 		"skipped_missing_date", skippedMissingDate,
 		"skipped_min_pages", skippedMinPages, "skipped_missing_isbn", skippedMissingISBN,
+		"skipped_thin_cluster", skippedThinCluster,
 		"total", len(books),
 	}
 	// The metadata filters dropping works is the surprising case and stays at
@@ -2714,7 +2796,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 	// filter dropping a work is a setting doing its job, while a create that
 	// lost its write is the run failing at the thing it exists to do.
 	if failed+skippedLang+skippedJunk+skippedMediaType+skippedPartBooks+skippedMissingDate+
-		skippedMinPages+skippedMissingISBN > 0 {
+		skippedMinPages+skippedMissingISBN+skippedThinCluster > 0 {
 		slog.Warn("author books synced", logArgs...)
 		return added, nil
 	}
@@ -2813,10 +2895,49 @@ func handleNewWantedBook(ctx context.Context, books *db.BookRepo, series *db.Ser
 	// Check if the user already owns this book before queuing a download.
 	if finder != nil {
 		if existingPath := finder.FindExisting(ctx, book.Title, authorName, book.MediaType); existingPath != "" {
+			if existingFileOwnedByOtherBook(ctx, books, existingPath, book.ID) {
+				slog.Info("library: matching file already belongs to another book, not binding it",
+					"title", book.Title, "path", existingPath)
+				return false
+			}
 			slog.Info("library: found existing file, skipping auto-search", "title", book.Title, "path", existingPath)
 			if err := books.SetFilePath(ctx, book.ID, existingPath); err != nil {
 				slog.Warn("authors: record existing file path", "error", err, "book_id", book.ID)
 			}
+			return true
+		}
+	}
+	return false
+}
+
+// existingFileOwnedByOtherBook reports whether a file FindExisting offered
+// for bookID is already in book_files under another book: the file itself,
+// or for an audio track the folder holding it, which is how an imported or
+// reconciled audiobook is recorded (#2716).
+//
+// FindExisting matches on the title alone and knows nothing about what is
+// tracked, so without this a new book could take a file another book owns.
+// That is how "Defiance of the Fall 17" was bound to volume 1's m4b (#2810).
+// The volume veto closes that layout, but not one where volume 1's folder
+// and file carry no number at all, which Libation's default naming produces.
+// Declining the bind leaves the book wanted and lets auto-search run, which
+// is the right outcome for a different book and a visible one for a
+// duplicate row. A lookup error keeps the old behaviour and binds.
+func existingFileOwnedByOtherBook(ctx context.Context, books *db.BookRepo, path string, bookID int64) bool {
+	if books == nil {
+		return false
+	}
+	candidates := []string{path}
+	if importer.IsAudioFile(path) {
+		candidates = append(candidates, filepath.Dir(path))
+	}
+	for _, p := range candidates {
+		owned, err := books.PathOwnedByOtherBook(ctx, p, bookID)
+		if err != nil {
+			slog.Warn("library: book_files owner lookup failed", "path", p, "error", err)
+			continue
+		}
+		if owned {
 			return true
 		}
 	}
@@ -3362,7 +3483,9 @@ func (h *AuthorHandler) adoptDirectInsertMatch(ctx context.Context, match, prima
 			"foreignBookId", foreignID, "bookId", match.ID, "error", err)
 		return
 	}
-	h.hydrateHardcoverEditions(ctx, match, nil)
+	// The matched row is already in the library, so its format belongs to the
+	// user and hydration must not widen it (#2768).
+	h.hydrateHardcoverEditions(ctx, match, nil, true)
 }
 
 func canUpgradeToBoth(existingMediaType, incomingMediaType string) bool {
@@ -3436,6 +3559,29 @@ func applyAuthorMajorityLanguageFallback(books []models.Book) {
 	}
 }
 
+// authorWorkPassesLanguageFilter applies provider-supplied edition evidence
+// when it is definitive and otherwise falls through to the work's scalar
+// language. Evidence is filter-only: it never rewrites the preferred/display
+// language, and an indeterminate result cannot discard edition sampling or the
+// author-majority fallback that already resolved the scalar.
+func authorWorkPassesLanguageFilter(book *models.Book, allowed []string, unknownFail bool, evidence map[string]metadata.AuthorWorkLanguageEvidence) (bool, bool) {
+	if len(allowed) == 0 {
+		return true, false
+	}
+	if resolved, ok := evidence[strings.TrimSpace(book.ForeignID)]; ok {
+		switch resolved.State {
+		case metadata.AuthorWorkLanguageAllowed:
+			return true, false
+		case metadata.AuthorWorkLanguageNotAllowed:
+			return false, false
+		}
+	}
+	if strings.TrimSpace(book.Language) == "" {
+		return !unknownFail, true
+	}
+	return models.IsLanguageAllowed(book.Language, allowed, unknownFail), false
+}
+
 // resolveSkipMissingDate returns the author's effective metadata profile's
 // SkipMissingDate setting. Defaults to false (matches the setting's prior
 // no-op behavior) on any lookup failure, so an unresolvable profile never
@@ -3468,6 +3614,22 @@ func (h *AuthorHandler) resolveEditionFilters(ctx context.Context, author *model
 		return 0, false
 	}
 	return p.MinPages, p.SkipMissingISBN
+}
+
+// resolveMinEditionCount returns the author's effective metadata profile's
+// MinEditionCount floor (#2235). Defaults to 0 (filter disabled) on any
+// lookup failure, so an unresolvable profile never turns into unexpected
+// catalogue loss.
+func (h *AuthorHandler) resolveMinEditionCount(ctx context.Context, author *models.Author) int {
+	id := models.DefaultMetadataProfileID
+	if author.MetadataProfileID != nil {
+		id = *author.MetadataProfileID
+	}
+	p, err := h.profiles.GetByID(ctx, id)
+	if err != nil || p == nil {
+		return 0
+	}
+	return p.MinEditionCount
 }
 
 // anyEditionHasISBN reports whether any edition carries an ISBN-13 or

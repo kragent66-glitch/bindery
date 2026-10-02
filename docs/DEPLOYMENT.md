@@ -19,10 +19,11 @@ docker run -d \
 | Tag | Meaning |
 |-----|---------|
 | `:latest` | Most recent tagged release |
-| `:vX.Y.Z` | Specific release — pin this for reproducible deploys |
+| `:X.Y.Z` / `:vX.Y.Z` | Specific release, both spellings are published. The Helm chart pins the un-prefixed form |
 | `:development` | Bleeding edge from the `development` branch |
-| `:sha-<hash>` | Per-commit main-branch image — pin for rollback |
-| `:dev-<hash>` | Per-commit development-branch image |
+| `:sha-<hash>` | Per-commit image, published for every branch and tag build. Pin for rollback |
+
+The same image is published to Docker Hub as `vavallee/bindery`, tag for tag, if you prefer that registry. Both are multi-arch manifests covering `linux/amd64` and `linux/arm64`, so Docker pulls the right one on a Pi 4 or 5, an arm64 NAS, or an x86 server without any tag suffix.
 
 ## Docker Compose
 
@@ -48,8 +49,15 @@ services:
 helm install bindery charts/bindery \
   --set image.tag=latest \
   --set persistence.config.storageClass=longhorn \
+  --set ingress.enabled=true \
   --set ingress.host=bindery.example.com
 ```
+
+Every ingress template is gated on `ingress.enabled`, which defaults to false, so setting only `ingress.host` renders nothing. `ingress.type` selects what gets rendered: `traefik` (the default) emits a Traefik `IngressRoute`, `standard` emits a portable `networking.k8s.io/v1` Ingress you configure with `ingress.className`, `ingress.annotations` and `ingress.tls`.
+
+### Health checks
+
+Bindery answers `GET /api/v1/health` with 200 once it is serving. The container image declares its own Docker `HEALTHCHECK` that calls the binary's `healthcheck` subcommand against that endpoint, so `docker ps` shows a health column and Compose `depends_on: { bindery: { condition: service_healthy } }` works with no extra configuration. The Helm chart points a startup, readiness and liveness probe at the same path, and `hooks.postsyncSmoke` adds an ArgoCD PostSync job that fails the sync if the endpoint does not answer. Under `BINDERY_URL_BASE` the path moves under the prefix, so update any probe you configure yourself.
 
 See [`charts/bindery/values.yaml`](../charts/bindery/values.yaml) for all configuration options.
 
@@ -80,10 +88,12 @@ https://raw.githubusercontent.com/vavallee/bindery/main/.github/unraid/bindery.x
 ```
 
 Defaults the template provides: bridge networking, port `8787`,
-`--user 99:100` (Unraid's `nobody:users`), and four mounts —
-`/mnt/user/appdata/bindery → /config`, `/mnt/user/Books → /books`,
-`/mnt/user/Audiobooks → /audiobooks` (optional), and
-`/mnt/user/downloads/bindery → /downloads`. If you change `BINDERY_PUID`
+`--user 99:100` (Unraid's `nobody:users`), and three prefilled mounts,
+`/mnt/user/appdata/bindery → /config`, `/mnt/user/Books → /books` and
+`/mnt/user/downloads/bindery → /downloads`, plus an optional `/audiobooks`
+mount with no default host path. Fill that one in and set
+`BINDERY_AUDIOBOOK_DIR=/audiobooks` if you want audiobooks kept apart from
+ebooks. If you change `BINDERY_PUID`
 or `BINDERY_PGID`, also change the matching half of `--user` in **Extra
 Parameters** — the container fail-fast-validates the pair on startup.
 
@@ -138,6 +148,49 @@ bindery.exe
 
 SmartScreen will warn about the unsigned binary on first launch — choose **More info → Run anyway**. Signed Windows builds are on the roadmap.
 
+#### Setting environment variables on Windows
+
+Paths without a drive letter, such as the `/books` default, resolve against whichever drive Bindery started on. Set `BINDERY_LIBRARY_DIR` (and `BINDERY_AUDIOBOOK_DIR` if you keep audiobooks apart) to real folders before your first import. If editing environment variables is a hassle, you can instead add your folders under Settings > Root Folders and pick them as the **Default root folder** and **Default audiobook root folder**; those UI defaults take priority over the env vars. The Windows binary has no default `BINDERY_DOWNLOAD_DIR`. Left unset, Bindery sends no save path with a grab, so the client uses its category or default folder, and the qBittorrent health check only asks that the category's folder exists on this machine. Set it when you want Bindery to check that the client saves where you expect, or to bulk import from that folder.
+
+Pick one of these:
+
+- **Command Prompt**, saved for your account:
+
+  ```cmd
+  setx BINDERY_LIBRARY_DIR "D:\Books"
+  setx BINDERY_DOWNLOAD_DIR "H:\Downloads"
+  ```
+
+- **PowerShell**, saved for your account:
+
+  ```powershell
+  [Environment]::SetEnvironmentVariable('BINDERY_LIBRARY_DIR', 'D:\Books', 'User')
+  [Environment]::SetEnvironmentVariable('BINDERY_DOWNLOAD_DIR', 'H:\Downloads', 'User')
+  ```
+
+- **The settings dialog**: open Start, type `environment`, choose **Edit environment variables for your account**, and add each variable under *User variables*.
+
+- **A launcher**: save this as `bindery.bat` next to `bindery.exe` and start Bindery from it. The values apply to that launch only.
+
+  ```bat
+  @echo off
+  set "BINDERY_LIBRARY_DIR=D:\Books"
+  set "BINDERY_DOWNLOAD_DIR=H:\Downloads"
+  "%~dp0bindery.exe"
+  ```
+
+`setx`, PowerShell and the dialog only reach programs started afterwards, and `setx` does not change the window it ran in. Close that window and open a new one (or sign out and back in) before starting Bindery, and restart Bindery if it was already running. Bindery reads its environment once, at startup.
+
+#### Download client in Docker, Bindery native on Windows
+
+A client running in Docker reports paths from inside its container, such as `/downloads/.Completed/Some Book`. Bindery on Windows sees the same folder under a drive letter, so give the download client a path remap (**Settings → Download clients**) from the container path to the Windows folder:
+
+```
+/downloads:H:\Downloads
+```
+
+With that rule, `/downloads/.Completed/Some Book/book.epub` is read from `H:\Downloads\.Completed\Some Book\book.epub`. Write the container side exactly as the client reports it, forward slashes and letter case included. The same pair in `BINDERY_DOWNLOAD_PATH_REMAP` covers every client at once.
+
 ### Resolved paths logged at startup
 
 Every launch emits a `"starting bindery"` JSON log line containing the resolved `dbPath` and `dataDir`. If the binary can't write to them, `db.Open`'s preflight will name the directory and the required UID so you can fix the permission without guesswork.
@@ -146,7 +199,7 @@ The frontend is embedded in the binary via `go:embed` — no separate static-fil
 
 ## Running as a specific UID/GID
 
-Bindery ships on a [distroless/static-debian12:nonroot](https://github.com/GoogleContainerTools/distroless) base. The image has no shell, no `gosu`, and no entrypoint hook — it cannot switch user at runtime the way LinuxServer.io images do. If you need the container to own files as your media-library user (e.g. `1000:1000`), launch it with that UID/GID directly.
+Bindery ships on a [distroless/static-debian13:nonroot](https://github.com/GoogleContainerTools/distroless) base. The image has no shell, no `gosu`, and no entrypoint hook — it cannot switch user at runtime the way LinuxServer.io images do. If you need the container to own files as your media-library user (e.g. `1000:1000`), launch it with that UID/GID directly.
 
 ### Docker
 
@@ -194,7 +247,7 @@ spec:
 
 ## Storage layout and hardlinks (single mount)
 
-Bindery imports with **`hardlink`** mode by default when the completed download and the library destination are on the **same filesystem**. A hardlink is instant, uses no extra disk, and lets a torrent keep seeding from the original path. This is the recommended layout.
+Bindery imports in **`auto`** mode by default: it hardlinks when the completed download and the library destination are on the **same filesystem**, and copies otherwise. A hardlink is instant, uses no extra disk, and lets a torrent keep seeding from the original path. This is the recommended layout.
 
 The catch: "same filesystem" is decided by the OS device ID *inside the container*. Two separate bind mounts get different device IDs even when they point at the same host filesystem, so a hardlink across them fails and Bindery falls back to **`copy`** (which doubles disk usage and logs a warning). To get hardlinks, the download directory and the library directory must live under **one mount**, as subpaths of it.
 
@@ -251,14 +304,37 @@ places its file in that same folder:
 
 ```
 /data/books/Ursula K. Le Guin/A Wizard of Earthsea (1968)/
-├── A Wizard of Earthsea.epub
-├── Part 001.m4b
+├── A Wizard of Earthsea - Ursula K. Le Guin.epub
+├── wizard_earthsea_01.m4b
 └── cover.jpg
 ```
 
-No extra configuration needed — just don't split the two dirs if you want the
-shared layout. (For handing files to Storyteller's *watch folder* instead,
+No extra configuration needed, just don't split the two dirs if you want the
+shared layout. It applies whether the audiobook arrives as a folder of tracks
+or as a single file such as a lone `.m4b`. A file already in the book's folder
+is never overwritten by the merge: a same named file is skipped and named on
+the import's History entry.
+
+Two settings opt out of the merge: **Flatten multi-disc audiobooks** and a
+per-file audiobook naming template both keep the historical behaviour and place
+the audiobook in a sibling `Title (2)` folder. So does a download whose
+audiobook files do not share a folder of their own, which Bindery places file
+by file. A lone audiobook file such as a single `.m4b` still merges with a
+naming template set; it is named from the template, and a file already there
+under that name is skipped the same way.
+(For handing files to Storyteller's *watch folder* instead,
 see [Handing off to another library tool](#handing-off-to-another-library-tool-cwa-calibre-storyteller).)
+
+The per-file audiobook naming template (`naming.audiobook_file_template`)
+renames a single-file audiobook too, whether it arrives as a lone `.m4b` or as
+a folder holding one track, and **Rename files** proposes the same name for one
+already in the library. `{Part}` decides how it reads. In a group with its own
+text, such as `{Title}{ - Pt. Part:3}.{ext}`, the group is left out for a single
+file (`The Shining.m4b`) and numbered for several (`Doctor Sleep - Pt. 001.m4b`).
+Written bare, as in the default `{Title} - Part {Part:3}.{ext}`, the single file
+is numbered as part 1 (`The Shining - Part 001.m4b`). Inside a group every word
+that is a token name is read as the token, so write `Pt.` rather than `Part` for
+the label there.
 
 ### `BINDERY_DOWNLOAD_DIR` is not a watch folder
 
@@ -319,6 +395,8 @@ Notes for this topology:
 - Bindery's side keeps forward slashes in the result, and the reverse direction (the save path Bindery hands qBittorrent when it grabs a torrent) is rebuilt as a Windows path automatically.
 - Hardlinks cannot cross this boundary, so imports **copy**. Budget disk space accordingly.
 
+**Network shares** work the same way. A client that saves to `\\nas\downloads` (or `//nas/downloads`) maps with `\\nas\downloads:/mnt/Storage/Downloads`. The server and share name match without regard to case, and a share on the right hand side (for example the Calibre push remap `/books:\\nas\media\books`) is rebuilt with its leading `\\` intact. Write both the server and the share: `\\nas` on its own is rejected. A share address is more reliable than a mapped drive letter for anything running as a Windows service or a desktop app like Calibre, because a drive letter mapped in one session can be invisible to another.
+
 ### Docker Compose
 
 ```yaml
@@ -359,20 +437,27 @@ A remap is **not** needed just because a torrent's save path does not exist yet.
 
 ## Handing off to another library tool (CWA, Calibre, Storyteller)
 
-If a separate tool manages your library, there are two distinct topologies. Pick by who owns the library directory.
+Calibre only knows about books recorded in its `metadata.db`, so a file placed in the Calibre library folder is invisible to Calibre and to CWA. If a separate tool manages your library there are three distinct topologies. Pick by who owns the library directory. The [Calibre integration guide](Calibre-Integration-Wiki.md) compares them in detail and has the troubleshooting.
 
-**1. Bindery owns the library, mirror a copy to CWA.** Bindery places the imported file in its library (`hardlink`/`copy`/`move` mode), *and* additionally copies it into a Calibre-Web-Automated ingest folder. Set **Settings → Integrations → Calibre → CWA ingest path** (`cwa.ingest_path`). Use this when Bindery's library and CWA's library are the same directory and you just want CWA to also see new ebooks.
+**1. Bindery owns the library, register each import with Calibre.** Bindery places the imported file in its library (`hardlink`/`copy`/`move` mode) and then tells Calibre about it, either by running `calibredb add` or by posting to the Bindery Bridge plugin inside a Calibre container. Calibre copies the file into its own library, so it exists twice. Set **Settings, Calibre tab, Write integration** (`calibre.mode`). The official distroless image does not ship `calibredb`; the plugin needs the Bindery library mounted into the Calibre container too (or `calibre.push_path_remap`). Changing the mode, the plugin URL, the API key or the remap takes effect on the next import, with no restart. **Test connection** asks a Bindery Bridge 0.6.0 or newer whether it can actually see the library root and names the remap when it cannot.
 
-**2. An external tool owns the library (drop folder).** Bindery does *not* write into the library; instead it renames the finished download into a drop folder and lets the other tool ingest it and produce the managed copy. This is the right setup for "Bindery → `/cwa-book-ingest` → CWA writes `/books`", for Calibre auto-ingest, and for Storyteller's watched folder. Configure under **Settings → General → File Naming** (visible when Import Mode is **External**):
+Covers are one extra mount. When the bridge supports them Bindery sends a cover path next to the book path, and those files live under `BINDERY_DATA_DIR` (`covers/` and `calibre-covers/`), not under the library. For a plugin mode book to arrive with Bindery's artwork, the Calibre container needs to be able to read that directory as well, at the same path or through a remap pair that covers it. Without it the book still lands; it just keeps whatever cover is embedded in the file.
 
-- Set **Import Mode** to `External`.
-- **Drop folder** — the watch folder the other tool ingests from (e.g. `/cwa-book-ingest`). Empty disables the drop and Bindery just hands off in place (the file stays in the download dir).
-- **Layout** — `flat` (a sanely-named file in the folder root, what most watch-folder tools expect) or `templated` (recreate the `{Author}/{Title (Year)}/…` tree inside the drop folder).
-- **Placement** — `copy` (default; safest, since the ingesting tool usually deletes what it consumes) or `hardlink` (disk-free, same filesystem only). The download source is never moved, so torrents keep seeding.
+**2. Bindery owns the library, mirror a copy to CWA.** Bindery places the imported file in its library *and* additionally copies it into a Calibre-Web-Automated ingest folder, always a copy under the flat file name, ebooks only. Set **Settings, Calibre tab, Calibre-Web-Automated (CWA), Ingest folder path** (`cwa.ingest_path`). Use this when Bindery keeps its own library and you just want CWA to also see new ebooks. It is independent of topology 1 and does not run in `External` import mode.
 
-Bindery parks the download as *handed off* and reconciles the managed copy the external tool lands in `BINDERY_LIBRARY_DIR` on the next **library scan** (so the library dir must still point at where the external tool ultimately writes). Single-format Storyteller works today by pointing the drop folder at Storyteller's watch folder; guaranteed ebook+audiobook pair-gating is tracked as a follow-up (#942).
+**3. An external tool owns the library (drop folder).** Bindery does *not* write into the library; instead it renames the finished download into a drop folder and lets the other tool ingest it and produce the managed copy. This is the right setup for "Bindery, then `/cwa-book-ingest`, then CWA writes `/books`", for Calibre auto ingest, and for Storyteller's watched folder. Configure under **Settings, General tab, File Naming**, with **Import Mode** set to `External`; the drop folder fields appear underneath:
+
+- **Drop folder**: the watch folder the other tool ingests from (e.g. `/cwa-book-ingest`). Empty disables the drop and Bindery just hands off in place (the file stays in the download dir).
+- **Layout**: `flat` (each book file the download carries, sanely named, in the folder root, what most watch folder tools expect) or `templated` (recreate the `{Author}/{Title (Year)}/…` tree inside the drop folder).
+- **Placement**: `copy` (default; safest, since the ingesting tool usually deletes what it consumes) or `hardlink` (disk free, same filesystem only). The download source is never moved, so torrents keep seeding.
+
+Ebooks and audiobooks do not have to share this. **Audiobook import mode** (`import.audiobook.mode`, default **Same as ebooks**) gives audiobooks their own mode, and **Audiobook drop folder** (`import.audiobook.drop_folder`, empty uses the drop folder above) gives them their own folder when that mode is External. For Calibre-Web-Automated plus Audiobookshelf, set Import Mode `External` with the CWA ingest folder as the drop folder, and the audiobook import mode to `Copy` (works on any storage, including mergerfs) or `Hardlink`: ebooks go to CWA, audiobooks go to `BINDERY_AUDIOBOOK_DIR` and Bindery triggers the Audiobookshelf scan. See [Storage and hardlinks](Storage-And-Hardlinks-Wiki.md#a-different-mode-for-audiobooks).
+
+Bindery parks the download as *handed off* and reconciles the managed copy the external tool lands in `BINDERY_LIBRARY_DIR` on the next **library scan** (so the library dir must still point at where the external tool ultimately writes). For a book wanted in both formats, `import.drop_pair_gating` (off by default, `import.drop_pair_gating_timeout_hours` as the escape hatch) holds the first format until its sibling arrives so a paired reader such as Storyteller ingests them together (#942). Gating only holds a format when its sibling is also handed off; with audiobooks imported into the library, ebooks drop straight away.
 
 ## Environment variables
+
+Several variables below have a database equivalent that overrides them once it is set. **Settings, Advanced tab** lists every setting Bindery stores, with its type, its default, the values it accepts and whether a change needs a restart, so you can see which keys an install actually has a row for. It is admin only, it never shows a credential's value, and the keys most installs need still have their own tab.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -382,15 +467,15 @@ Bindery parks the download as *handed off* and reconciles the managed copy the e
 | `BINDERY_DATA_DIR` | `/config` on Linux; `%APPDATA%\Bindery` on Windows; `~/Library/Application Support/Bindery` on macOS | Config directory. Backups live here, as do the proxied cover cache (`image-cache/`, evicted after 30 days and refetched on demand) and the covers Bindery owns outright (`covers/`, the `cover.jpg` copied from each book of an imported Calibre library, never evicted). Keep it on persistent storage. |
 | `BINDERY_LOG_LEVEL` | `info` | `debug` / `info` / `warn` / `error` |
 | `BINDERY_API_KEY` | _(empty)_ | **Seed only.** Bootstraps the initial API key on first launch if set; after that the key lives in the database and can be regenerated from the UI. |
-| `BINDERY_DOWNLOAD_DIR` | `/downloads` | Where the download client places completed downloads. **Not a watch folder** — per-job import paths come from the client's API; this feeds validation, storage health, the hardlink probe, and qBittorrent save paths (see [above](#bindery_download_dir-is-not-a-watch-folder)). Manual/bulk import may also read from here (and from `BINDERY_AUDIOBOOK_DOWNLOAD_DIR`), so a migration backlog sitting in the download folder can be scanned and attached in bulk. |
+| `BINDERY_DOWNLOAD_DIR` | `/downloads` on Linux and macOS; unset on Windows (see [Setting environment variables on Windows](#setting-environment-variables-on-windows)) | Where the download client places completed downloads. **Not a watch folder** — per-job import paths come from the client's API; this feeds validation, storage health, the hardlink probe, and qBittorrent save paths (see [above](#bindery_download_dir-is-not-a-watch-folder)). Manual/bulk import may also read from here (and from `BINDERY_AUDIOBOOK_DOWNLOAD_DIR`), so a migration backlog sitting in the download folder can be scanned and attached in bulk. |
 | `BINDERY_AUDIOBOOK_DOWNLOAD_DIR` | falls back to `BINDERY_DOWNLOAD_DIR` | Separate watch folder for audiobook downloads; set this when your download client routes audiobook grabs to a dedicated category/path |
-| `BINDERY_LIBRARY_DIR` | `/books` | Destination for imported ebook files. **In `External` import mode this is not a write target** — Bindery does not place files here; it scans this directory to reconcile the managed copy your external tool produces, so it must point at where that tool ultimately writes (not the drop/ingest folder, and not `metadata.db`). See [Handing off to another library tool](#handing-off-to-another-library-tool-cwa-calibre-storyteller). |
-| `BINDERY_AUDIOBOOK_DIR` | falls back to `BINDERY_LIBRARY_DIR` | Destination for imported audiobook folders. Same `External`-mode caveat as `BINDERY_LIBRARY_DIR`: in external mode it is the directory Bindery scans to reconcile audiobooks the external tool places, not a write target. |
+| `BINDERY_LIBRARY_DIR` | `/books` (on Windows this has no drive letter, so set it to a real folder) | Destination for imported ebook files. **In `External` import mode this is not a write target** — Bindery does not place files here; it scans this directory to reconcile the managed copy your external tool produces, so it must point at where that tool ultimately writes (not the drop/ingest folder, and not `metadata.db`). See [Handing off to another library tool](#handing-off-to-another-library-tool-cwa-calibre-storyteller). |
+| `BINDERY_AUDIOBOOK_DIR` | falls back to `BINDERY_LIBRARY_DIR` | Destination for imported audiobook folders. Same `External`-mode caveat as `BINDERY_LIBRARY_DIR`: in external mode it is the directory Bindery scans to reconcile audiobooks the external tool places, not a write target. You can skip it and pick a **Default audiobook root folder** under Settings > Root Folders instead; when both are set the UI default wins. Audiobooks go to the author's own audiobook root folder first, then the Default audiobook root folder, then `BINDERY_AUDIOBOOK_DIR`, then `BINDERY_LIBRARY_DIR`. The ebook default root folder is never used for audiobooks. The library scan still walks only the two env var dirs, so a root folder outside them is a place to put files, not a place Bindery scans for untracked ones. |
 | `BINDERY_ENHANCED_HARDCOVER_API` | `true` | Set to `false` to disable token-backed Hardcover series search, linking, catalog diffs, and missing-book fill even when an admin enables the feature in Settings. |
 | `BINDERY_DOWNLOAD_PATH_REMAP` | _(empty)_ | Global comma-separated `from:to` pairs rewriting paths reported by download clients into paths Bindery can access. Per-client path remaps in Settings take precedence when they match. Longest-prefix match wins. See [Path remapping](#path-remapping-multi-container--multi-pod-setups). |
 | `BINDERY_PUID` | _(unset)_ | Sanity check — see [Running as a specific UID/GID](#running-as-a-specific-uidgid) |
 | `BINDERY_PGID` | _(unset)_ | Sanity check — same as `BINDERY_PUID` for the primary GID |
-| `BINDERY_COOKIE_SECURE` | `auto` | Session cookie `Secure` flag policy. `auto` (default) flips the flag on when TLS is detected directly or via `X-Forwarded-Proto: https`; `always` forces it on (use when your reverse proxy doesn't forward the header); `never` forces it off (legacy plain-HTTP installs). |
+| `BINDERY_COOKIE_SECURE` | `auto` | Session cookie `Secure` flag policy. `auto` (default) flips the flag on when TLS is detected directly or via `X-Forwarded-Proto: https`; `always` forces it on (use when your reverse proxy doesn't forward the header); `never` forces it off (legacy plain-HTTP installs). This also decides whether the OIDC login flow can use its `__Host-` cookie prefix, which browsers grant only to a `Secure` cookie and which is what stops someone else starting a login flow in your browser. If TLS terminates at a proxy that does not forward `X-Forwarded-Proto`, set `always` rather than leaving OIDC on the weaker cookie; `never` gives that protection up entirely. |
 | `BINDERY_NOTIFICATIONS_ALLOW_PRIVATE` | _(unset)_ | Set to `1` to flip outbound webhook SSRF policy from Strict to LAN, allowing RFC1918 targets. Use when ntfy / Home Assistant / Gotify live on your private network. Loopback, link-local, and cloud-metadata endpoints stay blocked. |
 | `BINDERY_DOWNLOAD_ALLOW_LOOPBACK` | _(unset)_ | Set to `1` to allow Bindery to fetch indexer-provided `.torrent` / `.nzb` download links that resolve to **loopback** (`127.0.0.1`, `::1`). Off by default because the download URL is chosen by the indexer's response (not an admin-typed value), so a malicious indexer could otherwise point it at a service on Bindery's own loopback. Turn this on when you legitimately run Prowlarr / an indexer co-located on loopback (e.g. `network_mode: host` with the companion bound only to `127.0.0.1`, [#1062](https://github.com/vavallee/bindery/discussions/1062)). RFC1918 LAN targets are allowed regardless; link-local and cloud-metadata stay blocked. |
 | `BINDERY_ALLOW_LAN_OIDC` | _(unset)_ | Set to `1`/`true` to disable the SSRF guard on the OIDC discovery probe, allowing LAN / loopback / private-range issuer URLs. Only enable when your OIDC provider runs on the Bindery host or a trusted private network. See [auth-oidc.md](auth-oidc.md). |
@@ -400,12 +485,13 @@ Bindery parks the download as *handed off* and reconciles the managed copy the e
 | `BINDERY_CONTACT` | _(falls back to project URL)_ | Contact pointer Bindery advertises in its `User-Agent` header. Accepts a `mailto:` URI, a bare email address (auto-prefixed with `mailto:`), or an `http(s)://` URL. **Set this when OpenLibrary author/title searches return HTTP 403** — OpenLibrary rate-limits per-UA and the default shared URL causes the whole Bindery fleet to count as one client. A per-instance contact differentiates each install and satisfies OpenLibrary's API policy (see [#848](https://github.com/vavallee/bindery/issues/848)). Example: `BINDERY_CONTACT=you@example.org`. Bindery never connects to the address; it goes only into the header. |
 | `BINDERY_RATE_LIMIT_MAX_FAILURES` | `5` | Maximum failed login attempts per IP before the account is locked for the rate-limit window. |
 | `BINDERY_RATE_LIMIT_WINDOW_MINUTES` | `15` | Duration in minutes of the per-IP login rate-limit window. After the window expires the failure counter resets. |
-| `BINDERY_SHUTDOWN_GRACE` | `10` | Seconds to drain in-flight HTTP requests after receiving SIGTERM or SIGINT before moving on to the background-job drain. Increase if your load balancer / Kubernetes sends long-lived SSE or WebSocket connections. |
-| `BINDERY_JOBS_DRAIN_GRACE` | `15` | Seconds to drain detached background jobs (ABS import, Grimmory sync, manual library scan, startup syncs) after the HTTP server has stopped and before the database is closed. These jobs are cancelled at drain start and given this window to wind down cleanly; any still running when it expires are logged and the process proceeds to shut down. Accepts a Go duration (e.g. `45s`, `2m`). This grace runs **after** `BINDERY_SHUTDOWN_GRACE`, so the two sum to the total shutdown budget: the defaults total 25s, under Kubernetes' default 30s `terminationGracePeriodSeconds`. If you raise either, raise `terminationGracePeriodSeconds` to match so drains finish before SIGKILL. |
-| `BINDERY_ENFORCE_TENANCY` | _(off)_ | Set to `true`/`1` to enforce per-user data isolation: each user sees only their own authors, books, profiles, and root folders, and the join-scoped queue / history / pending / OPDS feeds are scoped to the requesting user. **Defaults off**, in which case every authenticated user shares one library view (single-user behaviour). Admin-only configuration gating applies regardless of this flag. See [multi-user.md](multi-user.md). |
-| `BINDERY_LOG_RETENTION_DAYS` | `14` | Days to retain persisted log entries in the SQLite log store before they are pruned. |
+| `BINDERY_SHUTDOWN_GRACE` | `10s` | How long to drain in-flight HTTP requests after receiving SIGTERM or SIGINT before moving on to the background-job drain. Accepts a Go duration (e.g. `30s`, `2m`); a bare number is rejected and the default is kept. Increase if your load balancer / Kubernetes sends long-lived SSE or WebSocket connections. |
+| `BINDERY_JOBS_DRAIN_GRACE` | `15` | Seconds to drain detached background jobs (ABS import, Grimmory sync, manual library scan, startup syncs) after the HTTP server has stopped and before the database is closed. These jobs are cancelled at drain start and given this window to wind down cleanly; any still running when it expires are logged and the process proceeds to shut down. Accepts a Go duration (e.g. `45s`, `2m`). This grace runs **after** `BINDERY_SHUTDOWN_GRACE`, so the two sum to the total shutdown budget: the defaults total 25s, under Kubernetes' default 30s `terminationGracePeriodSeconds`. If you raise either, raise `terminationGracePeriodSeconds` to match so drains finish before SIGKILL. The bundled Helm chart sets `terminationGracePeriodSeconds: 30` in its Deployment template with no values key, so raising the graces past 25s in total means patching that template. |
+| `BINDERY_ENFORCE_TENANCY` | _(off)_ | Set to `true`/`1` to enforce per-user data isolation: each user sees only their own authors, books, profiles, and root folders, and the join-scoped queue / history / pending / OPDS feeds are scoped to the requesting user. **Defaults off**, in which case every authenticated user shares one library view (single-user behaviour). Admin-only configuration gating applies regardless of this flag. Accepted truthy values are `1`, `true`, `yes` and `on`. When more than one user account exists and the gate is off, Bindery logs one warning at startup naming the variable, because those accounts share a single library view. See [multi-user.md](multi-user.md). |
+| `BINDERY_LOG_RETENTION_DAYS` | `14` | Days to retain persisted log entries in the SQLite log store before they are pruned. The same value is editable at **Settings → Logs → Log Retention**. |
 | `BINDERY_TRUSTED_PROXY` | _(empty)_ | Comma-separated IP/CIDR list of reverse proxies trusted to set `X-Forwarded-*`. Used for two things: (1) resolving the real client IP (for local-only auth and the per-IP login rate-limiter) by walking the `X-Forwarded-For` chain and only trusting hops in this list — never a client-supplied leftmost entry; and (2) honouring `X-Forwarded-Proto` / `X-Forwarded-Host` for the public scheme/host, which drives the fully-qualified OPDS feed link URLs, the `BINDERY_COOKIE_SECURE=auto` decision, and the OIDC `redirect_uri`. Requests from any peer **not** in this list have all `X-Forwarded-*` stripped, so behind a TLS-terminating proxy (Traefik / Caddy / nginx) those links fall back to `http://` until the proxy's IP/CIDR is listed here — **set it even if you are not using proxy auth.** An entry like `0.0.0.0/0` trusts every peer and effectively disables per-IP decisions. **Required** when proxy auth mode is active — Bindery refuses to start without it. **It also matters for `local-only` auth mode:** local-only serves any client whose resolved IP is private, and with this list empty that decision falls back to the TCP peer. Behind a reverse proxy the peer is the proxy's own private address, so every proxied request qualifies as local. Set it whenever Bindery is reached through a proxy, or use `enabled` mode instead; Bindery logs a warning at startup and on a mode change when it sees local-only with this unset. |
-| `BINDERY_TELEMETRY_DISABLED` | _(unset)_ | Set to `true` to opt out of the daily anonymous telemetry ping before any DB setting exists (e.g. on first boot). Equivalent to `telemetry.enabled: false` in **Settings → General**, but takes effect before the first ping fires. |
+| `BINDERY_TELEMETRY_DISABLED` | _(unset)_ | Set to `true` to opt out of the daily anonymous telemetry ping before any DB setting exists (e.g. on first boot). Equivalent to `telemetry.enabled: false` in **Settings → Logs**, but takes effect before the first ping fires. |
+| `BINDERY_DEPLOY_METHOD` | _(auto-detected)_ | Overrides the deployment method reported in the daily telemetry ping, for cases the auto-detection cannot tell apart. `helm` is the one worth setting by hand, so a chart install is not counted as a bare manifest. Ignored entirely when telemetry is off. |
 | `BINDERY_DB_FK_CHECK` | _(unset)_ | Offline database integrity tool, for deployments where the container command can't be edited. `report` lists rows whose foreign keys point at a missing parent and exits without changing anything; `repair` cleans them up (see [Database foreign-key integrity](#database-foreign-key-integrity)) and exits. Either value stops Bindery from starting normally — unset it afterwards. Equivalent to the `db-check` / `db-repair --yes` subcommands. |
 | `BINDERY_FRAME_ANCESTORS` | _(empty)_ | Allow the UI to be embedded in an `<iframe>` by a dashboard such as Organizr ([#1367](https://github.com/vavallee/bindery/issues/1367)). Empty (the default) blocks all framing (`Content-Security-Policy: frame-ancestors 'none'` + `X-Frame-Options: DENY`). Set it to a CSP `frame-ancestors` source list to opt in — `'self'` for same-origin framing, or a specific origin like `https://organizr.example.com` (space-separate multiple origins). When set, `X-Frame-Options` is dropped so it can't override the allowlist. Only allow origins you trust: framing widens clickjacking exposure. |
 
@@ -480,11 +566,14 @@ On first launch Bindery bootstraps itself — **no environment variables are req
 - `local-only` — skip auth for requests from private IPs (`10/8`, `172.16/12`, `192.168/16`, loopback, IPv6 ULA, link-local). Useful for home networks where the risk profile doesn't warrant a login wall.
 
   **Pick this mode only when clients reach Bindery directly, or set `BINDERY_TRUSTED_PROXY`.** Behind a reverse proxy (Traefik, Caddy, nginx) or a Kubernetes ingress, the connecting peer is the proxy, and its address on the container network is private. Unless `BINDERY_TRUSTED_PROXY` names that proxy so the real client IP can be resolved from `X-Forwarded-For`, every request the proxy forwards is treated as a local client and served without a login. Set `BINDERY_TRUSTED_PROXY` to the proxy's IP or CIDR, or choose `enabled` mode. Bindery logs a warning at startup, and when the mode is changed, if it sees local-only with `BINDERY_TRUSTED_PROXY` unset.
+- `proxy` — identity comes from a trusted reverse proxy's header instead of a Bindery login. It refuses to start unless `BINDERY_TRUSTED_PROXY` names the proxy, and it is set with `PUT /api/v1/auth/mode` rather than the Settings dropdown, which offers only the other three. See [auth-proxy.md](auth-proxy.md).
 - `disabled` — no auth at all. Only safe behind a trusted reverse proxy that handles authentication upstream.
 
   Every request acts as the administrator, so the admin screens and admin API routes answer to anyone who can reach Bindery. A request with no session is attributed to the first admin account; a browser still holding a session from before authentication was turned off keeps that account's own id, so what it adds is owned by that account, but it gets the admin role like everyone else. Browser changes still need the page's own request header, which a cross site form cannot send.
 
   That includes reading the API key from Settings, adding admin accounts and resetting passwords, and all of it stays in place after you turn authentication back on. If anyone else could reach Bindery while it was off, regenerate the API key and check the Users page once authentication is back.
+
+If you use the `requester` role, pick `enabled` or `proxy`. In `disabled` and `local-only` mode a signed-out browser is served as the administrator, so a requester can step out of the role by signing out.
 
 ## Database foreign-key integrity
 
@@ -547,7 +636,7 @@ Versions before the #2564 fix stored each Calibre-imported book's cover as the l
 
 **Schema:** enhanced series data uses migration `035`, which creates `series_hardcover_links` and backfills links for existing series whose foreign ID already points at Hardcover. Take a normal SQLite backup before upgrading, then let Bindery apply the migration on startup.
 
-**Feature flag:** token-backed Hardcover series search, manual/automatic series linking, catalog diffs, and missing-book fill are available by default at deployment time, but still require a saved Hardcover API token in **Settings -> General** and the enhanced Hardcover series toggle in the same settings section. Set `BINDERY_ENHANCED_HARDCOVER_API=false` only when you need to disable the enhanced endpoints and hide the UI controls for an entire deployment. Existing local series data keeps working when the feature is disabled.
+**Feature flag:** token-backed Hardcover series search, manual/automatic series linking, catalog diffs, and missing-book fill are available by default at deployment time, but still require a saved Hardcover API token in **Settings → API Keys** and the **Enhanced Hardcover series** toggle beside it. Set `BINDERY_ENHANCED_HARDCOVER_API=false` only when you need to disable the enhanced endpoints and hide the UI controls for an entire deployment. Existing local series data keeps working when the feature is disabled.
 
 **Operational note:** the enhanced fill action can create wanted/monitored book rows from the linked Hardcover catalog and immediately queue indexer searches. Make sure outbound HTTPS to Hardcover and your configured indexers is allowed before enabling it for production users.
 
@@ -600,11 +689,11 @@ auth:
 
 ### From v0.8.x to v0.9.0 (Calibre modes, OPDS, auto-grab kill-switch)
 
-**Schema:** three additive migrations (`010_calibre_sync.sql`, `011_calibre_mode.sql`, new `editions` table). Drop-in safe.
+**Schema:** two additive migrations (`011_calibre_mode.sql` plus the new `editions` table). Drop-in safe.
 
 **Calibre mode defaults to Off.** Existing installs that used the v0.8.0 `calibre.enabled=true` boolean are automatically shown as **calibredb CLI** mode in the UI via a back-compat fallback — no re-configuration needed.
 
-**Auto-grab defaults to On** (existing behaviour). Toggle it off in Settings → General → Auto-grab if you prefer manual grabs, or when bulk-adding large author lists that would otherwise fire thousands of simultaneous indexer queries.
+**Auto-grab defaults to On** (existing behaviour). Toggle it off in Settings → Metadata Profiles → Auto-grab if you prefer manual grabs, or when bulk-adding large author lists that would otherwise fire thousands of simultaneous indexer queries.
 
 **OPDS** is available at `/opds/` — browse and download your library from KOReader / Moon+ Reader / Aldiko. Authenticates via Bindery username + password over HTTP Basic, or via `X-Api-Key` / `?apikey=` query parameter for scripts. See the [OPDS wiki page](https://github.com/vavallee/bindery/wiki/OPDS).
 
@@ -617,7 +706,7 @@ auth:
 **Calibre (optional, off by default).** If you want the new `calibredb` post-import hook, you need the `calibredb` binary reachable from the Bindery process:
 
 - The distroless official image does **not** ship `calibredb`. Either bind-mount a calibre install into the container or run Bindery outside the distroless image until a `bindery-calibre` variant lands.
-- Enable via Settings → General → Calibre → set library path + binary path → Test connection.
+- Enable via Settings → Calibre → set library path + binary path → Test connection.
 - Existing imports continue to work unchanged while the toggle is off.
 
 **Author aliases — no auto-merge.** Duplicate author rows that existed before the upgrade are not merged automatically. Use the new **Merge authors** modal on the Authors page (or per-author Merge button) to reunite them — the decision needs a human eye.
@@ -673,7 +762,7 @@ Always snapshot the SQLite database before a minor-version bump:
 curl -X POST -H "X-Api-Key: ..." http://bindery:8787/api/v1/backup
 ```
 
-or via the UI: **Settings → General → Backup → Create backup.** Backups land in `$BINDERY_DATA_DIR` (default `/config`).
+or via the UI: **Settings → Logs → Backup & Restore → Create Backup.** Backups land in `$BINDERY_DATA_DIR/backups` (default `/config/backups`).
 
 ### What a backup contains, and how to treat it
 

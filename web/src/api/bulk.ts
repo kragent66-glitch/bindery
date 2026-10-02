@@ -30,8 +30,21 @@ export const bulkApi = {
   },
 
   // Bulk actions
-  bulkActionAuthors: (ids: number[], action: AuthorBulkAction, mediaType?: MediaType) =>
-    request<BulkResult>('/author/bulk', { method: 'POST', body: JSON.stringify({ ids, action, ...(mediaType ? { mediaType } : {}) }) }),
+  // `applyMonitorModeToExisting` applies only to 'monitor' and 'unmonitor',
+  // where it rewrites each author's existing books to match the author's new
+  // monitoring (#2742). Omitted means false, so the action stays a pure author
+  // level write, matching the unticked-by-default box on the single author
+  // path.
+  bulkActionAuthors: (ids: number[], action: AuthorBulkAction, mediaType?: MediaType, applyMonitorModeToExisting?: boolean) =>
+    request<BulkResult>('/author/bulk', {
+      method: 'POST',
+      body: JSON.stringify({
+        ids,
+        action,
+        ...(mediaType ? { mediaType } : {}),
+        ...(applyMonitorModeToExisting ? { applyMonitorModeToExisting: true } : {}),
+      }),
+    }),
   bulkSetAuthorMonitorMode: (ids: number[], monitorMode: AuthorBulkMonitorMode, opts: BulkSetAuthorMonitorModeOptions = {}) =>
     request<BulkResult>('/author/bulk', {
       method: 'POST',
@@ -46,6 +59,17 @@ export const bulkApi = {
     }),
   searchAuthorWanted: (id: number) =>
     request<BulkResult>('/author/bulk', { method: 'POST', body: JSON.stringify({ ids: [id], action: 'search' }) }),
+  // #2668: the automatic search for one book. There is deliberately no
+  // /book/{id}/autosearch route behind this. POST /book/{id}/search is the
+  // interactive path (it returns releases and grabs nothing), and the only
+  // server entry point into scheduler.SearchAndGrabBook from the API is the
+  // bulk handler, which already checks ownership per id and already refuses
+  // with code 'auto_grab_disabled' when the global switch is off. A dedicated
+  // alias would have to repeat both guards, and a guard that exists twice is a
+  // guard that can drift, so this posts the same body the author page's
+  // searchAuthorWanted above does, with one id.
+  searchBookAutomatic: (id: number) =>
+    request<BulkResult>('/book/bulk', { method: 'POST', body: JSON.stringify({ ids: [id], action: 'search' }) }),
   bulkActionBooks: (ids: number[], action: BookBulkAction, mediaType?: MediaType) =>
     request<BulkResult>('/book/bulk', { method: 'POST', body: JSON.stringify({ ids, action, ...(mediaType ? { mediaType } : {}) }) }),
   bulkActionWanted: (ids: number[], action: WantedBulkAction) =>

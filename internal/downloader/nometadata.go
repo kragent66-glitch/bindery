@@ -147,6 +147,18 @@ func (k StallKind) Blocklists() bool {
 	return k == StallClientReported
 }
 
+// DeletesData reports whether removing a torrent stalled this way should ask
+// the client to delete its data as well.
+//
+// A client reported stall may hold partial data for a release that is being
+// written off, so that goes. A no-metadata torrent has no file list and so no
+// files: there is nothing to delete, and a delete request could only ever
+// reach something that is not this torrent's. It is removed the way remove on
+// import removes, entry only.
+func (k StallKind) DeletesData() bool {
+	return k == StallClientReported
+}
+
 // The "accepted but never resolved" rule (#2709).
 //
 // A magnet that nobody is serving is accepted by every torrent client and then

@@ -1,6 +1,6 @@
 # OIDC Authentication
 
-Bindery v0.24.0 adds native OpenID Connect (Authorization Code + PKCE). Users sign in via Google, GitHub, Authelia, Authentik, Keycloak, or any OIDC-compliant provider. Local password login continues to work alongside OIDC.
+Bindery supports native OpenID Connect (Authorization Code + PKCE), added in v0.24.0. Users sign in via Google, GitHub, Authelia, Authentik, Keycloak, or any OIDC-compliant provider. Local password login continues to work alongside OIDC.
 
 ## How it works
 
@@ -24,8 +24,8 @@ Sessions are issued using the same HMAC-signed cookie as password login. OIDC si
 | `BINDERY_OIDC_EMAIL_LINK` | `false` | Set to `true` to link an unknown OIDC identity to an existing Bindery account if the email address matches. Runs before the auto-provision check. Useful for migrating from local accounts to OIDC without losing history. |
 | `BINDERY_OIDC_DEFAULT_ROLE` | `user` | Role assigned to a freshly auto-provisioned OIDC user. Valid values: `user`, `admin`, `requester`. Any other value falls back to `user`. Set to `admin` for single-admin homelab deployments to skip the manual promotion step, or to `requester` so new logins can only browse and ask until an admin says otherwise. |
 | `BINDERY_OIDC_ADMIN_GROUP` | _(unset)_ | When set, makes the IdP authoritative for the admin role. On **every** login, the user is promoted to `admin` if this group is listed in the group claim; an admin whose claim does not list it is demoted to the default role (or to `user` when the default is `admin`); anyone else keeps their role. If the claim is missing altogether the role is left unchanged. See [Group-based role mapping](#group-based-role-mapping). |
-| `BINDERY_OIDC_GROUP_CLAIM` | `groups` | Claim path Bindery reads the user's groups from, looked up in the ID token first and then the userinfo document — used for both `BINDERY_OIDC_ADMIN_GROUP` role mapping and the per-provider `allowed_groups` login filter. Override for IdPs that put groups under a non-standard claim (e.g. `roles`). |
-| `BINDERY_ALLOW_LAN_OIDC` | _(off)_ | Set to `true`/`1` to disable the SSRF guard on the OIDC discovery probe, allowing LAN / loopback / private-range issuer URLs. Restores the historical behaviour where any issuer URL an admin types is fetched verbatim. Only enable when your OIDC provider runs on the Bindery host or a trusted private network. |
+| `BINDERY_OIDC_GROUP_CLAIM` | `groups` | Top level claim name Bindery reads the user's groups from, looked up in the ID token first and then the userinfo document. A nested claim is not supported, so map the groups to a top level claim at the IdP — used for both `BINDERY_OIDC_ADMIN_GROUP` role mapping and the per-provider `allowed_groups` login filter. Override for IdPs that put groups under a non-standard claim (e.g. `roles`). |
+| `BINDERY_ALLOW_LAN_OIDC` | _(off)_ | Set to `true`/`1` to lift the SSRF guard on the OIDC discovery probe. A private LAN issuer such as an on-prem Keycloak on an RFC1918 address already works without this; the variable is only needed for a loopback, link-local or cloud-metadata address, which in practice means an OIDC provider running on the Bindery host itself. It restores the historical behaviour where any issuer URL an admin types is fetched verbatim. |
 
 ## Redirect URL construction
 
@@ -41,7 +41,7 @@ Bindery picks the `<base-url>` per request, in this order:
 
 1. **`BINDERY_OIDC_REDIRECT_BASE_URL`** — if set, this wins unconditionally. Use this for path-prefix deploys (`https://example.com/bindery`) or any case where forwarded headers don't reflect the public URL the IdP will see.
 2. **`X-Forwarded-Proto` + `X-Forwarded-Host`** — if `BINDERY_TRUSTED_PROXY` is configured *and* the immediate peer is in that CIDR list, Bindery uses the forwarded headers. Untrusted peers can't influence the URL — their headers are ignored.
-3. **`r.Host`** — direct-access fallback. The scheme is inferred from the TLS connection or `X-Forwarded-Proto`. Suitable for development; not what you want behind a proxy.
+3. **`r.Host`** — direct-access fallback. The scheme comes from the TLS connection only. `X-Forwarded-Proto` is ignored on this path on purpose, because an untrusted caller could otherwise downgrade the callback scheme. Suitable for development; not what you want behind a proxy.
 
 For typical reverse-proxy deploys (Traefik, nginx, Caddy, Kubernetes Ingress) where `BINDERY_TRUSTED_PROXY` already needs to be set for proxy-auth or X-Forwarded-For trust, you can leave `BINDERY_OIDC_REDIRECT_BASE_URL` unset and the redirect URL will track the public hostname automatically.
 
@@ -76,7 +76,7 @@ https://bindery.example.com/api/v1/auth/oidc/google/callback
 
 ## Adding a provider
 
-Providers are configured in **Settings → Security → OIDC Providers** (admin only). Each provider has:
+Providers are configured in **Settings → General → Security → SSO / OIDC Providers** (admin only). Each provider has:
 
 | Field | Description |
 |-------|-------------|
@@ -85,8 +85,8 @@ Providers are configured in **Settings → Security → OIDC Providers** (admin 
 | `issuer` | OIDC discovery URL base (e.g. `https://accounts.google.com`). |
 | `client_id` | From your IdP app registration. |
 | `client_secret` | From your IdP app registration. Stored in the `settings` table — treat the database as sensitive. |
-| `scopes` | Space-separated scopes (e.g. `openid email profile`). |
-| `allowed_groups` | Optional. Comma-separated IdP groups/roles that are allowed to log in. Empty = allow all authenticated users. |
+| `scopes` | JSON array of scope strings (e.g. `["openid", "email", "profile"]`). The Settings form takes them space separated and converts. |
+| `allowed_groups` | Optional JSON array of IdP groups or roles allowed to log in (e.g. `["bindery-users"]`). Omitted or empty allows every authenticated user. It has no field in the Settings form today: set it through the `auth.oidc.providers` settings key or a `PUT /api/v1/auth/oidc/providers` call, and the form preserves the value it does not show. |
 
 Providers can also be set directly via the `settings` table key `auth.oidc.providers` (JSON array) for scripted deploys.
 
@@ -120,11 +120,11 @@ Useful for closed deployments where you control the user list explicitly.
 BINDERY_OIDC_EMAIL_LINK=true
 ```
 
-When `BINDERY_OIDC_EMAIL_LINK=true`, Bindery tries to match an unrecognised OIDC login to an existing account by email address before deciding whether to auto-provision or deny. If the email in the ID token matches a local account's email, the OIDC identity is permanently linked to that account (`oidc_issuer` / `oidc_sub` updated) and the user is logged in.
+When `BINDERY_OIDC_EMAIL_LINK=true`, Bindery tries to match an unrecognised OIDC login to an existing account by email address before deciding whether to auto-provision or deny. If the IdP asserts `email_verified` is true and the email in the ID token matches a local account's email, the OIDC identity is permanently linked to that account (`oidc_issuer` / `oidc_sub` updated) and the user is logged in.
 
 This is a one-time migration path: once linked, the `(issuer, sub)` pair is stored and subsequent logins bypass the email check. If the email doesn't match any account, the normal auto-provision / deny logic continues.
 
-**Security note:** email linking trusts that the IdP has verified the email address. Only enable this with IdPs that verify email — don't use it with IdPs that allow users to self-assign arbitrary email claims.
+**Security note:** Bindery only links when the IdP asserts `email_verified` is true; an absent or false claim is treated as unverified and the login falls through to normal provisioning by subject. That guard still depends on the IdP being honest about verification, so only enable this for providers you trust to verify addresses.
 
 ### OIDC role mapping
 
@@ -136,7 +136,7 @@ By default every auto-provisioned OIDC user gets the `user` role and must be pro
 BINDERY_OIDC_DEFAULT_ROLE=admin
 ```
 
-Sets the role assigned at auto-provision time. Valid values are `user` (default), `admin` and `requester`; any other value falls back to `user` (a startup warning is logged). Use `admin` for single-admin homelab deployments so the one operator is an admin immediately. Use `requester` for an instance shared with people who should only ask for books: see [Requester](multi-user.md#requester).
+Sets the role assigned at auto-provision time. Valid values are `user` (default), `admin` and `requester`; any other value falls back to `user`, silently, so check the spelling. Use `admin` for single-admin homelab deployments so the one operator is an admin immediately. Use `requester` for an instance shared with people who should only ask for books: see [Requester](multi-user.md#requester).
 
 This only affects **new** accounts at creation time. It does not change the role of users who already exist.
 
@@ -160,7 +160,7 @@ That last case is the important one. A claim the IdP never sends says nothing ab
 
 Bindery looks for the claim in the ID token first, then in the **userinfo document**. Several IdPs, Authelia and Okta and Auth0 among them, do not put `groups` in the ID token by default and serve it only from userinfo; requesting the `groups` scope is often not enough on its own. Where a claim appears in both, the ID token wins, because it is signed and bound to the login nonce. A userinfo document whose `sub` does not match the ID token's is discarded entirely.
 
-`BINDERY_OIDC_GROUP_CLAIM` (default `groups`) selects the claim path; override it for IdPs that emit groups under a different name.
+`BINDERY_OIDC_GROUP_CLAIM` (default `groups`) names the top level claim; override it for IdPs that emit groups under a different name. A nested claim such as Keycloak's `resource_access.bindery.roles` cannot be reached, so map the groups to a top level claim at the IdP.
 
 The group claim's value shape varies between IdPs — Bindery handles both forms:
 
@@ -184,28 +184,28 @@ BINDERY_LOCAL_AUTH_ENABLED=false
 BINDERY_OIDC_AUTO_PROVISION=false
 ```
 
-Only users pre-created by an admin can log in, exclusively via OIDC. No local password logins, no self-registration. Pair this with `allowed_groups` on the provider to further restrict who can authenticate.
+Only users who already exist can log in, and only through OIDC. **Create the accounts first.** `POST /api/v1/auth/users` is refused with `403 local accounts are disabled` while `BINDERY_LOCAL_AUTH_ENABLED=false`, so the working order is: start with local auth enabled, create every account (each needs a password of at least 8 characters even though nobody will use it), then set `BINDERY_LOCAL_AUTH_ENABLED=false` and restart. Setting both variables on a fresh install leaves no way in at all. Pair this with `allowed_groups` on the provider to further restrict who can authenticate.
 
 ### `client_secret` write-only semantics
 
-`client_secret` is **never returned** by `GET /api/v1/settings/auth/oidc/providers` — it is write-only. The `PUT` endpoint uses secret-preservation semantics so the Settings UI (which only fetches public config) cannot accidentally blank a secret it never had access to:
+`client_secret` is **never returned** by `GET /api/v1/auth/oidc/providers` — it is write-only. `PUT /api/v1/auth/oidc/providers` (admin only) replaces the whole provider array and uses secret-preservation semantics, so the Settings UI (which only fetches public config) cannot accidentally blank a secret it never had access to:
 
 | `client_secret` in PUT body | Effect |
 |-----------------------------|--------|
 | Non-empty string | Secret updated to the new value |
 | Empty string `""` or field absent | Existing secret preserved unchanged |
-| Empty string on a **new** provider (POST) | Rejected with `400 Bad Request` |
+| Empty string on a provider id that is not already stored | Rejected with `400 client_secret required for new provider: <id>` |
 
-To rotate a secret without touching other fields:
+To rotate a secret, PUT the whole array back with the new value. There is no per-provider path and no POST:
 
 ```bash
-curl -X PUT http://bindery:8787/api/v1/settings/auth/oidc/providers/google \
+curl -X PUT http://bindery:8787/api/v1/auth/oidc/providers \
   -H "X-Api-Key: <admin-key>" \
   -H "Content-Type: application/json" \
-  -d '{"id": "google", "client_secret": "<new-secret>"}'
+  -d '[{"id": "google", "name": "Google", "issuer": "https://accounts.google.com", "client_id": "<client-id>", "client_secret": "<new-secret>", "scopes": ["openid", "email", "profile"]}]'
 ```
 
-To update scopes or groups without disturbing the secret, omit `client_secret` from the body entirely.
+Send every provider you want to keep in the array: omitting one deletes it. To update scopes or groups without disturbing a secret, omit `client_secret` from that provider entry entirely.
 
 ## Google
 
@@ -221,7 +221,7 @@ To update scopes or groups without disturbing the secret, omit `client_secret` f
   "issuer": "https://accounts.google.com",
   "client_id": "<your-client-id>.apps.googleusercontent.com",
   "client_secret": "<your-client-secret>",
-  "scopes": "openid email profile"
+  "scopes": ["openid", "email", "profile"]
 }
 ```
 
@@ -265,7 +265,7 @@ staticClients:
   "issuer": "https://dex.example.com",
   "client_id": "bindery",
   "client_secret": "<dex-client-secret>",
-  "scopes": "openid email profile"
+  "scopes": ["openid", "email", "profile"]
 }
 ```
 
@@ -319,8 +319,8 @@ Bindery provider config:
   "issuer": "https://auth.example.com",
   "client_id": "bindery",
   "client_secret": "<your-secret>",
-  "scopes": "openid email profile groups",
-  "allowed_groups": "bindery-users"
+  "scopes": ["openid", "email", "profile", "groups"],
+  "allowed_groups": ["bindery-users"]
 }
 ```
 
@@ -337,7 +337,7 @@ Bindery provider config:
   "issuer": "https://auth.example.com/application/o/<app-slug>/",
   "client_id": "<your-client-id>",
   "client_secret": "<your-client-secret>",
-  "scopes": "openid email profile"
+  "scopes": ["openid", "email", "profile"]
 }
 ```
 
@@ -359,8 +359,8 @@ Add provider in Bindery:
   "issuer": "https://keycloak.example.com/realms/<your-realm>",
   "client_id": "bindery",
   "client_secret": "<your-secret>",
-  "scopes": "openid email profile groups",
-  "allowed_groups": "/bindery-users"
+  "scopes": ["openid", "email", "profile", "groups"],
+  "allowed_groups": ["/bindery-users"]
 }
 ```
 
@@ -415,13 +415,14 @@ Two different IdPs can emit the same `sub` value for different users. Bindery's 
 
 OIDC logout from the IdP does **not** immediately log the user out of Bindery. This is a known limitation.
 
-Bindery issues its own HMAC-signed session cookie when OIDC login succeeds. That cookie is independent of the IdP session — revoking the IdP session, signing out of the IdP, or disabling the user in the IdP has no effect on the Bindery cookie until it expires naturally (~12 hours for a short-lived session, up to 30 days if "Remember me" is checked).
+Bindery issues its own HMAC-signed session cookie when OIDC login succeeds. That cookie is independent of the IdP session — revoking the IdP session, signing out of the IdP, or disabling the user in the IdP has no effect on the Bindery cookie until it expires naturally. An OIDC login always gets the long session, 30 days, because there is no "Remember me" choice on the provider round trip.
 
 **Mitigations:**
 
-- **Shorten cookie lifetime** — reduce the session TTL in **Settings → General → Security → Session lifetime** so stale sessions expire sooner.
-- **Force global logout** — rotate the session secret in **Settings → General → Security → Rotate session secret**. This invalidates every active Bindery session immediately for all users. Use for security incidents.
-- **Per-user logout** (not yet available) — a `sessions` table with per-session revocation is planned for a future release. Until then, global secret rotation is the only way to evict a specific user.
+- **Force global logout.** Rotate the session secret in **Settings → General → Security → Rotate session secret**. One rotation keeps the previous secret valid for a rotation window, so nobody is dropped mid session; rotate a second time to stop every cookie signed under the original secret. Use for security incidents.
+- **Evict one user.** Reset that user's password with `PUT /api/v1/auth/users/{id}/reset-password`. It bumps their session epoch, which invalidates every cookie they hold without touching anyone else. A password change by the user themselves does the same thing.
+- **Revoke a single device** (not yet available). A `sessions` table with per-session revocation is planned for a future release.
+- Session lifetime itself is fixed in the binary at 12 hours, or 30 days with "Remember me", and there is no setting for it.
 
 ## Client secret storage
 
@@ -446,7 +447,7 @@ Provider configuration lives in the database (Settings UI or `settings` table), 
 
 ## Rollback
 
-Migration `018_oidc.sql` is additive-only (nullable columns). Rolling back the binary is safe — the columns remain in place and are ignored by older versions.
+Migration `024_oidc.sql` is additive-only (nullable columns). Rolling back the binary is safe — the columns remain in place and are ignored by older versions.
 
 ## See also
 
@@ -460,13 +461,13 @@ Migration `018_oidc.sql` is additive-only (nullable columns). Rolling back the b
 | `redirect_uri_mismatch` error from IdP on callback | Callback URL sent by Bindery does not match the URI registered in the IdP | Same cause as redirect loop. Confirm `BINDERY_OIDC_REDIRECT_BASE_URL` is set and correct. Copy the exact URL from the IdP error message and register it. |
 | `state mismatch` or `nonce mismatch` error on callback | State/nonce cookie set during login redirect was lost or altered before the callback arrived | Two common causes: (1) reverse proxy strips `Set-Cookie` response headers — ensure `Set-Cookie` passes through unchanged; (2) login and callback served on different domains or subdomains — the session cookie won't be sent cross-domain. Both must use the same origin. With path-prefix deployments, verify the cookie `Path` attribute is not restricted. |
 | `invalid_client` or `unauthorized_client` from IdP on callback | Client ID / secret mismatch, or redirect URI not registered | Verify the redirect URI in your IdP exactly matches `<BINDERY_OIDC_REDIRECT_BASE_URL>/api/v1/auth/oidc/<id>/callback`. Check client ID and secret. |
-| Login button does not appear on login page | Provider not configured, or OIDC settings not saved | Check **Settings → Security → OIDC Providers**. Verify the provider record has `issuer`, `client_id`, `client_secret` set. |
+| Login button does not appear on login page | Provider not configured, or OIDC settings not saved | Check **Settings → General → Security → SSO / OIDC Providers**. Verify the provider record has `issuer`, `client_id`, `client_secret` set. |
 | `issuer mismatch` in token validation | Bindery's configured `issuer` does not match the `iss` claim in the ID token | For Keycloak, issuer includes the realm: `https://keycloak.example.com/realms/<realm>`. For Authentik, it includes the app slug. Use `BINDERY_LOG_LEVEL=debug` to log the received `iss` value. |
 | Two different real users map to the same Bindery account | Two providers emitting the same `sub` for different people | This cannot happen — Bindery keys on `(issuer, sub)`, not `sub` alone. If it does occur, file a bug. |
-| OIDC logout from IdP doesn't log out of Bindery | Session cookie is independent of IdP session; cookie TTL is ~12h or up to 30d | Rotate session secret in **Settings → General → Security** to force global logout. Shorten session TTL to reduce window. Per-user revocation is planned for a future release. |
+| OIDC logout from IdP doesn't log out of Bindery | Session cookie is independent of IdP session; an OIDC cookie always has the 30 day TTL | Rotate the session secret in **Settings → General → Security** twice to invalidate every session signed under the old secret. To evict one account, reset that user's password, which bumps their session epoch. |
 | `connection refused` or timeout fetching discovery URL | IdP not reachable from Bindery container/pod at startup | Check network policy / firewall. Bindery must reach `<issuer>/.well-known/openid-configuration`. Test with `curl` from inside the container. |
-| JWKS fetch fails after IdP key rotation | Stale cached JWKS | Restart Bindery to force re-fetch. The cache auto-refreshes on miss in subsequent versions. |
+| JWKS fetch fails after IdP key rotation | Stale cached JWKS | No action needed: the key set re-fetches when it sees a key id it does not hold. If logins keep failing after a rotation, the IdP is serving a key the token was not signed with. Restarting Bindery does not change the behaviour. |
 | `allowed_groups` filter blocks all users | Group claim name or format differs from config value | Enable `BINDERY_LOG_LEVEL=debug` to log decoded ID token claims. Keycloak groups are prefixed with `/` (e.g. `/bindery-users`); match this exactly. |
 | Login page shows "Contact your administrator for access" with no login form | `BINDERY_LOCAL_AUTH_ENABLED=false` and no OIDC providers configured | Either configure an OIDC provider or restart with `BINDERY_LOCAL_AUTH_ENABLED=true` to restore local login. |
-| OIDC login returns 403 "account not provisioned" | `BINDERY_OIDC_AUTO_PROVISION=false` and no account pre-created for this OIDC identity | Admin must create an account for this user first (`POST /api/v1/auth/users`), then ask the user to log in again. Or set `BINDERY_OIDC_AUTO_PROVISION=true` to allow self-registration. |
+| OIDC login returns 403 "account not provisioned" | `BINDERY_OIDC_AUTO_PROVISION=false` and no account pre-created for this OIDC identity | Admin must create an account for this user first (`POST /api/v1/auth/users`, which needs `BINDERY_LOCAL_AUTH_ENABLED=true` at the time of the call), then ask the user to log in again. Or set `BINDERY_OIDC_AUTO_PROVISION=true` to allow self-registration. |
 | First OIDC login creates a duplicate account instead of linking to existing local account | `BINDERY_OIDC_EMAIL_LINK=false` (default) | Set `BINDERY_OIDC_EMAIL_LINK=true` to link by email on first login. After enabling, the next login attempt will link if the email matches. Existing duplicate account must be removed manually if already created. |

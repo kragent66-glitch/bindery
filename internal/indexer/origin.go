@@ -26,8 +26,16 @@ const (
 	OriginAuthor SearchOrigin = "author"
 	// OriginBook is a single-book search started from the book page.
 	OriginBook SearchOrigin = "book"
+	// OriginAdd is the search an explicit "add this book" asked for with its
+	// search on add flag. It was tagged OriginAuthor until #2742, which is
+	// where the overload showed: the other OriginAuthor site is the catalogue
+	// sync fanning out over works it has just discovered on its own, and the
+	// two need opposite answers to "did a user ask for this search".
+	OriginAdd SearchOrigin = "add"
 	// OriginRecommendation is an accepted recommendation.
 	OriginRecommendation SearchOrigin = "recommendation"
+	// OriginListSync is a Hardcover import-list sync that made a book wanted.
+	OriginListSync SearchOrigin = "list-sync"
 	// OriginRequeue is the automatic re-search after a stalled download was
 	// removed and blocklisted.
 	OriginRequeue SearchOrigin = "requeue"
@@ -36,6 +44,27 @@ const (
 	// field and a missing origin reads as a gap rather than as absence.
 	OriginUnknown SearchOrigin = "unknown"
 )
+
+// Automatic reports whether a search with this origin was started by Bindery
+// on its own rather than by a user action on a specific book.
+//
+// It is the classification the author monitoring rule reads (#2742).
+// Unmonitoring an author means "stop reaching for their books by yourself",
+// and it must not mean "refuse to search when I press the button", so the
+// scheduler suppresses the automatic origins and leaves the rest alone.
+//
+// The default is automatic, deliberately. A new origin is guarded until
+// somebody decides it carries user intent, and OriginUnknown, which is what a
+// caller that never tagged its context reports as, lands there too: forgetting
+// to say who you are is not evidence that a user asked for anything.
+func (o SearchOrigin) Automatic() bool {
+	switch o {
+	case OriginBook, OriginAdd, OriginBulk, OriginSeriesFill, OriginRecommendation:
+		return false
+	default:
+		return true
+	}
+}
 
 type searchOriginKey struct{}
 

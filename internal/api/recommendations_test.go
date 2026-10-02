@@ -146,3 +146,90 @@ func TestRecommendationAddHydratesHardcoverEditions(t *testing.T) {
 		t.Fatalf("expected hydrated edition, got %+v", editions)
 	}
 }
+
+// TestRecommendationAddWidensUnpinnedMediaType pins the #2768 rule on the
+// recommendation path. A recommendation's format is filled by the recommender
+// from the provider, or defaulted to ebook; the user never chose it, and the
+// add request carries no format. Under the AddBook rule that is not a pin, so
+// hydration must still widen an ebook recommendation to "both" and take the
+// audiobook's ASIN when Hardcover lists an audio edition.
+func TestRecommendationAddWidensUnpinnedMediaType(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { database.Close() })
+	ctx := context.Background()
+	recRepo := db.NewRecommendationRepo(database)
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	seriesRepo := db.NewSeriesRepo(database)
+	editionRepo := db.NewEditionRepo(database)
+
+	author := &models.Author{
+		ForeignID:        "hc:rec-ebook-author",
+		Name:             "Rec Ebook Author",
+		SortName:         "Author, Rec Ebook",
+		MetadataProvider: "hardcover",
+		Monitored:        true,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	if err := recRepo.ReplaceBatch(ctx, 1, []models.RecommendationCandidate{{
+		ForeignID:  "hc:rec-ebook",
+		RecType:    models.RecTypeListCross,
+		Title:      "Recommended Ebook",
+		AuthorName: author.Name,
+		AuthorID:   &author.ID,
+		MediaType:  models.MediaTypeEbook,
+		Genres:     []string{},
+		Score:      1,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	audioASIN := "B2768REC000"
+	provider := &stubMetaProvider{
+		name: "hardcover",
+		editionsByBook: map[string][]models.Edition{
+			"hc:rec-ebook": {{
+				ForeignID: "hc:rec-ebook-audio",
+				Title:     "Recommended Ebook",
+				ASIN:      &audioASIN,
+				Format:    "Audiobook",
+				Monitored: true,
+			}},
+		},
+	}
+	handler := NewRecommendationHandler(recRepo, fakeRecommendationEngine{}, authorRepo, bookRepo, nil).
+		WithFinder(seriesRepo, nil).
+		WithEditionHydration(editionRepo, metadata.NewAggregator(provider).WithAudnexClient(nil)).
+		WithAppContext(ctx)
+
+	rec := httptest.NewRecorder()
+	handler.Add(rec, withURLParam(httptest.NewRequest(http.MethodPost, "/api/v1/recommendations/1/add", nil), "id", "1"))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	book, err := bookRepo.GetByForeignID(ctx, "hc:rec-ebook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if book == nil {
+		t.Fatal("recommended book was not created")
+	}
+	if book.MediaType != models.MediaTypeBoth {
+		t.Fatalf("MediaType = %q, want both (a recommendation's format is not a pin, so hydration may widen it)", book.MediaType)
+	}
+	if book.ASIN != audioASIN {
+		t.Fatalf("ASIN = %q, want %q from the audio edition", book.ASIN, audioASIN)
+	}
+	// Hydration ran and stored the audio edition.
+	editions, err := editionRepo.ListByBook(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(editions) != 1 || editions[0].ForeignID != "hc:rec-ebook-audio" {
+		t.Fatalf("expected hydrated edition, got %+v", editions)
+	}
+}

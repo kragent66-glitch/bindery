@@ -9,6 +9,9 @@ what the *binary* may link.
 Nothing here restricts ordinary self-hosted use. It matters if you run Bindery
 as part of something you charge for, incorporate, or run ads against.
 
+This page does not yet cover Google Books, Audnex or the DNB catalogue, which
+Bindery also queries. Their terms have not been reviewed.
+
 ## Hardcover
 
 Source: <https://hardcover.app/pages/policies> (section "API Rules"), plus the
@@ -32,9 +35,10 @@ The API Rules draw one line that matters, between a *personal project* and a
 Two consequences for anyone running Bindery professionally:
 
 **Aggregated ratings must be excluded.** `books.average_rating` and
-`books.ratings_count` are populated from Hardcover by
-`internal/hardcoverlistsyncer` and are aggregates of other users' ratings, not
-facts about the book. Strip them from any commercial deployment: don't display
+`books.ratings_count` are filled by the metadata aggregator's enrichment merge
+(`internal/metadata/aggregator_enrichment.go`), which takes Hardcover's
+`rating` and `ratings_count` alongside OpenLibrary's. The Hardcover derived
+share is other users' ratings, not facts about the book. Strip them from any commercial deployment: don't display
 them, don't serve them over the API, and don't re-sync them. Title, author,
 series, edition, publisher, narrator, description, and cover are facts and are
 fine. The setting that controls the sync cadence is `hardcover.sync_interval`.

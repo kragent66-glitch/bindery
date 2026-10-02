@@ -7,7 +7,8 @@ import MediaBadge from '../../components/MediaBadge'
 import MoreMenu, { type MoreMenuItem } from '../../components/MoreMenu'
 import { formatBytes } from '../../util/format'
 import { adoptionHint, unitDisplayName } from './adoptionHint'
-import { matchStrength, shortHint } from './adoptionMatch'
+import { StatusPill } from './AdoptionEditor'
+import { alreadySettled, matchStrength, shortHint } from './adoptionMatch'
 import type { Outcome } from './adoptionReducer'
 import { rowCls, cellCls, actionCellCls } from './adoptionStyles'
 
@@ -55,7 +56,9 @@ const AdoptionRow = forwardRef<HTMLTableRowElement, Props>(function AdoptionRow(
       case 'adopted': {
         const book = outcome.item.book
         const base = t('adoption.outcome.adopted', { title: book?.title ?? name, author: book?.authorName ?? '', defaultValue: 'Adopted as {{title}} by {{author}}.' })
-        return outcome.item.bookCreated ? `${base} ${t('adoption.outcome.created', 'Added to your library, unmonitored.')}` : base
+        if (outcome.item.bookCreated) return `${base} ${t('adoption.outcome.created', 'Added to your library, unmonitored.')}`
+        // The server says when the book already had a file of this format.
+        return outcome.item.message ? `${base} ${t('adoption.outcome.addedAlongside', 'Added alongside the file it already had.')}` : base
       }
       case 'ignoring':
       case 'ignored': return t('adoption.outcome.ignored', 'Ignored. Later scans keep it out of this list.')
@@ -132,6 +135,7 @@ const AdoptionRow = forwardRef<HTMLTableRowElement, Props>(function AdoptionRow(
                 {top.book.title}
               </button>
             )}
+            {alreadySettled(top.book.status) && <StatusPill status={top.book.status} monitored={top.book.monitored} />}
           </p>
         ) : inGroup ? (
           // The group row above already says why; repeating it per book is noise.

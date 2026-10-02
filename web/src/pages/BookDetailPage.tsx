@@ -10,12 +10,14 @@ import Section from '../components/Section'
 import Switch from '../components/Switch'
 import { btn, btnSize, dangerLink } from '../components/buttons'
 import MediaBadge from '../components/MediaBadge'
+import CalibreDeliveryChip from '../components/CalibreDeliveryChip'
 import { bookStatusBadge } from '../components/bookStatus'
 import RebindModal from '../components/RebindModal'
 import RenameFilesModal from '../components/RenameFilesModal'
 import ConfirmDialog from '../components/ConfirmDialog'
 import ClipboardManualFallback from '../components/ClipboardManualFallback'
 import { useClipboardCopy } from '../components/useClipboardCopy'
+import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 import { safeHref } from '../util/safeHref'
 import { metadataSourceLink, providerDisplayName, providerFromBookForeignId } from '../util/metadataSource'
 import FixMatchModal from '../components/FixMatchModal'
@@ -287,6 +289,8 @@ function BookDetailPageInner() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [searching, setSearching] = useState(false)
+  const [autoSearching, setAutoSearching] = useState(false)
+  const [autoSearchNotice, setAutoSearchNotice] = useState<string | null>(null)
   const [results, setResults] = useState<SearchResult[] | null>(null)
   const [searchDebug, setSearchDebug] = useState<SearchDebug | null>(null)
   const [hasIndexers, setHasIndexers] = useState<boolean | null>(null)
@@ -309,7 +313,7 @@ function BookDetailPageInner() {
   // book; `paths` is exactly what the dialog shows, so the confirmation and
   // the request can never disagree.
   const [deleteTarget, setDeleteTarget] = useState<
-    { format?: 'ebook' | 'audiobook'; paths: string[] } | null
+    { format?: 'ebook' | 'audiobook'; paths: string[]; singlePath?: string } | null
   >(null)
   // The pending DB-only deregistration (#1692).
   const [deregisterTarget, setDeregisterTarget] = useState<FileRow | null>(null)
@@ -433,6 +437,9 @@ function BookDetailPageInner() {
     setResults(null)
     setSearchDebug(null)
     setError(null)
+    // A leftover "automatic search started" banner over a fresh list of
+    // releases reads as if the automatic run produced the list (#2668).
+    setAutoSearchNotice(null)
     try {
       const [r, indexers] = await Promise.all([
         api.searchBook(book.id),
@@ -445,6 +452,40 @@ function BookDetailPageInner() {
       setError(e instanceof Error ? e.message : t('bookDetail.searchFailed'))
     } finally {
       setSearching(false)
+    }
+  }
+
+  // #2668 (ThatDeltaGuy): the automatic counterpart of runSearch above. That
+  // one is POST /book/{id}/search, which returns releases and grabs nothing,
+  // so the book page had no way to start the search that picks and grabs by
+  // itself. This posts the book's single id to the bulk endpoint, which is the
+  // only API entry point into scheduler.SearchAndGrabBook and already carries
+  // the ownership check and the auto-grab refusal (see api/bulk.ts).
+  const runAutoSearch = async () => {
+    if (!book) return
+    setAutoSearching(true)
+    setAutoSearchNotice(null)
+    setError(null)
+    try {
+      const res = await api.searchBookAutomatic(book.id)
+      // Automatic grabbing being off is not a failure of this book's search,
+      // it is a setting to change, so it gets its own wording. The generic
+      // bulk message tells the reader to open a single book and search there,
+      // which is exactly where this button lives, so it cannot be reused
+      // (#2669 copy, #2668 button).
+      if (isAutoGrabRefusal(res)) {
+        setError(t('search.autoGrabDisabledSingleBook'))
+        return
+      }
+      const item = res.results[String(book.id)]
+      if (item && !item.ok) {
+        throw new Error(item.error || t('bookDetail.autoSearchFailed'))
+      }
+      setAutoSearchNotice(t('bookDetail.autoSearchStarted'))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : t('bookDetail.autoSearchFailed'))
+    } finally {
+      setAutoSearching(false)
     }
   }
 
@@ -489,7 +530,9 @@ function BookDetailPageInner() {
     setDeletingFile(true)
     setError(null)
     try {
-      const params = deleteTarget.format ? `?format=${deleteTarget.format}` : ''
+      const params = deleteTarget.singlePath
+        ? `?path=${encodeURIComponent(deleteTarget.singlePath)}&delete=true`
+        : deleteTarget.format ? `?format=${deleteTarget.format}` : ''
       const updated = await api.deleteBookFile(book.id, params)
       setBook(updated)
       setDeleteTarget(null)
@@ -711,6 +754,16 @@ function BookDetailPageInner() {
     ? new Date(book.releaseDate).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
     : null
 
+  // Mirrors models.Book.NeedsEbook/NeedsAudiobook, which is what
+  // scheduler.SearchAndGrabBook feeds into neededFormats(): with no needed
+  // format it returns before searching anything, so an automatic search button
+  // here could only ever appear to do nothing. The interactive Search stays,
+  // because picking a different release for a file you already own is a real
+  // thing to want.
+  const needsEbook = (mt === 'ebook' || mt === 'both') && !book.ebookFilePath
+  const needsAudiobook = (mt === 'audiobook' || mt === 'both') && !book.audiobookFilePath
+  const canAutoSearch = needsEbook || needsAudiobook
+
   const searchLabel = searching
     ? t('bookDetail.searching')
     : mt === 'audiobook'
@@ -796,7 +849,7 @@ function BookDetailPageInner() {
             {(() => {
               const badge = bookStatusBadge(book.status, book.monitored, t)
               return (
-                <span className={`inline-flex items-center px-2 py-0.5 rounded font-medium ${badge.colorClass}`}>
+                <span className={`inline-flex items-center px-2 py-0.5 rounded font-medium ${badge.colorClass}`} title={badge.description}>
                   {badge.label}
                 </span>
               )
@@ -817,6 +870,7 @@ function BookDetailPageInner() {
                 {t('bookDetail.excludedBadge')}
               </span>
             )}
+            <CalibreDeliveryChip bookId={book.id} />
             {publishedDate && (
               <>
                 <span aria-hidden className="text-slate-400 dark:text-zinc-600">·</span>
@@ -909,6 +963,17 @@ function BookDetailPageInner() {
             >
               <span aria-hidden>🔍</span> {searchLabel}
             </button>
+            {canAutoSearch && (
+              <button
+                onClick={runAutoSearch}
+                disabled={autoSearching}
+                title={t('bookDetail.autoSearchHint')}
+                className={`${btn.secondary} ${btnSize.md}`}
+              >
+                <span aria-hidden>⚡</span>{' '}
+                {autoSearching ? t('bookDetail.autoSearchStarting') : t('bookDetail.autoSearch')}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -916,6 +981,12 @@ function BookDetailPageInner() {
       {error && (
         <div className="mt-6 px-3 py-2 bg-red-100 dark:bg-red-950/30 border border-red-300 dark:border-red-900 rounded text-sm text-red-800 dark:text-red-300">
           {error}
+        </div>
+      )}
+
+      {autoSearchNotice && (
+        <div className="mt-6 px-3 py-2 bg-emerald-100 dark:bg-emerald-950/30 border border-emerald-300 dark:border-emerald-900 rounded text-sm text-emerald-800 dark:text-emerald-300">
+          {autoSearchNotice}
         </div>
       )}
 
@@ -1092,6 +1163,16 @@ function BookDetailPageInner() {
                                     : t('bookDetail.deregister.untracked'),
                                   disabled: !row.tracked || deletingFile || deregistering || deletingBook,
                                   onSelect: () => setDeregisterTarget(row),
+                                },
+                                {
+                                  label: t('bookDetail.deleteThisFile', 'Delete this file'),
+                                  title: t('bookDetail.deleteThisFileHint', 'Permanently delete only this file from disk'),
+                                  danger: true,
+                                  disabled: !row.tracked || deletingFile || deregistering || deletingBook,
+                                  onSelect: () => setDeleteTarget({
+                                    singlePath: row.path,
+                                    paths: [row.path],
+                                  }),
                                 },
                               ]}
                             />
@@ -1399,9 +1480,11 @@ function BookDetailPageInner() {
           type while a format-less DELETE removed every file on the book. */}
       {deleteTarget && (
         <ConfirmDialog
-          title={deleteTarget.format
-            ? t('bookDetail.deleteFilesTitle', { format: t(`common.${deleteTarget.format}`) })
-            : t('bookDetail.deleteAllFiles.button')}
+          title={deleteTarget.singlePath
+            ? t('bookDetail.deleteThisFile', 'Delete this file')
+            : deleteTarget.format
+              ? t('bookDetail.deleteFilesTitle', { format: t(`common.${deleteTarget.format}`) })
+              : t('bookDetail.deleteAllFiles.button')}
           body={
             <div className="space-y-2">
               <p>{t('bookDetail.deleteFilesBody', { count: deleteTarget.paths.length })}</p>
@@ -1412,7 +1495,7 @@ function BookDetailPageInner() {
                   </li>
                 ))}
               </ul>
-              <p>{t('bookDetail.deleteFilesSiblingNote')}</p>
+              {!deleteTarget.singlePath && <p>{t('bookDetail.deleteFilesSiblingNote')}</p>}
               <p>{t('bookDetail.deleteFilesStatusNote')}</p>
             </div>
           }

@@ -46,6 +46,42 @@ func nearestExistingDir(p string) string {
 	return ""
 }
 
+// deviceIDOf extracts a's OS device ID from an os.FileInfo the caller already
+// stat'd for another purpose — the manual-import scan's tracked-file rebuild
+// (#2480) stats every tracked path once anyway (to detect it and, if it is a
+// directory, walk it), so this reads the device id off that same FileInfo
+// instead of stat'ing the path again just to compare devices. ok is false
+// when the platform doesn't expose a device id (see the Windows build).
+func deviceIDOf(fi os.FileInfo) (uint64, bool) {
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	// Stat_t.Dev is uint64 on linux and freebsd but int32 on darwin and
+	// openbsd, where gosec reports G115 (#2868). The result is only ever
+	// compared for equality against another deviceIDOf/deviceID result, never
+	// used as a size or index, and int32 to uint64 sign extension is
+	// injective, so distinct device ids stay distinct and equal ones equal.
+	return uint64(st.Dev), true //nolint:gosec // G115: opaque equality key, conversion is injective on every platform (see above)
+}
+
+// deviceID returns path's OS device ID as a cache key: two paths returning
+// (id, true) with equal id are stat-confirmed to share a device; ok is false
+// when the ID is unknown (stat failed, or the platform doesn't expose one —
+// see the Windows build of this function). Used to key the manual-import
+// scan's tracked-file cache (#2480) by the scanned root's device — computed
+// once per Scan request, not once per tracked row (a prior version compared
+// devices via a per-row confirmedCrossDevice(scanRoot, trackedPath) call that
+// re-stat'd scanRoot on every tracked row in the library; see trackedFileIndex
+// for the review that caught it).
+func deviceID(path string) (uint64, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	return deviceIDOf(fi)
+}
+
 // hardlinkableReason reports whether downloads in a can actually be
 // hard-linked into b and, when they can't, WHY — the generic "will copy
 // instead" banner sent users hunting through mount tables blind (#1427).

@@ -1,6 +1,6 @@
 # Reverse-Proxy SSO Authentication
 
-Bindery v0.23.0 adds a `proxy` auth mode that delegates identity to an upstream reverse proxy — Authelia, Authentik, Keycloak, Google, GitHub, or any system that sets a trusted identity header.
+Bindery supports a `proxy` auth mode, added in v0.23.0, that delegates identity to an upstream reverse proxy — Authelia, Authentik, Keycloak, Google, GitHub, or any system that sets a trusted identity header.
 
 > **Security warning:** Proxy mode is only safe if your Bindery instance is not directly reachable from untrusted networks. Any client that can reach Bindery and forge `X-Forwarded-User` without going through your proxy can authenticate as any user. Use firewall rules or network policy to enforce this.
 
@@ -28,12 +28,14 @@ When `mode=proxy`, Bindery reads an identity header (default `X-Forwarded-User`)
 ## Enabling proxy mode
 
 1. Set `BINDERY_TRUSTED_PROXY` to your proxy's IP/CIDR.
-2. Set auth mode to `proxy` via **Settings → General → Security → Authentication Mode**, or via the API:
+2. Set auth mode to `proxy` with the API. The Authentication Mode dropdown in **Settings → General → Security** offers only `enabled`, `local-only` and `disabled`, so proxy mode has to be set this way:
    ```
    PUT /api/v1/auth/mode
    {"mode": "proxy"}
    ```
-3. Confirm in startup logs: `trusted proxies: [<your CIDRs>]`.
+3. Confirm in startup logs: the line `proxy auth mode: trusted proxies`, whose `cidrs` field lists your CIDRs.
+
+The refuse-to-start gate runs at boot only. Switching to proxy mode through the API on a process that started without `BINDERY_TRUSTED_PROXY` is accepted, every request then answers 401, and the next restart is the one that refuses. Set the variable and restart before you flip the mode.
 
 The login page hides the password form and shows "Sign in via your SSO provider" when proxy mode is active.
 
@@ -160,7 +162,7 @@ Prefer a **stable, opaque** identifier over a mutable display name or email addr
 
 Avoid using email as the identity header — email addresses change and are not guaranteed unique across IdPs.
 
-If a rename happens and an orphaned user is created, an admin can merge users from **Settings → Users**.
+If a rename happens and an orphaned user is created, there is no merge. Delete the orphan from the **Users** page and hand its library rows to the new account: `DELETE /api/v1/auth/users/<orphan-id>?strategy=reassign&reassignTo=<new-id>`. Deleting without a strategy a user who owns rows answers 409 with the per table counts, so you can see what is at stake first.
 
 ## Rollback
 
@@ -181,10 +183,10 @@ Remove or unset `BINDERY_TRUSTED_PROXY`. Restart Bindery. Users keep their accou
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Bindery refuses to start: `proxy mode requires BINDERY_TRUSTED_PROXY` | `BINDERY_TRUSTED_PROXY` is empty | Set `BINDERY_TRUSTED_PROXY` to your proxy's IP or CIDR. Proxy mode will not start without it — this is intentional to prevent auth bypass. |
-| Every request returns `401 Unauthorized` | Source IP not in `BINDERY_TRUSTED_PROXY` | Check startup log for `trusted proxies: [...]`. The request source IP must match. In Docker, use the bridge network CIDR, not the container IP. |
+| Bindery refuses to start: `proxy auth mode is active but BINDERY_TRUSTED_PROXY is empty` | `BINDERY_TRUSTED_PROXY` is empty | Set `BINDERY_TRUSTED_PROXY` to your proxy's IP or CIDR. Proxy mode will not start without it — this is intentional to prevent auth bypass. |
+| Every request returns `401 Unauthorized` | Source IP not in `BINDERY_TRUSTED_PROXY` | Check the startup log for `proxy auth mode: trusted proxies` and read its `cidrs` field. The request source IP must match. In Docker, use the bridge network CIDR, not the container IP. |
 | Every request returns `401 Unauthorized` | Header name mismatch | Authelia uses `Remote-User`; Authentik uses `X-Authentik-Username`. Set `BINDERY_PROXY_AUTH_HEADER` to match your proxy's output. Inspect request headers at the Bindery container with `BINDERY_LOG_LEVEL=debug`. |
-| Login page still shows password form | Auth mode not set to `proxy` | `GET /api/v1/auth/status` — confirm `"mode": "proxy"`. If not, set it via Settings or the API. |
-| New user created on every IdP username change | Mutable identifier in header | Switch to a stable IdP identifier (see "Header choice" above). Merge orphaned users from Settings → Users. |
+| Login page still shows password form | Auth mode not set to `proxy` | `GET /api/v1/auth/status` — confirm `"mode": "proxy"`. If not, set it with `PUT /api/v1/auth/mode`; the Settings dropdown does not offer proxy mode. |
+| New user created on every IdP username change | Mutable identifier in header | Switch to a stable IdP identifier (see "Header choice" above). There is no merge: reassign the orphan's data to the new account when deleting it from the **Users** page. |
 | `X-Forwarded-User: admin` accepted from an untrusted LAN host | `BINDERY_TRUSTED_PROXY` too broad (e.g. `0.0.0.0/0`) | Tighten the CIDR to only your proxy's IP or pod subnet. Verify with `kubectl logs` or `docker logs` that the trusted CIDR list is correct. |
-| OIDC logout from IdP doesn't log out of Bindery | Session cookie is HMAC-signed; no per-session revocation | Session expires at cookie TTL. To force logout: regenerate the session secret in Settings → General → Security (invalidates all sessions). A revocation list is planned for a future release. |
+| OIDC logout from IdP doesn't log out of Bindery | Session cookie is HMAC-signed and independent of the IdP session | Session expires at cookie TTL. To force a global logout, rotate the session secret in Settings, General, Security twice: one rotation keeps the previous secret valid so nobody is dropped. To evict one account, reset that user's password, which bumps their session epoch. Per session revocation is planned for a future release. |

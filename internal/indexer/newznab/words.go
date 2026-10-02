@@ -39,6 +39,28 @@ func LongStopWords() []string {
 	return out
 }
 
+// volumeMarkers are the spellings of a volume marker that release names and
+// metadata titles use interchangeably: "Volume 17", "Vol. 17", "Vols 1-3",
+// "Volumes 1-3". SigWords keeps all four as keywords, so without this a title
+// saying "Volume 17" demanded the literal word "volume" and dropped a release
+// saying "Vol 17".
+//
+// "book"/"bk" and "part"/"pt" are deliberately not here. "bk" and "pt" are
+// under three bytes, so SigWords never emits them, and "pt" is also the
+// Portuguese release language tag: treating it as "part" would let a title
+// saying "Part 2" match any Portuguese release.
+var volumeMarkers = map[string]bool{
+	"vol": true, "vols": true, "volume": true, "volumes": true,
+}
+
+// IsVolumeMarker reports whether w (already lowercased, as SigWords emits it)
+// is one of the interchangeable volume marker spellings. A keyword for which
+// this is true matches any of the spellings at match time, word bounded; see
+// indexer.keywordPattern.
+func IsVolumeMarker(w string) bool {
+	return volumeMarkers[w]
+}
+
 // SigWords returns the meaningful (non-stop, long enough) words from s.
 //
 // "Long enough" is three BYTES of UTF-8, not three characters, and that is
@@ -74,6 +96,42 @@ func SigWords(s string) []string {
 		}
 	}
 	return out
+}
+
+// apostropheElidedReplacer turns both apostrophe forms into a separator so the
+// tokeniser sees the two words the apostrophe was joining.
+var apostropheElidedReplacer = strings.NewReplacer("'", " ", "\u2019", " ")
+
+// SigWordsElided tokenises s the way SigWords does, except that an apostrophe
+// is treated as a word separator rather than deleted.
+//
+// SigWords deletes apostrophes so that possessives collapse to one token
+// ("Ender's" -> "enders"), which is the form most release names use. That is
+// correct for the possessive convention but wrong for ELISION, where the
+// apostrophe joins a clitic to the following word: French "L'Outsider",
+// "Sac d'os", Italian "l'isola". Release names in those languages keep the
+// separator ("Stephen.King.L.Outsider.2018.FRENCH"), so the deleted form
+// yields the single token "loutsider", which no release can ever contain, and
+// the search returns zero results with no error (the #1643 class of bug).
+//
+// This returns the words of the SEPARATED reading, for use as a fallback when
+// the strict form matches nothing. It is not a replacement: the strict form
+// must be tried first, or possessives ("Ender's Game" vs "Enders.Game") stop
+// matching. Returns nil when s carries no apostrophe, so callers can skip the
+// fallback for free.
+func SigWordsElided(s string) []string {
+	if !strings.ContainsAny(s, "'\u2019") {
+		return nil
+	}
+	return SigWords(ElideApostrophes(s))
+}
+
+// ElideApostrophes rewrites both apostrophe forms as a space. Exported so a
+// caller that needs the separated reading of a title for a comparison other
+// than tokenisation (the title-identity gate) folds it the same way, instead
+// of carrying a second copy of the alphabet.
+func ElideApostrophes(s string) string {
+	return apostropheElidedReplacer.Replace(s)
 }
 
 // foldForSigWordMatch reduces a haystack through the same CHARACTER-REWRITING

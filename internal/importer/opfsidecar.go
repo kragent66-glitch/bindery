@@ -41,7 +41,7 @@ func (s *Scanner) opfSidecarEnabled(ctx context.Context) bool {
 }
 
 // writeOPFSidecar writes (or overwrites) metadata.opf in dir when the
-// setting is on. Best-effort, mirroring pushToCWA/pushToCalibre: a sidecar
+// setting is on. Best-effort, mirroring pushToCWA/pushToGrimmory: a sidecar
 // failure is logged and swallowed rather than failing an otherwise-good
 // import or reorganize move. dir is the book's folder — the caller passes
 // filepath.Dir(destPath) for a single ebook file or the audiobook

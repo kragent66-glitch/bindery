@@ -1,8 +1,8 @@
 # Upgrading to v1.0 (multi-user migration)
 
-> **Migration 019 is a one-way door on SQLite.** There is no automated rollback. Take a verified backup before you start.
+> **Migration 025 is a one-way door on SQLite.** There is no automated rollback. Take a verified backup before you start.
 
-v1.0 runs migration `019_multiuser.sql`, which adds `owner_user_id` to every user-owned table and backfills all existing rows to `user_id=1`. The migration runs inside a transaction — if it fails, the database is not left in a half-migrated state and Bindery exits cleanly with a repair hint.
+v1.0 runs migration `025_multiuser.sql`, which adds `owner_user_id` to every user-owned table and backfills all existing rows to `user_id=1`. The migration runs inside a transaction — if it fails, the database is not left in a half-migrated state and Bindery exits cleanly with a repair hint.
 
 Single-user installs are unaffected in practice: all data remains owned by user 1 and behaviour is identical post-upgrade.
 
@@ -11,14 +11,14 @@ Single-user installs are unaffected in practice: all data remains owned by user 
 ### Docker / binary
 
 ```bash
-# Via API (creates a timestamped .db copy in BINDERY_DATA_DIR)
+# Via API (creates a timestamped .db copy under <BINDERY_DATA_DIR>/backups)
 curl -X POST -H "X-Api-Key: <key>" http://bindery:8787/api/v1/backup
 
 # Via UI
-Settings → General → Backup → Create backup
+Settings → Logs → Backups → Create backup
 
 # Verify it was written
-ls -lh /config/bindery_backup_*.db
+ls -lh /config/backups/bindery_*.db
 ```
 
 ### Kubernetes
@@ -48,14 +48,9 @@ Run the new binary against a copy of your production database before touching th
 # Copy the live DB
 cp /config/bindery.db /tmp/bindery-dryrun.db
 
-# Run the new image against the copy (read-write, but isolated)
-docker run --rm \
-  -e BINDERY_DB_PATH=/tmp/bindery-dryrun.db \
-  -v /tmp:/tmp \
-  ghcr.io/vavallee/bindery:v1.0.0 \
-  bindery migrate --dry-run
-
-# Or just boot it — migration runs at startup, Bindery will exit after if no port is exposed
+# Boot the new image against the copy. Schema migrations run at startup,
+# so this is the rehearsal. There is no separate dry-run command: `bindery
+# migrate` is the CSV and Readarr data importer, not the schema runner.
 docker run --rm \
   -e BINDERY_DB_PATH=/tmp/bindery-dryrun.db \
   -e BINDERY_PORT=18787 \
@@ -64,7 +59,7 @@ docker run --rm \
   ghcr.io/vavallee/bindery:v1.0.0
 ```
 
-Check the logs for `migration 019 complete; all rows backfilled to user_id=1`. If the migration fails on the copy, Bindery logs the error and the specific repair query needed.
+Check the logs for `applied migration version=25 file=025_multiuser.sql`. If the migration fails on the copy, Bindery logs the error and exits before starting.
 
 ### Kubernetes dry-run
 
@@ -123,7 +118,7 @@ docker start bindery
 
 # 5. Tail logs to confirm
 docker logs -f bindery | grep -E "migration|error"
-# Expect: migration 019 complete; all rows backfilled to user_id=1
+# Expect: applied migration version=25 file=025_multiuser.sql
 ```
 
 ### Kubernetes (Helm)
@@ -156,7 +151,7 @@ Check **Settings → Users** — you should see your original admin account list
 
 ## Rollback
 
-**There is no automated rollback for migration 019.** SQLite does not support `DROP COLUMN`, so the `owner_user_id` columns cannot be removed by reverting the binary.
+**There is no automated rollback for migration 025.** SQLite does not support `DROP COLUMN`, so the `owner_user_id` columns cannot be removed by reverting the binary.
 
 To roll back: restore from the backup taken in Step 1.
 
@@ -164,7 +159,7 @@ To roll back: restore from the backup taken in Step 1.
 
 ```bash
 docker stop bindery
-cp /config/bindery_backup_<timestamp>.db /config/bindery.db
+cp /config/backups/bindery_<timestamp>.db /config/bindery.db
 docker run ... ghcr.io/vavallee/bindery:v0.24.0   # previous image
 ```
 
@@ -188,8 +183,7 @@ Data written to Bindery between the upgrade and the rollback will be lost — it
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Startup fails: `orphaned rows detected in downloads` | Rows in `downloads` reference non-existent book or user IDs from earlier bugs | Follow the repair query printed in the log. Typically: `DELETE FROM downloads WHERE book_id NOT IN (SELECT id FROM books);` Re-run after fixing. |
-| Startup fails: `migration 019: constraint violation` | A table has rows that conflict with the new `NOT NULL owner_user_id` constraint in a way the backfill didn't catch | Run the dry-run against a copy, examine the exact error, and apply the suggested fix. Always restore from backup before retrying on the live DB. |
+| Startup fails: `025_multiuser.sql pre-flight: table "authors" has N row(s) but users table is empty` | The database holds library data but no user account, so there is no user 1 to backfill ownership to | Create an account first. Boot the previous version, complete first-run setup, then upgrade. |
 | Migration exits mid-run, DB appears corrupted | Should not happen — migration runs in a transaction | Confirm by opening the DB with `sqlite3 /config/bindery.db ".schema authors"`. If `owner_user_id` column is absent, the migration rolled back cleanly. Restore from backup and investigate the error in logs before retrying. |
 | All data appears under the wrong user post-migration | Backfill wrote to a different DB file than expected | Confirm `BINDERY_DB_PATH` points to the correct file. Check `sqlite3 /config/bindery.db "SELECT count(*) FROM authors;"` against your pre-upgrade count. |
 | Admin account missing after migration | User table had the account but role column was not set | `sqlite3 /config/bindery.db "UPDATE users SET role='admin' WHERE id=1;"` — this is safe to run on a live instance. |

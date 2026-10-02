@@ -462,3 +462,29 @@ func TestRefreshMetadata_UsesAggregator(t *testing.T) {
 	// Use time import so future assertions can reference it if added.
 	_ = time.Now()
 }
+
+// stubCalibreDeliverer counts passes.
+type stubCalibreDeliverer struct{ runs int }
+
+func (s *stubCalibreDeliverer) RunDeliveries(_ context.Context) { s.runs++ }
+
+// TestWithCalibreDeliverer_RegistersAMinuteJob: the delivery job runs every
+// minute when a deliverer is wired, which is what delivers a book imported
+// while Calibre was closed once it is back (#2832). No deliverer, no job.
+func TestWithCalibreDeliverer_RegistersAMinuteJob(t *testing.T) {
+	s := &Scheduler{cron: cron.New(cron.WithSeconds())}
+	s.WithCalibreDeliverer(nil)
+	if n := len(s.cron.Entries()); n != 0 {
+		t.Fatalf("nil deliverer registered %d jobs", n)
+	}
+	d := &stubCalibreDeliverer{}
+	s.WithCalibreDeliverer(d)
+	entries := s.cron.Entries()
+	if len(entries) != 1 || !hasEntryWithDelay(entries, time.Minute) {
+		t.Fatalf("entries = %d, want one job every minute", len(entries))
+	}
+	entries[0].Job.Run()
+	if d.runs != 1 {
+		t.Fatalf("runs = %d, want the job to run a delivery pass", d.runs)
+	}
+}

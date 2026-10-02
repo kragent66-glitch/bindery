@@ -41,6 +41,11 @@ export interface ScanItem {
   detectedFormat: string
   book?: Book
   candidates?: Book[]
+  // alreadyImported is true when this unit is already tracked in the library
+  // (directly, via a hardlink, or as a confident match whose book already has
+  // this format). Normally such units are excluded; includeImported surfaces
+  // them instead, labelled (#2480).
+  alreadyImported: boolean
 }
 
 export interface FolderScanResponse {
@@ -68,9 +73,11 @@ export interface BatchImportResponse {
 }
 
 // QueueListResponse is the envelope returned by GET /queue. Items is the
-// flat array the UI has always rendered; partial/staleClients let a
-// future page iteration warn when a downloader client did not answer
-// inside the per-client deadline (Wave 3 / I).
+// flat array the UI renders. Partial is true when a downloader client did not
+// answer inside its per-client deadline, and staleClients names those clients
+// so the page can say which one it could not reach (#2376). A client that
+// failed before it could be identified appears in neither list, so partial can
+// be true with staleClients empty.
 export interface QueueListResponse {
   items: QueueItem[]
   partial?: boolean
@@ -108,15 +115,31 @@ export interface PendingRelease {
 export const queueApi = {
   // Queue
   //
-  // The /queue endpoint returns an envelope `{items, partial, staleClients}`
-  // since Wave 3 / I (Bundle I, bounded fan-out): when a downloader client
-  // fails to answer inside the per-client deadline the items array is
-  // still returned but `partial` is true. The current QueuePage callers
-  // only consume the items array, so we unwrap here to keep the React
-  // code unchanged; surfacing the partial flag is a separate FE task.
-  listQueue: () => request<QueueListResponse>('/queue').then(r => r.items ?? []),
+  // The /queue endpoint returns an envelope `{items, partial, staleClients}`:
+  // when a downloader client fails to answer inside the per-client deadline the
+  // items array is still returned but `partial` is true. The envelope reaches
+  // the caller whole (#2376). It used to be unwrapped to `items` here, which
+  // meant an unreachable qBittorrent rendered as a short (often empty) queue
+  // with nothing saying why, and the natural reading of that is "my downloads
+  // vanished".
+  listQueue: () => request<QueueListResponse>('/queue'),
   grab: (data: GrabRequest) => request<Download>('/queue/grab', { method: 'POST', body: JSON.stringify(data) }),
   retryImport: (id: number) => request<{ ok: boolean }>(`/queue/${id}/retry-import`, { method: 'POST' }),
+  // retryDownload re-sends the release a failed row already holds to the
+  // download client (#2295). It is NOT a fresh search: the row's own release
+  // goes out again, which is what makes a bulk retry predictable. Searching for
+  // a different release is the book page's Search button.
+  retryDownload: (id: number) => request<Download>(`/queue/${id}/retry`, { method: 'POST' }),
+
+  // Retry many queue rows in one request. The server picks the retry each row's
+  // state has (an import stage row re-arms its import, a failed row has its
+  // release re-sent) and says which one ran in `action`. This replaced a
+  // Promise.all firing one POST per selected row from the browser (#2295).
+  bulkRetryQueue: (ids: number[]) =>
+    request<{ results: Record<string, { ok: boolean; error?: string; action?: 'import' | 'resend' }> }>('/queue/bulk-retry', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
   // matchDownload attaches an unmatched, import-failed download to an existing
   // book and imports the already-downloaded files against it (#1589). Returns
   // whether the files were imported directly (imported=true) or the import was
@@ -145,8 +168,12 @@ export const queueApi = {
   manualImport: (data: { path: string; bookId: number; format?: string }) =>
     request<Download>('/queue/manual-import', { method: 'POST', body: JSON.stringify(data) }),
   // Bulk folder import: scan a folder for book units, then import the selected ones.
-  scanFolder: (path: string) =>
-    request<FolderScanResponse>(`/queue/manual-import/scan?path=${encodeURIComponent(path)}`),
+  // includeImported (default off) surfaces already-imported units instead of
+  // excluding them, labelled via ScanItem.alreadyImported (#2480).
+  scanFolder: (path: string, opts?: { includeImported?: boolean }) => {
+    const qs = opts?.includeImported ? '&includeImported=true' : ''
+    return request<FolderScanResponse>(`/queue/manual-import/scan?path=${encodeURIComponent(path)}${qs}`)
+  },
   batchImport: (items: BatchImportItem[]) =>
     request<BatchImportResponse>('/queue/manual-import/batch', { method: 'POST', body: JSON.stringify(items) }),
 

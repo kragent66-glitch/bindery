@@ -88,9 +88,10 @@ export interface AuthorSyncSummary {
   // The first few dropped titles, capped server-side.
   skippedLanguageSample?: AuthorSyncSkippedBook[]
 
-  // The five fields below back the metadata-profile filters wired into
-  // author sync by PRs #1968, #2005, #2006, #2007, and #2008. Landed here
-  // first so those PRs rebase onto a type and notice that already exist.
+  // The six fields below back the metadata-profile filters wired into
+  // author sync by PRs #1968, #2005, #2006, #2007, #2008, and the
+  // min_edition_count filter (#2235). Landed here first so those PRs
+  // rebase onto a type and notice that already exist.
   skippedPartBooks?: number
   skippedPartBooksSample?: AuthorSyncSkippedBook[]
   skippedMissingDate?: number
@@ -101,6 +102,11 @@ export interface AuthorSyncSummary {
   skippedMinPagesSample?: AuthorSyncSkippedBook[]
   skippedMissingIsbn?: number
   skippedMissingIsbnSample?: AuthorSyncSkippedBook[]
+  // Works dropped because their title cluster reported fewer editions than
+  // the profile's minEditionCount floor. A work with no known edition count
+  // passes (unknown, not zero), matching skippedMinPages' semantics.
+  skippedThinCluster?: number
+  skippedThinClusterSample?: AuthorSyncSkippedBook[]
 }
 
 export interface AuthorSyncSkippedBook {
@@ -144,7 +150,6 @@ export interface MergeAuthorsResult {
 }
 
 export type CatalogueReconciliationReason =
-  | 'provider_changed'
   | 'not_in_current_catalogue'
   | 'language_not_allowed'
   | 'part_book'
@@ -158,6 +163,20 @@ export interface CatalogueReconciliationCandidate {
   title: string
   metadataProvider: string
   reason: CatalogueReconciliationReason
+}
+
+export type CatalogueReconciliationIndeterminateReason =
+  | 'language_unknown'
+  | 'language_evidence_lookup_failed'
+  | 'edition_evidence_unavailable'
+  | 'partial_catalogue'
+  | 'unmatched_cross_provider'
+
+export interface CatalogueReconciliationIndeterminateRow {
+  bookId: number
+  title: string
+  metadataProvider: string
+  reason: CatalogueReconciliationIndeterminateReason
 }
 
 export interface CatalogueReconciliationSummary {
@@ -181,8 +200,34 @@ export interface CatalogueReconciliation {
   profileName: string
   warning?: string
   candidates: CatalogueReconciliationCandidate[]
+  indeterminateRows: CatalogueReconciliationIndeterminateRow[]
   summary: CatalogueReconciliationSummary
   applied?: { requested: number; deleted: number; skipped: number }
+}
+
+// Detection rules for the read-only duplicate-title report (#1970). These are
+// the stable identifiers the API returns and the UI translates; the modal
+// explains each one in plain language.
+export type DuplicateRule =
+  | 'alnum-equal'
+  | 'article-strip'
+  | 'edition-suffix'
+  | 'substring'
+
+export interface DuplicateCandidateMember extends Book {
+  rules: DuplicateRule[]
+}
+
+export interface DuplicateCandidateGroup {
+  key: string
+  rules: DuplicateRule[]
+  books: DuplicateCandidateMember[]
+}
+
+export interface DuplicateCandidates {
+  authorId: number
+  groups: DuplicateCandidateGroup[]
+  count: number
 }
 
 export type MediaType = 'ebook' | 'audiobook' | 'both'
@@ -200,6 +245,7 @@ export interface AddAuthorRequest {
   metadataProfileId?: number | null
   qualityProfileId?: number | null
   rootFolderId?: number | null
+  audiobookRootFolderId?: number | null
   mediaType?: MediaType
 }
 
@@ -268,6 +314,8 @@ export const authorsApi = {
       method: 'POST',
       body: JSON.stringify({ bookIds }),
     }),
+  listAuthorDuplicateCandidates: (id: number) =>
+    request<DuplicateCandidates>(`/author/${id}/duplicate-candidates`),
   searchAuthorLinkCandidates: (id: number, term: string) =>
     request<RelinkAuthorLinkCandidate[]>(`/author/${id}/relink-upstream/candidates?term=${encodeURIComponent(term)}`),
   relinkAuthorUpstream: (id: number, candidate?: RelinkAuthorCandidate) =>

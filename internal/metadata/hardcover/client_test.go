@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/vavallee/bindery/internal/bookhydrate"
+	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/metadata"
 	"github.com/vavallee/bindery/internal/models"
 )
@@ -783,6 +787,232 @@ func TestGetAuthorWorksByName_NoTokenSkipsRequest(t *testing.T) {
 	}
 }
 
+func TestGetAuthorWorkLanguageEvidence_BatchesAllowedEditionLookup(t *testing.T) {
+	requests := 0
+	c := newMockClient(func(r *http.Request) (*http.Response, error) {
+		requests++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req gqlRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		for _, fragment := range []string{
+			"distinct_on: [book_id]",
+			"order_by: [{book_id: asc}, {id: asc}]",
+			"limit: $limit",
+			"language { code2 code3 language }",
+			"code2: {_in: $languageCodes}",
+			"code3: {_in: $languageCodes}",
+		} {
+			if !strings.Contains(req.Query, fragment) {
+				t.Errorf("query missing %q: %s", fragment, req.Query)
+			}
+		}
+		codes, ok := req.Variables["languageCodes"].([]interface{})
+		if !ok {
+			t.Fatalf("languageCodes = %#v", req.Variables["languageCodes"])
+		}
+		gotCodes := make([]string, 0, len(codes))
+		for _, code := range codes {
+			gotCodes = append(gotCodes, code.(string))
+		}
+		if !slices.Equal(gotCodes, []string{"en", "eng"}) {
+			t.Errorf("languageCodes = %v, want [en eng]", gotCodes)
+		}
+		bookIDs, ok := req.Variables["bookIds"].([]interface{})
+		if !ok || len(bookIDs) != 1 || bookIDs[0] != float64(42) {
+			t.Errorf("bookIds = %#v, want [42]", req.Variables["bookIds"])
+		}
+		if limit := req.Variables["limit"]; limit != float64(6) {
+			t.Errorf("limit = %#v, want 6 unique applicable works", limit)
+		}
+		return gqlResponse(t, http.StatusOK, map[string]interface{}{
+			"editions": []map[string]interface{}{
+				{
+					"book":     map[string]interface{}{"id": 1, "slug": "translated-default"},
+					"language": map[string]interface{}{"code2": "en", "code3": "eng", "language": "English"},
+				},
+				{
+					"book":     map[string]interface{}{"id": 42, "slug": ""},
+					"language": map[string]interface{}{"code2": "en", "code3": "eng", "language": "English"},
+				},
+				{
+					"book":     map[string]interface{}{"id": 99, "slug": "not-requested"},
+					"language": map[string]interface{}{"code2": "en", "code3": "eng", "language": "English"},
+				},
+				{
+					"book":     map[string]interface{}{"id": 7, "slug": "malformed-language"},
+					"language": map[string]interface{}{},
+				},
+				{
+					"book":     map[string]interface{}{"id": 0, "slug": ""},
+					"language": map[string]interface{}{"code2": "en", "code3": "eng", "language": "English"},
+				},
+			},
+		}), nil
+	})
+
+	books := []models.Book{
+		{ForeignID: "hc:translated-default", Language: "por"},
+		{ForeignID: "hc:english-default", Language: "eng"},
+		{ForeignID: "hc:foreign-only", Language: "spa"},
+		{ForeignID: "hc:unknown"},
+		{ForeignID: "hc:42", Language: "spa"},
+		{ForeignID: "hc:malformed-language", Language: "por"},
+		{ForeignID: "hc:translated-default", Language: "por"},
+		{ForeignID: "hc:   ", Language: "eng"},
+		{ForeignID: "audible:B01CZ0WTEM", Language: "eng"},
+	}
+	got, err := c.GetAuthorWorkLanguageEvidence(context.Background(), books, []string{"eng"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want one batch request", requests)
+	}
+	want := map[string]metadata.AuthorWorkLanguageEvidence{
+		"hc:translated-default": {State: metadata.AuthorWorkLanguageAllowed, Language: "eng"},
+		"hc:english-default":    {State: metadata.AuthorWorkLanguageAllowed, Language: "eng"},
+		"hc:foreign-only":       {State: metadata.AuthorWorkLanguageNotAllowed, Language: "spa"},
+		"hc:unknown":            {State: metadata.AuthorWorkLanguageIndeterminate},
+		"hc:42":                 {State: metadata.AuthorWorkLanguageAllowed, Language: "eng"},
+		"hc:malformed-language": {State: metadata.AuthorWorkLanguageNotAllowed, Language: "por"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("evidence = %#v, want %#v", got, want)
+	}
+	if _, ok := got["audible:B01CZ0WTEM"]; ok {
+		t.Fatal("non-Hardcover supplement unexpectedly received Hardcover evidence")
+	}
+	if _, ok := got["hc:   "]; ok {
+		t.Fatal("blank Hardcover identity unexpectedly received evidence")
+	}
+}
+
+func TestGetAuthorWorkLanguageEvidence_SkipsRequestsWithoutApplicableInput(t *testing.T) {
+	t.Run("unrestricted profile", func(t *testing.T) {
+		requests := 0
+		c := newMockClient(func(*http.Request) (*http.Response, error) {
+			requests++
+			return gqlResponse(t, http.StatusOK, map[string]interface{}{}), nil
+		})
+		got, err := c.GetAuthorWorkLanguageEvidence(context.Background(), []models.Book{{ForeignID: "hc:work"}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 || requests != 0 {
+			t.Fatalf("evidence = %#v, requests = %d; want empty evidence and no request", got, requests)
+		}
+	})
+
+	t.Run("no Hardcover works", func(t *testing.T) {
+		requests := 0
+		c := newMockClient(func(*http.Request) (*http.Response, error) {
+			requests++
+			return gqlResponse(t, http.StatusOK, map[string]interface{}{}), nil
+		})
+		got, err := c.GetAuthorWorkLanguageEvidence(context.Background(), []models.Book{{ForeignID: "audible:B01CZ0WTEM", Language: "eng"}}, []string{"eng"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 || requests != 0 {
+			t.Fatalf("evidence = %#v, requests = %d; want empty evidence and no request", got, requests)
+		}
+	})
+
+	t.Run("missing token", func(t *testing.T) {
+		requests := 0
+		c := newUnconfiguredMockClient(func(*http.Request) (*http.Response, error) {
+			requests++
+			return gqlResponse(t, http.StatusOK, map[string]interface{}{}), nil
+		})
+		got, err := c.GetAuthorWorkLanguageEvidence(context.Background(), []models.Book{{ForeignID: "hc:translated-default", Language: "por"}}, []string{"eng"})
+		if !errors.Is(err, metadata.ErrProviderNotConfigured) {
+			t.Fatalf("error = %v, want ErrProviderNotConfigured", err)
+		}
+		if requests != 0 {
+			t.Fatalf("requests = %d, want 0", requests)
+		}
+		if got != nil {
+			t.Fatalf("evidence = %#v, want nil on configuration failure", got)
+		}
+	})
+}
+
+func TestGetAuthorWorkLanguageEvidence_FailureReturnsNoEvidence(t *testing.T) {
+	c := newMockClient(func(*http.Request) (*http.Response, error) {
+		return gqlResponse(t, http.StatusInternalServerError, `{"error":"upstream unavailable"}`), nil
+	})
+	got, err := c.GetAuthorWorkLanguageEvidence(context.Background(), []models.Book{
+		{ForeignID: "hc:translated-default", Language: "por"},
+	}, []string{"eng"})
+	if err == nil {
+		t.Fatal("expected lookup error")
+	}
+	if got != nil {
+		t.Fatalf("evidence after failure = %#v, want nil", got)
+	}
+}
+
+func TestGetAuthorWorkLanguageEvidence_SeventyEightWorksUseOneRequest(t *testing.T) {
+	requests := 0
+	c := newMockClient(func(r *http.Request) (*http.Response, error) {
+		requests++
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var req gqlRequest
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Fatal(err)
+		}
+		if limit := req.Variables["limit"]; limit != float64(78) {
+			t.Errorf("limit = %#v, want 78", limit)
+		}
+		return gqlResponse(t, http.StatusOK, map[string]interface{}{"editions": []interface{}{}}), nil
+	})
+	books := make([]models.Book, 78)
+	for i := range books {
+		books[i] = models.Book{ForeignID: fmt.Sprintf("hc:work-%d", i), Language: "por"}
+	}
+	got, err := c.GetAuthorWorkLanguageEvidence(context.Background(), books, []string{"eng"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Fatalf("requests = %d, want 1 for a 78-work catalogue", requests)
+	}
+	if len(got) != len(books) {
+		t.Fatalf("evidence rows = %d, want %d", len(got), len(books))
+	}
+}
+
+func TestGetAuthorWorkLanguageEvidence_RejectsCatalogueBeyondBound(t *testing.T) {
+	requests := 0
+	c := newMockClient(func(*http.Request) (*http.Response, error) {
+		requests++
+		return gqlResponse(t, http.StatusOK, map[string]interface{}{"editions": []interface{}{}}), nil
+	})
+	books := make([]models.Book, authorWorksMaxBooks+1)
+	for i := range books {
+		books[i] = models.Book{ForeignID: fmt.Sprintf("hc:work-%d", i), Language: "por"}
+	}
+
+	got, err := c.GetAuthorWorkLanguageEvidence(context.Background(), books, []string{"eng"})
+	if err == nil {
+		t.Fatal("expected an over-bound catalogue error")
+	}
+	if got != nil {
+		t.Fatalf("evidence = %#v, want nil when completeness cannot be guaranteed", got)
+	}
+	if requests != 0 {
+		t.Fatalf("requests = %d, want 0 for a catalogue beyond the safe bound", requests)
+	}
+}
+
 func TestGetAuthor_Found(t *testing.T) {
 	c := newMockClient(func(r *http.Request) (*http.Response, error) {
 		data := map[string]interface{}{
@@ -1178,6 +1408,9 @@ func TestGetEditions_FormatFallbacks(t *testing.T) {
 	if !ebook.IsEbook {
 		t.Error("Kindle edition should be marked as ebook")
 	}
+	if ebook.DurationSeconds != 0 {
+		t.Errorf("ebook DurationSeconds = %d, want 0", ebook.DurationSeconds)
+	}
 	if ebook.PublishDate == nil || ebook.PublishDate.Format("2006-01-02") != "2021-01-01" {
 		t.Errorf("PublishDate = %v, want 2021-01-01", ebook.PublishDate)
 	}
@@ -1187,6 +1420,49 @@ func TestGetEditions_FormatFallbacks(t *testing.T) {
 	}
 	if audio.IsEbook {
 		t.Error("audiobook should not be marked as ebook")
+	}
+	if audio.DurationSeconds != 3600 {
+		t.Errorf("audiobook DurationSeconds = %d, want 3600", audio.DurationSeconds)
+	}
+}
+
+func TestGetEditions_HydratesBookAudioDuration(t *testing.T) {
+	client := newMockClient(func(r *http.Request) (*http.Response, error) {
+		return gqlResponse(t, http.StatusOK, map[string]interface{}{"editions": []map[string]interface{}{
+			{"id": 101, "title": "Audio Edition", "physical_format": "Audiobook", "audio_seconds": 36000},
+		}}), nil
+	})
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	ctx := context.Background()
+	author := &models.Author{ForeignID: "hc:duration-author", Name: "Author", SortName: "Author", Monitored: true}
+	if err := db.NewAuthorRepo(database).Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	books := db.NewBookRepo(database)
+	book := &models.Book{
+		ForeignID: "hc:duration-book", AuthorID: author.ID, Title: "Duration Book", SortTitle: "Duration Book",
+		MetadataProvider: "hardcover", MediaType: models.MediaTypeAudiobook, Status: models.BookStatusWanted,
+		Monitored: true, Genres: []string{},
+	}
+	if err := books.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	result := bookhydrate.HydrateHardcoverEditions(ctx, bookhydrate.Options{
+		Book: book, Provider: "hardcover", Editions: db.NewEditionRepo(database), Books: books, FetchEditions: client.GetEditions,
+	})
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	stored, err := books.GetByID(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Upserted != 1 || !result.BookUpdated || stored.DurationSeconds != 36000 {
+		t.Fatalf("Hardcover duration was not persisted before grab: duration=%d result=%+v", stored.DurationSeconds, result)
 	}
 }
 

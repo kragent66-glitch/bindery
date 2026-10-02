@@ -49,23 +49,51 @@ import (
 
 var current atomic.Pointer[string]
 
+// currentVersion holds the same build version Set was called with, normalised
+// the way Build normalises it (trimmed, leading "v" removed, "dev" when
+// empty). Clients whose upstream specifies its own User-Agent shape, e.g. the
+// Calibre Bridge plugin's "bindery/<semver> plugin-api/v1", need the version
+// on its own rather than the full canonical string.
+var currentVersion atomic.Pointer[string]
+
 func init() {
-	s := Build("dev")
-	current.Store(&s)
+	store("dev")
 }
 
 // Set installs the canonical User-Agent for this process. Call once from
 // main() after the build version is known; concurrent Set calls are safe
 // but the last write wins.
 func Set(version string) {
+	store(version)
+}
+
+func store(version string) {
 	s := Build(version)
 	current.Store(&s)
+	v := normalizeVersion(version)
+	currentVersion.Store(&v)
 }
 
 // Get returns the canonical User-Agent. Safe for concurrent use; cheap
 // enough to call on every request.
 func Get() string {
 	return *current.Load()
+}
+
+// Version returns the build version this process advertises, without the
+// leading "v". Safe for concurrent use.
+func Version() string {
+	return *currentVersion.Load()
+}
+
+// normalizeVersion applies the same cleanup Build does to the version
+// component, so Get and Version never disagree about which build this is.
+func normalizeVersion(version string) string {
+	v := strings.TrimSpace(version)
+	if v == "" {
+		v = "dev"
+	}
+	return strings.TrimPrefix(v, "v")
 }
 
 // DefaultContactURL is the contact pointer used when BINDERY_CONTACT is
@@ -101,10 +129,5 @@ func resolveContact() string {
 // Useful for clients that already accept a version parameter (e.g. abs,
 // grimmory) and want to compute their UA up-front.
 func Build(version string) string {
-	v := strings.TrimSpace(version)
-	if v == "" {
-		v = "dev"
-	}
-	v = strings.TrimPrefix(v, "v")
-	return "bindery/" + v + " (" + runtime.GOOS + "; " + resolveContact() + ")"
+	return "bindery/" + normalizeVersion(version) + " (" + runtime.GOOS + "; " + resolveContact() + ")"
 }

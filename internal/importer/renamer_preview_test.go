@@ -19,7 +19,7 @@ func TestRenamerPreviewSampleDriftGuard(t *testing.T) {
 	// Mirrors SAMPLE_BOOK: author "Jane Doe" (sort "Doe, Jane"),
 	// title "Sample Book", year 2024, ASIN "B01ABCDEFG",
 	// series "Demo Series", series number "2", genre "Fantasy", lang "en",
-	// ext "epub".
+	// narrator "Michael Kramer", ext "epub".
 	releaseDate := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	author := &models.Author{Name: "Jane Doe"}
 	book := &models.Book{
@@ -28,6 +28,7 @@ func TestRenamerPreviewSampleDriftGuard(t *testing.T) {
 		ReleaseDate: &releaseDate,
 		Genres:      []string{"Fantasy"},
 		Language:    "en",
+		Narrator:    "Michael Kramer",
 	}
 	const series = "Demo Series"
 	const seriesNumber = "2"
@@ -42,9 +43,9 @@ func TestRenamerPreviewSampleDriftGuard(t *testing.T) {
 	}{
 		{
 			name:     "all tokens (ebook)",
-			template: "{Author}|{SortAuthor}|{Title}|{Year}|{ASIN}|{Series}|{SeriesNumber}|{Genre}|{Lang}|{ext}",
+			template: "{Author}|{SortAuthor}|{Title}|{Year}|{ASIN}|{Series}|{SeriesNumber}|{Genre}|{Lang}|{Narrator}|{ext}",
 			ext:      "epub",
-			want:     "Jane Doe|Doe, Jane|Sample Book|2024|B01ABCDEFG|Demo Series|2|Fantasy|en|epub",
+			want:     "Jane Doe|Doe, Jane|Sample Book|2024|B01ABCDEFG|Demo Series|2|Fantasy|en|Michael Kramer|epub",
 		},
 		{
 			name:     "default ebook template",
@@ -203,7 +204,7 @@ func TestRenamerWidthThenLiteralKeepsDefaultText(t *testing.T) {
 // TestSanitizePathPreviewDriftGuard pins sanitizePath for the characters the TS
 // mirror handles, so a change to the Go replacer set is caught here.
 func TestSanitizePathPreviewDriftGuard(t *testing.T) {
-	if got := sanitizePath("A: B / C? <D>"); got != "A- B - C D" {
-		t.Errorf("sanitizePath = %q, want %q", got, "A- B - C D")
+	if got := sanitizePath("A: B / C? <D>"); got != "A - B - C D" {
+		t.Errorf("sanitizePath = %q, want %q", got, "A - B - C D")
 	}
 }

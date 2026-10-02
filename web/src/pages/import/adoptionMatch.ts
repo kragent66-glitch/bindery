@@ -31,10 +31,22 @@ export function authorsMatch(parsedAuthor: string, bookAuthor: string): boolean 
   return parsed.every(w => book.has(w))
 }
 
+// alreadySettled reports whether a suggested book is one the scan would not
+// have claimed by itself: it already has its files, or it was skipped.
+// Suggestions include such books (#2879), so an untracked copy of a book
+// already imported can be pointed at it, but adopting there adds a second copy
+// or gives files to a book the user skipped. Both deserve a look in the
+// editor, where the book's status is shown, so neither is a one click Confirm.
+export function alreadySettled(status: string): boolean {
+  return status === 'imported' || status === 'skipped'
+}
+
 export function matchStrength(item: AdoptionItem, candidate: AdoptionCandidate | undefined = item.candidates[0]): MatchStrength | null {
   if (!candidate) return null
   const author = item.parsedAuthor || item.authorFolder
-  return candidate.score >= STRONG_MATCH_SCORE && authorsMatch(author, candidate.book.authorName) ? 'strong' : 'possible'
+  return candidate.score >= STRONG_MATCH_SCORE && authorsMatch(author, candidate.book.authorName) && !alreadySettled(candidate.book.status)
+    ? 'strong'
+    : 'possible'
 }
 
 // shortHint is the row's one line: the fact, without the advice, which lives

@@ -27,9 +27,14 @@ type Torrent struct {
 	// connection to. Bindery only reports it, never decides on it: a magnet
 	// with peers that will not serve its metadata is just as dead as one with
 	// no peers at all.
-	PeersConnected int      `json:"peersConnected"`
-	DownloadDir    string   `json:"downloadDir"`
-	Labels         []string `json:"labels"`
+	PeersConnected int    `json:"peersConnected"`
+	DownloadDir    string `json:"downloadDir"`
+	// AddedDate is the Unix time Transmission accepted the torrent. It is the
+	// only field besides hashString that survives a daemon restart unchanged,
+	// which makes it the reconciliation key for downloads grabbed before the
+	// info hash was persisted.
+	AddedDate int64    `json:"addedDate"`
+	Labels    []string `json:"labels"`
 }
 
 // TorrentAddResponse is returned when adding a torrent.

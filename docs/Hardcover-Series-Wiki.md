@@ -8,7 +8,7 @@ This page is the user-facing companion to the deployment notes in [`docs/DEPLOYM
 
 When enhanced Hardcover series data is enabled, Bindery can:
 
-- create, rename, monitor, and delete local series from the Series page
+- create, rename, shortlist, and delete local series from the Series page
 - add existing Bindery books to a local series with a position number
 - search Hardcover for the matching catalog series
 - link or unlink a local series to a Hardcover series
@@ -32,6 +32,14 @@ If either requirement is missing, Bindery hides the enhanced controls and the en
 
 Use **Search series...** at the top of the Series page to filter your local series by title instead of using browser Find in a large collection. Matching ignores case and accents; clear the field to show all series again. This local search is available without enhanced Hardcover data.
 
+Next to the search, the filter buttons narrow the list without changing anything:
+
+- **Missing books** shows series whose card has a missing badge. **Complete** shows series with at least one book and no missing badge. Both use exactly the count on the badge. Without enhanced Hardcover data that is the books in the series you have not imported, leaving out excluded books. With it, the badge can also count Hardcover catalog books that are not in your library: the linked series' book count until you open the card, then the exact catalog diff. Bindery never loads a diff per series just to filter, so opening a card can move it between the two; the open card stays listed until you pick another filter.
+- **Not linked to Hardcover** shows series with no Hardcover link. It appears only when enhanced Hardcover data is on.
+- **Shortlisted** shows series you added to your shortlist.
+
+The filter combines with the title search and is kept in the page address (`?filter=missing`), so reloading, going back or sharing the link keeps it. Filtering never marks books wanted, monitors them, runs searches or fills gaps.
+
 1. Open **Library → Series**.
 2. Create a series manually, or open an existing series populated from your library metadata.
 3. Use **Add Book** to attach existing Bindery books and set their series positions.
@@ -53,7 +61,7 @@ Refreshing an author links the series of the books you already have, not only th
 
 Two more limits are worth knowing:
 
-- A series that came from Hardcover metadata is linked to the Hardcover catalog as it is created, because the provider supplied the catalog id exactly. Series from other providers are local series like any other, and linking them is the manual step described below.
+- A series that came from Hardcover metadata is linked to the Hardcover catalog as it is created, because the provider supplied the catalog id exactly. The link records 80% confidence rather than a perfect score, since only that identity is known at that point and nothing about it was matched against the catalog. Series from other providers are local series like any other, and linking them is the manual step described below.
 - Series created before this behaviour existed keep no link. Use **Search** on the series to link them, which also unlocks the catalog diff and missing-book fill for them.
 
 ## Automatic Links
@@ -67,7 +75,9 @@ If that evidence is missing, Bindery shows candidates for manual selection inste
 
 ## How the Catalog Diff Binds Local Books
 
-The diff pairs each local book in the series with at most one catalog entry, in two passes. A local book whose provider ID matches a catalog entry binds to it first, whatever the library order. Only then are the remaining local books matched by title, and a title match is never allowed across positions: a book the series files at position 4 cannot bind to catalog volume 9 however similar the titles are. Two local rows at the same position (a duplicate import) compete for that one catalog entry and the loser is listed as Local only.
+The diff pairs each local book in the series with at most one catalog entry, in two passes. A local book whose provider ID matches a catalog entry binds to it first, whatever the library order. Only then are the remaining local books matched by title, and a title match is never allowed across positions: a book the series files at position 4 cannot bind to catalog volume 9 however similar the titles are. Title matches are made in order of each book's best score, ties in library order. A book whose best entry is already taken moves on to its next best, unless a book with the same title holds an entry it matches better than that next best. The same title means the same numbers, and two titles at least as close to each other as the book is to that entry. The two rows are then copies of one book (a duplicate import, or an ebook and an audiobook row) and the second is listed as Local only, with or without stored positions: a second copy of The Way of Kings does not claim The Way of Kings Prime, which stays in Missing. That is logged at DEBUG as `series diff: local book is a second copy of a book already bound, left Local only`. A book whose best entry went to a different book, such as "He Who Fights with Monsters 4" losing the bare series title to volume 1, is not a copy and moves on to its own entry.
+
+Title matching is still a similarity score, and it has known limits. Books that score the same against one entry take it in library order, so the pairing can change with that order: with catalog titles like "The Primal Hunter 1" and local titles like "The Primal Hunter 13: A LitRPG Adventure", volume 13 can take catalog volume 1, and a second copy of volume 1 then takes catalog volume 13. For the same reason a book that moves on can land on an entry it only resembles when nothing closer is free. Stored positions on both sides limit those two to entries that share a position, because a title match never crosses positions. A second copy whose title differs from the first is not recognised as a copy: "The Way of Kings: Book One of the Stormlight Archive" beside "The Way of Kings", with both rows and The Way of Kings Prime filed at position 1, still takes Prime.
 
 Every binding decision is logged at DEBUG as `series diff: local book bound to catalogue entry` with the local and catalog IDs, positions and whether it was matched by identity or title, so a wrong pairing can be read straight out of the log.
 
@@ -79,7 +89,7 @@ Catalog entries whose titles name a box set rather than a book ("box set", "boxe
 
 The fill action may create new authors and books from Hardcover metadata when the catalog entry is not already in Bindery. Those books are linked back to the series with the catalog position.
 
-The format dropdown beside **add all** sets the media type of every book the fill creates. Pick **Ebook** and the created books are ebook only, even when Hardcover lists an audiobook edition of the same work, so only one search is queued per book. Pick **Both** if you want Bindery to look for both formats. Books that are already in the series keep whatever media type they were added with, so change those on the book itself.
+The format dropdown beside **add all** sets the media type of every book the fill creates. Pick **Ebook** and the created books are ebook only, even when Hardcover lists an audiobook edition of the same work, so only one search is queued per book. Pick **Audiobook** for audio only. Pick **Both** if you want Bindery to look for both formats. Books that are already in the series keep whatever media type they were added with, so change those on the book itself.
 
 ## Known Behavior
 
@@ -87,6 +97,7 @@ The format dropdown beside **add all** sets the media type of every book the fil
 - The fill action can also contact configured indexers because it queues searches immediately. Switching **Auto-grab** off in `Settings -> General` stops that, for fill as well as for the scheduled sweep.
 - A linked series can still have local-only or uncertain entries when local metadata does not cleanly match the Hardcover catalog.
 - **View on Hardcover** is built from the series slug, which is the only identifier hardcover.app routes series pages on. Series linked before Bindery started recording the slug have none stored, so their link appears the next time the catalog diff is loaded. If Hardcover reports a series with no slug at all, Bindery shows no link rather than one that leads to a missing page.
+- **Shortlisting** a series only marks it so you can find it again. No job checks a shortlisted series for new books, and Fill gaps ignores the flag.
 - Removing a Hardcover link does not delete the local series or local books.
 - Deleting a local series does not delete linked books from your library.
 

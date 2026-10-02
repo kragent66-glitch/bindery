@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/vavallee/bindery/internal/db"
+	"github.com/vavallee/bindery/internal/downloader"
 	"github.com/vavallee/bindery/internal/indexer"
+	"github.com/vavallee/bindery/internal/indexer/newznab"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -25,11 +27,21 @@ import (
 // stuck is how many torrents have no metadata; healthy is how many have
 // resolved and are part-downloaded. Torrent ids run 1..stuck+healthy, stuck
 // ones first, which is also the denominator LooksLikeClientOutage divides by.
+//
+// Every torrent carries an info hash (noMetadataHash), which is what a download
+// stores for Transmission since #2711 and what the stall detector keys on.
 type transmissionNoMetadataFake struct {
 	*httptest.Server
 	mu      sync.Mutex
-	removed []int64
+	removed []string
+	// deletedData records, per removal, whether delete-local-data was sent.
+	deletedData []bool
 }
+
+// noMetadataHash is the info hash of fake torrent id, lower case as a download
+// stores it. The "ab" prefix keeps it from parsing as an integer, which
+// RemoveTransmissionTorrent would rightly refuse as a legacy session id.
+func noMetadataHash(id int64) string { return fmt.Sprintf("ab%038x", id) }
 
 func newTransmissionNoMetadataFake(t *testing.T, stuck, healthy int) *transmissionNoMetadataFake {
 	t.Helper()
@@ -38,7 +50,8 @@ func newTransmissionNoMetadataFake(t *testing.T, stuck, healthy int) *transmissi
 		var req struct {
 			Method    string `json:"method"`
 			Arguments struct {
-				IDs []int64 `json:"ids"`
+				IDs             []string `json:"ids"`
+				DeleteLocalData bool     `json:"delete-local-data"`
 			} `json:"arguments"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&req)
@@ -46,7 +59,10 @@ func newTransmissionNoMetadataFake(t *testing.T, stuck, healthy int) *transmissi
 		switch req.Method {
 		case "torrent-remove":
 			f.mu.Lock()
-			f.removed = append(f.removed, req.Arguments.IDs...)
+			for _, id := range req.Arguments.IDs {
+				f.removed = append(f.removed, id)
+				f.deletedData = append(f.deletedData, req.Arguments.DeleteLocalData)
+			}
 			f.mu.Unlock()
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "success"})
 		case "torrent-get":
@@ -54,7 +70,7 @@ func newTransmissionNoMetadataFake(t *testing.T, stuck, healthy int) *transmissi
 			id := 1
 			for i := 0; i < stuck; i++ {
 				torrents = append(torrents, map[string]any{
-					"id": id, "status": 0, "errorString": "",
+					"id": id, "hashString": noMetadataHash(int64(id)), "status": 0, "errorString": "",
 					"totalSize": 0, "percentDone": 0,
 					"metadataPercentComplete": 0, "peersConnected": 0,
 				})
@@ -62,7 +78,7 @@ func newTransmissionNoMetadataFake(t *testing.T, stuck, healthy int) *transmissi
 			}
 			for i := 0; i < healthy; i++ {
 				torrents = append(torrents, map[string]any{
-					"id": id, "status": 4, "errorString": "",
+					"id": id, "hashString": noMetadataHash(int64(id)), "status": 4, "errorString": "",
 					"totalSize": 8192, "percentDone": 0.5,
 					"metadataPercentComplete": 1, "peersConnected": 9,
 				})
@@ -80,10 +96,16 @@ func newTransmissionNoMetadataFake(t *testing.T, stuck, healthy int) *transmissi
 	return f
 }
 
-func (f *transmissionNoMetadataFake) removals() []int64 {
+func (f *transmissionNoMetadataFake) removals() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]int64(nil), f.removed...)
+	return append([]string(nil), f.removed...)
+}
+
+func (f *transmissionNoMetadataFake) dataDeletions() []bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bool(nil), f.deletedData...)
 }
 
 // noMetadataFixture builds an install with one Transmission client and one
@@ -146,8 +168,8 @@ func newNoMetadataFixture(t *testing.T, srvURL string, grabbedAgo time.Duration,
 		if err := booksRepo.Create(ctx, book); err != nil {
 			t.Fatalf("create book: %v", err)
 		}
-		remote := strconv.FormatInt(tid, 10)
-		guid := "g-nometa-" + remote
+		guid := "g-nometa-" + strconv.FormatInt(tid, 10)
+		remote := noMetadataHash(tid)
 		dl := &models.Download{
 			GUID: guid, Title: "Unresolved Release " + remote, BookID: &book.ID,
 			IndexerID: &idx.ID, DownloadClientID: &client.ID,
@@ -217,8 +239,14 @@ func TestCheckStalledDownloads_TransmissionNoMetadata(t *testing.T) {
 		t.Errorf("error message should say the metadata never resolved, got %q", got.ErrorMessage)
 	}
 
-	if removed := fake.removals(); len(removed) != 1 || removed[0] != 1 {
-		t.Errorf("expected the empty torrent to be removed from Transmission, got %v", removed)
+	if removed := fake.removals(); len(removed) != 1 || removed[0] != noMetadataHash(1) {
+		t.Errorf("expected the empty torrent to be removed from Transmission by its info hash, got %v", removed)
+	}
+	// A torrent with no metadata has no files, so there is nothing to delete,
+	// and asking the client to delete data is a risk with no upside: the
+	// removal must be the entry alone, the same as remove on import.
+	if deleted := fake.dataDeletions(); len(deleted) != 1 || deleted[0] {
+		t.Errorf("a no-metadata torrent must be removed without delete-local-data, got %v", deleted)
 	}
 
 	blocked, err := fx.blocklist.IsBlocked(ctx, fx.guid())
@@ -384,5 +412,52 @@ func TestHandleStalledDownload_RejectsStallNone(t *testing.T) {
 	}
 	if blocked, _ := blocklistRepo.IsBlocked(ctx, "g-none"); blocked {
 		t.Error("the zero stall kind must not blocklist anything")
+	}
+}
+
+// TestStallReSearch_PicksAnotherRelease is the retry half of #2709. A
+// no-metadata stall fails the row without blocklisting, and the re-search it
+// starts used to do nothing at all: the dead magnet still ranked first, the
+// decision loop approved it again, and the dead row's six hour cooldown (#2710)
+// then refused the grab outright instead of trying the runner up. The re-search
+// must skip the release that just stalled and grab the next approved one.
+func TestStallReSearch_PicksAnotherRelease(t *testing.T) {
+	f := newRegrabFixture(t)
+	ctx := context.Background()
+	stub := f.s.searcher.(*fixedResultsSearcher).results[0]
+	runnerUp := stub
+	runnerUp.GUID = "g-runner-up"
+	runnerUp.Title = "Regrab Book (retail).epub"
+	f.s.searcher = &fixedResultsSearcher{results: []newznab.SearchResult{stub, runnerUp}}
+
+	// The stalled release's row, failed by the stall handler a moment ago.
+	dead := &models.Download{
+		GUID: regrabGUID, BookID: &f.book.ID, Title: stub.Title, NZBURL: stub.NZBURL,
+		Status: models.StateFailed, Protocol: "usenet",
+		ErrorMessage: downloader.StallNoMetadata.Reason(),
+	}
+	if err := f.downloads.Create(ctx, dead); err != nil {
+		t.Fatal(err)
+	}
+	f.backdate(t, dead.ID, "dead_at", time.Now().Add(-time.Second))
+
+	f.s.searchAndGrabFormat(withStalledRelease(ctx, regrabGUID), f.book, models.MediaTypeEbook, nil)
+
+	if n := f.adds.Load(); n != 1 {
+		t.Fatalf("the stall re-search must grab the runner up; the client got %d requests", n)
+	}
+	grabbed, err := f.downloads.GetByGUID(ctx, "g-runner-up")
+	if err != nil || grabbed == nil {
+		t.Fatalf("expected a download row for the runner up, got %v (err %v)", grabbed, err)
+	}
+	if got, _ := f.downloads.GetByID(ctx, dead.ID); got == nil || got.Status != models.StateFailed {
+		t.Errorf("the stalled release's row must stay failed, got %+v", got)
+	}
+
+	// Scoped to the one search: an ordinary sweep, once the cooldown has
+	// passed, may pick the stalled release again, because a no-metadata stall
+	// is not evidence against it.
+	if stalledReleaseFrom(ctx) != "" {
+		t.Error("the exclusion must not leak into a context it was not set on")
 	}
 }

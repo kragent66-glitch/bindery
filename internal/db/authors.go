@@ -1055,3 +1055,30 @@ func normalizeAuthorMonitorDefaults(a *models.Author) {
 	}
 	a.MonitorNewItems = models.NormalizeAuthorMonitorNewItems(a.MonitorNewItems)
 }
+
+// UnmonitoredAuthorIDs returns the set of author ids whose monitored flag is
+// off. It is the whole table in one query rather than a per book lookup,
+// because both callers need the answer for a whole list at once: the wanted
+// sweep decides it for every wanted book on one tick (#2370 made loading a
+// sweep invariant once rather than per book the rule), and the Wanted page
+// decides it for every row of one response.
+//
+// Returns a set rather than a slice because every caller asks "is this id in
+// it". Unmonitored is the smaller half in practice, and it is the half that
+// changes behaviour, so a miss costs nothing.
+func (r *AuthorRepo) UnmonitoredAuthorIDs(ctx context.Context) (map[int64]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id FROM authors WHERE monitored = 0`)
+	if err != nil {
+		return nil, fmt.Errorf("list unmonitored author ids: %w", err)
+	}
+	defer rows.Close()
+	ids := make(map[int64]bool)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan unmonitored author id: %w", err)
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
+}

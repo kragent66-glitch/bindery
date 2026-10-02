@@ -202,6 +202,10 @@ type bulkResponse struct {
 // and optionally applies that mode to existing books when
 // "applyMonitorModeToExisting" is true. Series mode is intentionally excluded:
 // it needs each author's own selected series list.
+// "monitor" and "unmonitor" take the same "applyMonitorModeToExisting" flag,
+// which rewrites each of the author's books to what the author's monitoring
+// now implies. It defaults to false, so the action stays a pure author level
+// write unless the caller asks otherwise (#2742).
 func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs                        []int64 `json:"ids"`
@@ -298,12 +302,12 @@ func (h *BulkHandler) AuthorsBulk(w http.ResponseWriter, r *http.Request) {
 		key := fmt.Sprintf("%d", id)
 		switch req.Action {
 		case "monitor":
-			if err := h.setAuthorMonitored(r.Context(), id, true); err != nil {
+			if err := h.setAuthorMonitored(r.Context(), id, true, req.ApplyMonitorModeToExisting); err != nil {
 				resp.Results[key] = bulkItemResult{Error: err.Error()}
 				continue
 			}
 		case "unmonitor":
-			if err := h.setAuthorMonitored(r.Context(), id, false); err != nil {
+			if err := h.setAuthorMonitored(r.Context(), id, false, req.ApplyMonitorModeToExisting); err != nil {
 				resp.Results[key] = bulkItemResult{Error: err.Error()}
 				continue
 			}
@@ -496,9 +500,17 @@ func (h *BulkHandler) BooksBulk(w http.ResponseWriter, r *http.Request) {
 		var opErr error
 		switch req.Action {
 		case "monitor":
-			opErr = h.setBookMonitored(r.Context(), id, true)
+			// Monitoring a book that was already wanted is the moment it
+			// becomes eligible to grab, so it earns the same immediate search
+			// the PATCH path fires (#2722).
+			var book *models.Book
+			var becameSearchable bool
+			book, becameSearchable, opErr = h.setBookMonitored(r.Context(), id, true)
+			if opErr == nil && becameSearchable && book != nil {
+				searchTargets = append(searchTargets, *book)
+			}
 		case "unmonitor":
-			opErr = h.setBookMonitored(r.Context(), id, false)
+			_, _, opErr = h.setBookMonitored(r.Context(), id, false)
 		case "delete":
 			opErr = h.deleteBook(r.Context(), id)
 		case "search":
@@ -599,7 +611,7 @@ func (h *BulkHandler) WantedBulk(w http.ResponseWriter, r *http.Request) {
 				searchTargets = append(searchTargets, *book)
 			}
 		case "unmonitor":
-			opErr = h.setBookMonitored(r.Context(), id, false)
+			_, _, opErr = h.setBookMonitored(r.Context(), id, false)
 		case "blocklist":
 			opErr = h.skipBook(r.Context(), id)
 		}
@@ -619,7 +631,7 @@ func (h *BulkHandler) WantedBulk(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers -----------------------------------------------------------------
 
-func (h *BulkHandler) setAuthorMonitored(ctx context.Context, id int64, monitored bool) error {
+func (h *BulkHandler) setAuthorMonitored(ctx context.Context, id int64, monitored, applyExisting bool) error {
 	author, err := h.authors.GetByID(ctx, id)
 	if err != nil {
 		return err
@@ -628,7 +640,19 @@ func (h *BulkHandler) setAuthorMonitored(ctx context.Context, id int64, monitore
 		return errBulkAuthorNotOwned
 	}
 	author.Monitored = monitored
-	return h.authors.Update(ctx, author)
+	if err := h.authors.Update(ctx, author); err != nil {
+		return err
+	}
+	// Optional cascade, off by default (#2742). Until this existed the bulk
+	// unmonitor had no cascade at all, so a user who turned off 200 authors on
+	// the Authors page was left with every one of their books still monitored
+	// and no bulk way to change that. The single author path already offers
+	// the same choice behind the same unticked box, so this closes the gap
+	// rather than changing what the action does by default.
+	if !applyExisting {
+		return nil
+	}
+	return applyMonitorModeToExistingBooks(ctx, h.books, h.authors, h.series, author)
 }
 
 // setAuthorMonitorMode writes the author's monitor mode and, when the caller
@@ -694,16 +718,25 @@ func (h *BulkHandler) deleteBook(ctx context.Context, id int64) error {
 	return h.books.Delete(ctx, id)
 }
 
-func (h *BulkHandler) setBookMonitored(ctx context.Context, id int64, monitored bool) error {
+// setBookMonitored writes the monitored flag and reports whether that write
+// moved the book into the wanted-and-monitored state, along with the updated
+// book so the caller can queue the one immediate search the transition earns
+// (#2722). The book is returned rather than re-read so the monitor action stays
+// a single fetch.
+func (h *BulkHandler) setBookMonitored(ctx context.Context, id int64, monitored bool) (*models.Book, bool, error) {
 	book, err := h.books.GetByID(ctx, id)
 	if err != nil {
-		return err
+		return nil, false, err
 	}
 	if book == nil || !auth.CheckOwnership(ctx, book.OwnerUserID) {
-		return errBulkBookNotOwned
+		return nil, false, errBulkBookNotOwned
 	}
+	prevStatus, prevMonitored := book.Status, book.Monitored
 	book.Monitored = monitored
-	return h.books.Update(ctx, book)
+	if err := h.books.Update(ctx, book); err != nil {
+		return nil, false, err
+	}
+	return book, book.BecameSearchable(prevStatus, prevMonitored), nil
 }
 
 // setBookExcluded flags a book as excluded so it is hidden from author/book

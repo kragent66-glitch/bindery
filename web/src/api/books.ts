@@ -59,6 +59,10 @@ export interface Book {
   libraryBookId?: number
   language?: string
   calibre_id?: number
+  // True when this book's author is not monitored, so Bindery will not search
+  // for it on its own (#2742). Only the Wanted list computes it; absent
+  // everywhere else, which reads as false.
+  authorUnmonitored?: boolean
   author?: Author
 }
 

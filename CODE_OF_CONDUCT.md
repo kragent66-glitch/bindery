@@ -11,8 +11,9 @@ exclusionary behaviour are not tolerated.
 
 ## Reporting
 
-To report unacceptable behaviour, contact a maintainer privately via the
-project Discord (a DM to a moderator/maintainer) rather than in a public thread.
+To report unacceptable behaviour, contact a maintainer privately on the
+project Discord ([discord.gg/RpuYYRM9cZ](https://discord.gg/RpuYYRM9cZ)), by DM
+to a moderator or maintainer, rather than in a public thread.
 Reports are handled confidentially. Maintainers are responsible for enforcement
 and may remove, edit, or reject contributions and participants that violate this
 code.

@@ -432,18 +432,22 @@ func main() {
 	// The boot-time reads on the next two lines use ctxBoot because appCtx
 	// isn't constructed yet.
 	modeResolver := func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) }
+	// Both the mode and the client are resolved per delivery pass. The client
+	// used to be built once here from the boot-time mode, which meant
+	// switching mode in the UI, or correcting plugin_url, plugin_api_key or
+	// push_path_remap, did nothing until a restart, and the resulting no-op
+	// push was silent (#1355). The resolver caches by the settings that define
+	// the client, so passes still reuse one connection pool.
+	calibreLoadConfig := func() calibre.Config {
+		return api.LoadCalibreConfig(appCtx, settingsRepo)
+	}
+	calibreAdders := calibre.NewAdderResolver(calibreLoadConfig)
 	calibreCfg := api.LoadCalibreConfig(ctxBoot, settingsRepo)
-	currentMode := api.LoadCalibreMode(ctxBoot, settingsRepo)
-	if currentMode == calibre.ModePlugin {
-		pluginClient := calibre.NewPluginClient(calibreCfg.PluginURL, calibreCfg.PluginAPIKey).WithPushPathRemap(calibreCfg.PushPathRemap)
-		importScanner.WithCalibre(modeResolver, pluginClient)
+	switch api.LoadCalibreMode(ctxBoot, settingsRepo) {
+	case calibre.ModePlugin:
 		slog.Info("calibre integration enabled", "mode", "plugin", "url", calibreCfg.PluginURL)
-	} else {
-		calibreClient := calibre.New(calibreCfg)
-		importScanner.WithCalibre(modeResolver, calibreClient)
-		if currentMode == calibre.ModeCalibredb {
-			slog.Info("calibre integration enabled", "mode", "calibredb")
-		}
+	case calibre.ModeCalibredb:
+		slog.Info("calibre integration enabled", "mode", "calibredb")
 	}
 
 	// Library import (read side). Importer holds live progress state in
@@ -461,6 +465,24 @@ func main() {
 		WithRunTracking(calibreImportRunRepo, calibreSnapshotRepo, calibreProvenanceRepo).
 		WithSeries(seriesRepo).
 		WithCoverStore(coverStore)
+	// Remote covers are downloaded here before calibredb or the plugin can
+	// be handed one.
+	calibreCovers := calibre.CoverSource{Store: coverStore, CacheDir: filepath.Join(cfg.DataDir, "calibre-covers")}
+	// Calibre deliveries (#2832): imports queue each ebook file and kick the
+	// worker, and a one minute scheduler job retries whatever is still
+	// pending, so a book imported while Calibre is closed arrives once it is
+	// back. The jobs group drains an in-flight pass before the database
+	// closes.
+	calibreDeliveryRepo := db.NewCalibreDeliveryRepo(database)
+	calibreDeliverer := calibre.NewDeliverer(calibreDeliveryRepo, bookRepo,
+		modeResolver, calibreLoadConfig, calibreAdders.For).
+		WithMetadata(authorRepo, editionRepo, seriesRepo).
+		WithCovers(calibreCovers).
+		WithJobs(bgJobs).
+		// In pull (#2833) the plugin fetches from /bridge/v1 and the
+		// push pass stands down.
+		WithTransport(func() calibre.Transport { return api.LoadCalibreTransport(appCtx, settingsRepo) })
+	importScanner.WithCalibreDeliveries(modeResolver, calibreDeliverer)
 	// Rows written by importers older than #2564 hold the library's host
 	// path in editions.image_url; rewrite them into servable references now
 	// that the store exists. Runs in the background so a slow or unmounted
@@ -548,6 +570,7 @@ func main() {
 	// Register the Calibre importer as the 24-hour sync job. The scheduler
 	// only fires the job when the syncer is non-nil, so no guard needed here.
 	sched.WithCalibreSyncer(calibreImporter)
+	sched.WithCalibreDeliverer(calibreDeliverer)
 
 	// Recommendation engine (24-hour job, gated on recommendations.enabled).
 	recRepo := db.NewRecommendationRepo(database)
@@ -564,7 +587,8 @@ func main() {
 			return api.GetHardcoverAPIToken(ctx, settingsRepo)
 		}).
 		WithAudiobookEnricher(metaAgg).
-		WithJobs(bgJobs) // drain a manual "Sync now" on shutdown (#1854)
+		WithSearcher(sched). // immediate search for books a sync makes wanted (#2722)
+		WithJobs(bgJobs)     // drain a manual "Sync now" on shutdown (#1854)
 	sched.WithHardcoverSyncer(hcSyncer)
 	sched.WithLogRepo(logRepo, cfg.LogRetentionDays)
 
@@ -684,21 +708,28 @@ func main() {
 	importScanner.WithRootFolders(rootFolderRepo)
 	importScanner.WithSeriesRepo(seriesRepo)
 	importScanner.WithEditions(editionRepo)
-	importScanner.WithCalibreCoverCache(filepath.Join(cfg.DataDir, "calibre-covers"))
-	importScanner.WithCoverStore(coverStore)
 
-	// Startup check: warn if the configured default root folder no longer exists on disk.
-	if s, _ := settingsRepo.Get(ctxBoot, api.SettingDefaultLibraryRootFolderID); s != nil && s.Value != "" {
-		if id, err := strconv.ParseInt(s.Value, 10, 64); err == nil && id > 0 {
-			if rf, err := rootFolderRepo.GetByID(ctxBoot, id); err == nil && rf != nil {
-				if _, statErr := os.Stat(rf.Path); statErr != nil {
-					slog.Warn("default library root folder does not exist on disk — falling back to BINDERY_LIBRARY_DIR",
-						"path", rf.Path, "rootFolderId", id, "error", statErr)
-				}
-			} else {
-				slog.Warn("default library root folder ID not found in database — falling back to BINDERY_LIBRARY_DIR",
-					"rootFolderId", id)
+	// Startup check: warn if a configured default root folder no longer exists on disk.
+	for _, d := range []struct{ key, kind, fallback string }{
+		{api.SettingDefaultLibraryRootFolderID, "library", "BINDERY_LIBRARY_DIR"},
+		{api.SettingDefaultAudiobookRootFolderID, "audiobook", "BINDERY_AUDIOBOOK_DIR"},
+	} {
+		s, _ := settingsRepo.Get(ctxBoot, d.key)
+		if s == nil || s.Value == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(s.Value, 10, 64)
+		if err != nil || id <= 0 {
+			continue
+		}
+		if rf, err := rootFolderRepo.GetByID(ctxBoot, id); err == nil && rf != nil {
+			if _, statErr := os.Stat(rf.Path); statErr != nil {
+				slog.Warn("default "+d.kind+" root folder does not exist on disk, falling back to "+d.fallback,
+					"path", rf.Path, "rootFolderId", id, "error", statErr)
 			}
+		} else {
+			slog.Warn("default "+d.kind+" root folder ID not found in database, falling back to "+d.fallback,
+				"rootFolderId", id)
 		}
 	}
 
@@ -758,7 +789,9 @@ func main() {
 	logHandler := api.NewLogHandler(ring).WithLogRepo(logRepo).WithDBLogHandler(logDBHandler)
 	prowlarrHandler := api.NewProwlarrHandler(prowlarrRepo, indexerRepo).WithSettings(settingsRepo)
 	calibreHandler := api.NewCalibreHandler(settingsRepo).
-		WithLifetimeCtx(appCtx)
+		WithLifetimeCtx(appCtx).
+		WithLibraryRoot(cfg.LibraryDir).
+		WithBookFiles(db.NewBookFileRepo(database))
 	grimmoryHandler := api.NewGrimmoryHandler(settingsRepo).WithVersion(version)
 	grimmorySyncer := grimmory.NewSyncer(bookRepo, grimmoryPusher).WithJobs(bgJobs) // drain mid-upload syncs on shutdown (#1458)
 	grimmorySyncHandler := api.NewGrimmorySyncHandler(grimmorySyncer, grimmoryLoadPushCfg).
@@ -775,15 +808,20 @@ func main() {
 		return api.LoadCalibreConfig(appCtx, settingsRepo)
 	})
 	calibreRunsHandler := api.NewCalibreRunsHandler(calibreImporter)
-	calibreSyncer := calibre.NewSyncer(bookRepo).WithMetadata(authorRepo, editionRepo)
+	// Push all queues books for the delivery worker (#2832) and reads its
+	// progress back from the ledger; the worker does the sending.
+	calibreSyncer := calibre.NewSyncer(bookRepo, calibreDeliveryRepo, calibreDeliverer).WithJobs(bgJobs)
+	calibreDeliveryHandler := api.NewCalibreDeliveryHandler(calibreDeliveryRepo, calibreDeliverer, bookRepo,
+		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) }).
+		WithTransport(func() calibre.Transport { return api.LoadCalibreTransport(appCtx, settingsRepo) })
 	calibreSyncHandler := api.NewCalibreSyncHandler(
 		calibreSyncer,
 		func() calibre.Config { return api.LoadCalibreConfig(appCtx, settingsRepo) },
 		func() calibre.Mode { return api.LoadCalibreMode(appCtx, settingsRepo) },
-	)
+	).WithTransport(func() calibre.Transport { return api.LoadCalibreTransport(appCtx, settingsRepo) })
 	// Requester requests: approval adds through authorHandler's add cores.
-	requestHandler := api.NewRequestHandler(db.NewRequestRepo(database), bookRepo, authorRepo, settingsRepo, metaAgg, authorHandler).
-		WithNotifier(notif, userRepo)
+	requestHandler := api.NewRequestHandler(db.NewRequestRepo(database), bookRepo, authorRepo, settingsRepo, userRepo, metaAgg, authorHandler).
+		WithNotifier(notif)
 	recHandler := api.NewRecommendationHandler(recRepo, recEngine, authorRepo, bookRepo, sched).
 		WithFinder(seriesRepo, importScanner).
 		WithEditionHydration(editionRepo, metaAgg).
@@ -923,12 +961,8 @@ func main() {
 			r.Post("/auth/session-secret/rotate", authHandler.RotateSessionSecret)
 			r.Put("/auth/oidc/providers", oidcHandler.SetProviders)
 			r.Put("/auth/mode", authHandler.SetMode)
-			r.Get("/auth/users", userMgmtHandler.List)
-			r.Post("/auth/users", userMgmtHandler.Create)
-			r.Delete("/auth/users/{id}", userMgmtHandler.Delete)
-			r.Put("/auth/users/{id}/role", userMgmtHandler.SetRole)
-			r.Put("/auth/users/{id}/reset-password", userMgmtHandler.ResetPassword)
 		})
+		registerUserAdminRoutes(r, userMgmtHandler)
 
 		// Metadata search
 		r.Get("/search/author", searchHandler.SearchAuthors)
@@ -951,6 +985,7 @@ func main() {
 		r.Post("/author/{id}/catalogue-reconciliation", authorHandler.ApplyCatalogueReconciliation)
 		r.Get("/author/{id}/relink-upstream/candidates", authorHandler.RelinkCandidates)
 		r.Post("/author/{id}/relink-upstream", authorHandler.RelinkUpstream)
+		r.Get("/author/{id}/duplicate-candidates", authorHandler.DuplicateCandidates)
 		r.Get("/author/{id}/series", authorHandler.ListSeries)
 		r.Get("/author/{id}/aliases", authorAliasHandler.List)
 		r.Delete("/author/{id}/aliases/{aliasID}", authorAliasHandler.Delete)
@@ -990,6 +1025,11 @@ func main() {
 		r.Get("/queue", queueHandler.List)
 		r.Post("/queue/grab", queueHandler.Grab)
 		r.Post("/queue/{id}/retry-import", queueHandler.RetryImport)
+		// Retry the download itself: re-sends the release the row holds to the
+		// download client (#2295). Distinct from retry-import, which re-runs the
+		// import of files that are already on disk.
+		r.Post("/queue/{id}/retry", queueHandler.RetryDownload)
+		r.Post("/queue/bulk-retry", queueHandler.BulkRetry)
 		r.Post("/queue/bulk-delete", queueHandler.BulkDelete)
 		r.Delete("/queue/{id}", queueHandler.Delete)
 
@@ -1181,7 +1221,7 @@ func main() {
 
 		// Calibre integration (probe + library import + bulk push) — all
 		// admin-only. See registerCalibreIntegrationRoutes.
-		registerCalibreIntegrationRoutes(r, calibreHandler, calibreImportHandler, calibreSyncHandler)
+		registerCalibreIntegrationRoutes(r, calibreHandler, calibreImportHandler, calibreSyncHandler, calibreDeliveryHandler)
 
 		// Calibre import run history + rollback (#643). Admin-only — a bad
 		// rollback can delete authors/books wholesale, so the destructive
@@ -1231,6 +1271,17 @@ func main() {
 		r.Get("/book/{id}", opdsHandler.Book)
 		r.Get("/book/{id}/file", opdsHandler.DownloadFile)
 	})
+
+	// Calibre bridge pull routes (#2833): the Calibre plugin connects out to
+	// Bindery and fetches its deliveries. Like /opds it sits at the root,
+	// inside trustedProxyMiddleware and outside the /api/v1 session and CSRF
+	// stack, because its only credential is the plugin API key as a Bearer
+	// token. Its failures count on a limiter of their own, so a plugin with
+	// a stale key cannot lock the admin out of the login form.
+	bridgeWindow := time.Duration(cfg.RateLimitWindowMinutes) * time.Minute
+	bridgeLimiter := auth.NewLoginLimiter(cfg.RateLimitMaxFailures, bridgeWindow)
+	calibreBridgeHandler := api.NewCalibreBridgeHandler(calibreDeliverer, fileHandler, settingsRepo, bridgeLimiter, bridgeWindow, version)
+	registerCalibreBridgeRoutes(r, calibreBridgeHandler)
 
 	// Serve embedded frontend
 	distFS, err := fs.Sub(webui.DistFS, "dist")

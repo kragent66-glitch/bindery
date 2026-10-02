@@ -19,7 +19,7 @@ Only the latest minor release receives security fixes. Older minors do not.
 1. **GitHub Security Advisory** (preferred) —
    [github.com/vavallee/bindery/security/advisories/new](https://github.com/vavallee/bindery/security/advisories/new).
    This creates a private thread with the maintainers.
-2. Email the maintainer listed in the project `AUTHORS` / commit metadata.
+2. Email the maintainer at the address on recent commits (`git log -1 --format=%ae`).
 
 Please include:
 
@@ -75,9 +75,11 @@ CSP, cookie Secure auto-detect, container hardening, CI scans).
   through `internal/httpsec.ValidateOutboundURL` with policy-based blocking
   of loopback, link-local, cloud-metadata endpoints, and (for webhooks)
   RFC1918 ranges. DNS results are verified to defeat rebinding.
-- **Transport**: session cookies auto-flip to `Secure` behind TLS / the
-  `X-Forwarded-Proto: https` header. HSTS is emitted only when TLS is
-  actually in play.
+- **Transport**: session cookies auto-flip to `Secure` behind TLS, or behind
+  an `X-Forwarded-Proto: https` header from a proxy listed in
+  `BINDERY_TRUSTED_PROXY`. Headers from any other peer are stripped, so an
+  unlisted proxy needs `BINDERY_COOKIE_SECURE=always`. HSTS is emitted only
+  when TLS is actually in play.
 - **Headers**: CSP (no `unsafe-eval`, no remote script origins),
   `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: strict-origin-when-cross-origin`.

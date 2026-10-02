@@ -40,6 +40,15 @@ func (h *stubIntegrationHandler) Start(w http.ResponseWriter, _ *http.Request) {
 func (h *stubIntegrationHandler) Status(w http.ResponseWriter, _ *http.Request) {
 	h.record("status", w)
 }
+func (h *stubIntegrationHandler) Summary(w http.ResponseWriter, _ *http.Request) {
+	h.record("summary", w)
+}
+func (h *stubIntegrationHandler) Clear(w http.ResponseWriter, _ *http.Request) { h.record("clear", w) }
+func (h *stubIntegrationHandler) Retry(w http.ResponseWriter, _ *http.Request) { h.record("retry", w) }
+func (h *stubIntegrationHandler) Reset(w http.ResponseWriter, _ *http.Request) { h.record("reset", w) }
+func (h *stubIntegrationHandler) BookState(w http.ResponseWriter, _ *http.Request) {
+	h.record("book-state", w)
+}
 
 // newIntegrationRouter wires the three integration route helpers onto a fresh
 // router with one shared stub, mirroring how main.go mounts them.
@@ -47,7 +56,7 @@ func newIntegrationRouter(h *stubIntegrationHandler) chi.Router {
 	router := chi.NewRouter()
 	registerRootFolderRoutes(router, h)
 	registerGrimmoryRoutes(router, h)
-	registerCalibreIntegrationRoutes(router, h, h, h)
+	registerCalibreIntegrationRoutes(router, h, h, h, h)
 	return router
 }
 
@@ -71,6 +80,11 @@ func TestIntegrationRoutesRequireAdmin(t *testing.T) {
 		{"calibre import status", http.MethodGet, "/calibre/import/status"},
 		{"start calibre sync", http.MethodPost, "/calibre/sync"},
 		{"calibre sync status", http.MethodGet, "/calibre/sync/status"},
+		{"calibre delivery summary", http.MethodGet, "/calibre/deliveries/summary"},
+		{"calibre delivery list", http.MethodGet, "/calibre/deliveries"},
+		{"calibre delivery clear", http.MethodDelete, "/calibre/deliveries"},
+		{"calibre delivery retry", http.MethodPost, "/calibre/deliveries/retry"},
+		{"calibre delivery reset", http.MethodPost, "/calibre/deliveries/reset"},
 	}
 	for _, tt := range gated {
 		t.Run(tt.name, func(t *testing.T) {
@@ -108,6 +122,12 @@ func TestIntegrationRoutesAllowAdmin(t *testing.T) {
 		{http.MethodGet, "/calibre/import/status", "status"},
 		{http.MethodPost, "/calibre/sync", "start"},
 		{http.MethodGet, "/calibre/sync/status", "status"},
+		{http.MethodGet, "/calibre/deliveries/summary", "summary"},
+		{http.MethodGet, "/calibre/deliveries", "list"},
+		{http.MethodDelete, "/calibre/deliveries", "clear"},
+		{http.MethodPost, "/calibre/deliveries/retry", "retry"},
+		{http.MethodPost, "/calibre/deliveries/reset", "reset"},
+		{http.MethodGet, "/book/1/calibre", "book-state"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.method+" "+tt.path, func(t *testing.T) {
@@ -137,6 +157,8 @@ func TestIntegrationOpenReadsAllowNonAdmin(t *testing.T) {
 	}{
 		{"/rootfolder", "list"},
 		{"/grimmory/config", "get-config"},
+		// The handler itself checks ownership and strips the detail.
+		{"/book/1/calibre", "book-state"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {

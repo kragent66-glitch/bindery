@@ -135,9 +135,8 @@ func TestPluginClient_Add503RetrySucceeds(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	shrinkBackoff(t)
 	c := NewPluginClient(srv.URL, "k")
-	// Shrink retry sleep for test speed by using a tight context deadline,
-	// but long enough to allow the 2s sleep + second request.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	id, err := c.Add(ctx, "/a.epub", Metadata{})

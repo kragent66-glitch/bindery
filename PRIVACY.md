@@ -12,13 +12,14 @@ Bindery is maintained by a single individual (GitHub: [@vavallee](https://github
 
 ## What is sent
 
-Once per day, a release build sends:
+Once per day, and once more each time it starts, a release build sends:
 
 | Field | Content |
 |---|---|
 | `install_id` | A random UUID generated on first run. Not derived from anything about you, your machine, or your library. |
 | `version`, `os`, `arch`, `deploy` | Binary version, operating system, CPU architecture, and deploy method (kubernetes / docker / binary). |
 | `features` | Counts and booleans for which subsystems are configured — number of indexers, download clients, notifications, users; whether Calibre, Audiobookshelf, Grimmory, OIDC, multi-user, or a Hardcover token are in use. Never names, URLs, credentials, or values. |
+| `features` (setup timing) | Five whole-day counts: how many days after install the first indexer, first download client, first author, first grab and first import happened. Integers only, never timestamps, and a field is absent when the milestone has not happened. |
 | `errors` | The number of ERROR/WARN log entries in the last 24 hours, plus the five most frequent error messages. These are the fixed, developer-written message strings only, truncated to 120 characters. Log attributes — titles, paths, URLs, usernames — are stripped and never sent. |
 
 **Not sent:** hostnames, IP addresses in the payload, library contents, author or book names, file paths, indexer or download client names or URLs, credentials, or anything identifying you or your machine.
@@ -56,18 +57,18 @@ An install that stops pinging disappears from the install table within 60 days. 
 
 Either of these disables the entire ping:
 
-- **Settings → General** → turn off telemetry (`telemetry.enabled: false`), or
+- **Settings → Logs** → turn off telemetry (`telemetry.enabled: false`), or
 - set `BINDERY_TELEMETRY_DISABLED=true` in the environment — this works **before first run**, so nothing is ever sent.
 
 Both switches disable everything, including the error counters and the update badge. A disabled ping means the app has no way to learn that a newer version exists.
 
-Non-release builds do not send telemetry at all.
+Non-release builds do not send telemetry. Only a version that looks like a release tag pings, unless you deliberately set `BINDERY_TELEMETRY_FORCE` to test the ping path yourself.
 
 ## Your rights
 
 Under GDPR you may request access to, correction of, or erasure of personal data about you, and may object to processing based on legitimate interest.
 
-Practically: the data is pseudonymous, and the maintainer has no way to connect an `install_id` to a person. If you want your install's row removed, opt out and it is deleted within 60 days automatically — or open an issue with your `install_id` (visible in Settings → About) and it will be deleted on request.
+Practically: the data is pseudonymous, and the maintainer has no way to connect an `install_id` to a person. If you want your install's row removed, opt out and it is deleted within 60 days automatically. There is no way to read your install ID from the app today, so a targeted deletion request is not something the maintainer can act on.
 
 ## Third parties
 

@@ -87,6 +87,17 @@ type MatchCriteria struct {
 	MediaType        string   // models.MediaTypeEbook or models.MediaTypeAudiobook
 	AllowedLanguages []string // from author's MetadataProfile; empty = no filter
 	AuthorAliases    []string // alternate names (e.g. latin-script romanisations for non-latin authors)
+	// Profile is the author's quality profile. Its stored order ranks the
+	// results, top is best, per media type (see quality_order.go). nil, or a
+	// profile with no entry for the media type in question, ranks by
+	// models.QualityRank as before.
+	Profile *models.QualityProfile
+	// DurationSeconds is the book's stored runtime, applied to every candidate
+	// for that book. Indexer feeds carry no per-release runtime, so this is the
+	// only figure ranking has. Zero means the runtime is unknown, and the size
+	// term keeps the flat, capped bonus it has always used rather than
+	// dividing by zero.
+	DurationSeconds int
 }
 
 // CriteriaISBN picks the ISBN to put in MatchCriteria.ISBN for a book, given
@@ -411,6 +422,61 @@ func primaryTitle(title string) string {
 		return strings.TrimSpace(title[:i])
 	}
 	return title
+}
+
+// volumeNumberAgrees keeps the cross spelling volume match (keywordPattern)
+// from accepting a different volume.
+//
+// The volume number is under three bytes for volumes 1 to 99, so SigWords
+// drops it and the keyword matchers never compare it. Before volume markers
+// matched across spellings, a "Vol 16" release for a "Volume 17" title was
+// rejected purely because "volume" was missing from it. That was an accident,
+// but it was a rejection, and the cross spelling match must not turn it into
+// an accept.
+//
+// So: when title names a volume marker followed by a number, and the release
+// does not carry that exact marker spelling (so any keyword hit on the marker
+// came through the cross spelling match), the release must carry some
+// spelling of the marker followed by the same number. A release that carries
+// the title's own spelling is left exactly as it was judged before. title is
+// the raw title string the keywords came from; normRelease is NormalizeRelease
+// output.
+func volumeNumberAgrees(normRelease, title string) bool {
+	tt := strings.Fields(NormalizeRelease(title))
+	spelling, number := "", ""
+	for i, tok := range tt {
+		if newznab.IsVolumeMarker(tok) {
+			spelling = tok
+			if i+1 < len(tt) {
+				number = tt[i+1]
+			}
+			break
+		}
+	}
+	if spelling == "" || number == "" {
+		return true
+	}
+	rt := strings.Fields(normRelease)
+	for _, tok := range rt {
+		if tok == spelling {
+			return true
+		}
+	}
+	for i, tok := range rt {
+		if newznab.IsVolumeMarker(tok) && i+1 < len(rt) && sameVolumeNumber(rt[i+1], number) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameVolumeNumber compares two volume tokens, ignoring zero padding when both
+// are numbers ("07" is "7"). Anything else must match exactly.
+func sameVolumeNumber(a, b string) bool {
+	if isAllDigits(a) && isAllDigits(b) {
+		a, b = strings.TrimLeft(a, "0"), strings.TrimLeft(b, "0")
+	}
+	return a == b
 }
 
 // stripPossessivePrefix removes a leading "Author's " possessive from a book
@@ -784,7 +850,9 @@ func titleMatchesResult(normResult string, titleKws []string, authorToks []strin
 func filterRelevant(results []newznab.SearchResult, title, author string, aliases []string) []newznab.SearchResult {
 	// Strip edition qualifiers ("(German Edition)" etc.) and normalize
 	// smart quotes before tokenizing, so they don't become spurious keywords.
-	title = newznab.NormalizeQueryTitle(title)
+	// Format qualifiers mid title ("(Light Novel)") go too, matching what the
+	// query sent to the indexer (see newznab.StripFormatQualifiers).
+	title = newznab.StripFormatQualifiers(newznab.NormalizeQueryTitle(title))
 	// Strip possessive author prefix before keyword extraction.
 	// "Tom Clancy's Rainbow Six" → "Rainbow Six" when author is "Tom Clancy",
 	// preventing "clancys" from becoming a keyword that fails to match releases
@@ -792,8 +860,17 @@ func filterRelevant(results []newznab.SearchResult, title, author string, aliase
 	title = stripPossessivePrefix(title, author)
 	fullKws := newznab.SigWords(title)
 	primaryKws := newznab.SigWords(primaryTitle(title))
+	// Elision fallback (see newznab.SigWordsElided): an elided title folds to
+	// a single token no release name contains, because release names keep the
+	// separator ("L'Outsider" vs "L.Outsider"). Tried only after the strict
+	// set fails, so possessive matching ("Ender's Game" vs "Enders.Game") is
+	// untouched.
+	fullElided := newznab.SigWordsElided(title)
+	primaryElided := newznab.SigWordsElided(primaryTitle(title))
 	fullIdentity := titleIdentityWords(title)
 	primaryIdentity := titleIdentityWords(primaryTitle(title))
+	fullIdentityElided := titleIdentityWords(newznab.ElideApostrophes(title))
+	primaryIdentityElided := titleIdentityWords(newznab.ElideApostrophes(primaryTitle(title)))
 	authorKws := newznab.SigWords(author)
 
 	authorTokenSets := latinAliasTokenSets(author, aliases)
@@ -805,6 +882,31 @@ func filterRelevant(results []newznab.SearchResult, title, author string, aliase
 			}
 		}
 		return false
+	}
+
+	// tryMatchElided retries a FAILED strict match with the apostrophe-
+	// separated reading of the same title. Never tried first, and skipped
+	// when the two readings are identical, so every result that matches today
+	// still matches for the same reason.
+	tryMatchElided := func(n string, elided, kws []string) bool {
+		if len(elided) == 0 || sameKws(elided, kws) {
+			return false
+		}
+		return tryMatch(n, elided)
+	}
+
+	// identityOK applies the title-identity gate, accepting the elided reading
+	// as well. "Sac d'os" folds to the identity words [sac dos], which
+	// "Sac.d.os.2015.FR" ([sac 2015]) cannot satisfy; the separated reading
+	// yields [sac], which it can.
+	identityOK := func(haystack string, ident, elided []string) bool {
+		if len(ident) < 2 {
+			return true
+		}
+		if ContainsPhrase(haystack, ident) {
+			return true
+		}
+		return len(elided) > 0 && ContainsPhrase(haystack, elided)
 	}
 
 	if len(fullKws) == 0 && len(primaryKws) == 0 && len(authorKws) == 0 {
@@ -830,10 +932,14 @@ func filterRelevant(results []newznab.SearchResult, title, author string, aliase
 
 		// allowFallback=true: each result gets phrase match first, then keyword
 		// fallback if the phrase fails. No batch-level gate.
-		fullOK := tryMatch(n, fullKws) && (len(fullIdentity) < 2 || ContainsPhrase(identity, fullIdentity))
+		fullOK := (tryMatch(n, fullKws) || tryMatchElided(n, fullElided, fullKws)) &&
+			identityOK(identity, fullIdentity, fullIdentityElided) &&
+			volumeNumberAgrees(n, title)
 		primaryOK := false
 		if !fullOK && len(primaryKws) > 0 && !sameKws(primaryKws, fullKws) {
-			primaryOK = tryMatch(n, primaryKws) && (len(primaryIdentity) < 2 || ContainsPhrase(identity, primaryIdentity))
+			primaryOK = (tryMatch(n, primaryKws) || tryMatchElided(n, primaryElided, primaryKws)) &&
+				identityOK(identity, primaryIdentity, primaryIdentityElided) &&
+				volumeNumberAgrees(n, primaryTitle(title))
 		}
 		if fullOK || primaryOK {
 			filtered = append(filtered, r)
@@ -904,15 +1010,19 @@ func dedupe(results []newznab.SearchResult) []newznab.SearchResult {
 
 // rankResults sorts results in place by a composite score combining format
 // quality, edition markers (RETAIL/UNABRIDGED/ABRIDGED), year match against
-// the book's release year, grabs, size, and an ISBN exact-match boost.
+// the book's release year, grabs, size, and an ISBN exact-match boost. The
+// format term follows c.Profile's stored order when the profile has an
+// opinion on the media type in question (quality_order.go); the profile is
+// compiled once here, not per result.
 func rankResults(results []newznab.SearchResult, c MatchCriteria) {
 	type scored struct {
 		r     newznab.SearchResult
 		score float64
 	}
+	ranks := newProfileRanks(c.Profile)
 	items := make([]scored, len(results))
 	for i, r := range results {
-		items[i] = scored{r, scoreResult(r, c)}
+		items[i] = scored{r, scoreResult(r, c, ranks)}
 	}
 	sort.SliceStable(items, func(i, j int) bool {
 		return items[i].score > items[j].score
@@ -922,16 +1032,58 @@ func rankResults(results []newznab.SearchResult, c MatchCriteria) {
 	}
 }
 
+const (
+	// flatSizeCapMiB is the total-size cap the flat size bonus has always
+	// applied.
+	flatSizeCapMiB = 1024.0
+	// sizeReferenceMinutes is the book length that cap implies for a typical
+	// audiobook: ten hours. With a known runtime the size bonus becomes the
+	// release's density scored against this reference, so a ten-hour book
+	// keeps exactly the bonus it gets today (#2740).
+	sizeReferenceMinutes = 600.0
+	// maxGrabCount caps the popularity term. At 100 grabs the bonus reaches
+	// about 20 points and stops there, so a release with thousands of grabs
+	// cannot outweigh the format it carries (#2740).
+	maxGrabCount = 100
+)
+
 // scoreResult computes the composite ranking score for a single result.
-// Higher is better. Weights are hardcoded (no profile UI in v0.4.0).
-func scoreResult(r newznab.SearchResult, c MatchCriteria) float64 {
+// Higher is better. ranks is c.Profile compiled by rankResults; nil means no
+// profile.
+//
+// Two terms are weighted by the book rather than hardcoded (#2740). The size
+// bonus is normalised by the book's runtime when that runtime is known, so a
+// long audiobook is not rewarded for being long, and the grabs bonus is
+// capped, so a very popular release cannot outweigh the format it is. Both
+// changes are deliberate edits to the existing weights, not a new scoring
+// framework: no setting turns them on, and a book with no stored runtime
+// scores exactly as it did before.
+func scoreResult(r newznab.SearchResult, c MatchCriteria, ranks *profileRanks) float64 {
 	p := ParseRelease(r.Title)
 
 	quality := p.Format
 	if quality == "" {
 		quality = detectQuality(r.Title)
 	}
-	score := float64(models.QualityRank[quality]) * 100
+
+	// Format term. When the search names a media type and the profile has an
+	// opinion on it, the release scores by its best ticked token in the
+	// profile's order, judged over every token in the title so "azw3 epub"
+	// ranks by azw3 although ParseRelease reduces it to epub. Otherwise the
+	// built in QualityRank applies exactly as it did before #2733.
+	//
+	// A search with no media type takes the QualityRank path even when a
+	// profile is present, because a profile's ranks only compare inside one
+	// list: an ebook list of 12 entries scores up to 12 while an audiobook
+	// list of 5 scores up to 5. Every score in one search must be on one
+	// scale, and the only criteria built without a media type today (free
+	// text SearchQuery) carries no profile anyway.
+	var score float64
+	if c.MediaType != "" && ranks.hasOpinion(c.MediaType) {
+		score = float64(ranks.formatScore(ReleaseFormats(r.Title), c.MediaType)) * 100
+	} else {
+		score = float64(models.QualityRank[quality]) * 100
+	}
 
 	// Media-type mismatch penalty. An ebook grab returning an audiobook
 	// format (or vice-versa) is almost certainly the wrong kind of release
@@ -972,16 +1124,40 @@ func scoreResult(r newznab.SearchResult, c MatchCriteria) float64 {
 		}
 	}
 
+	// The popularity bonus is capped. log10(grabs+1)*10 is unbounded, so
+	// without a ceiling a release with a few thousand grabs can carry more
+	// points than the format and size terms together; at 100 grabs the bonus
+	// reaches about 20 points and stops there (#2740).
 	if r.Grabs > 0 {
-		score += math.Log10(float64(r.Grabs+1)) * 10
+		grabs := r.Grabs
+		if grabs > maxGrabCount {
+			grabs = maxGrabCount
+		}
+		score += math.Log10(float64(grabs+1)) * 10
 	}
 
+	// Size term. Total size rewards a long book for being long, so when the
+	// book's runtime is known an audio release is scored by its density in
+	// MiB per minute instead, at the points-per-MiB the flat term used for a
+	// ten-hour book and capped where that term's 1024 MiB cap lands. A
+	// ten-hour book therefore scores exactly what it did, and a shorter or
+	// longer one no longer gains or loses points for its length. An unknown
+	// runtime, or a release that is not an audio container, keeps the flat,
+	// capped bonus exactly as it was (#2740).
 	if r.Size > 0 {
 		mb := float64(r.Size) / (1024 * 1024)
-		if mb > 1024 {
-			mb = 1024
+		if c.DurationSeconds > 0 && IsAudiobookFormat(quality) {
+			density := mb / (float64(c.DurationSeconds) / 60)
+			if density > flatSizeCapMiB/sizeReferenceMinutes {
+				density = flatSizeCapMiB / sizeReferenceMinutes
+			}
+			score += density * (sizeReferenceMinutes / 100)
+		} else {
+			if mb > flatSizeCapMiB {
+				mb = flatSizeCapMiB
+			}
+			score += mb / 100
 		}
-		score += mb / 100
 	}
 
 	if c.ISBN != "" && p.ISBN != "" && strings.EqualFold(p.ISBN, c.ISBN) {

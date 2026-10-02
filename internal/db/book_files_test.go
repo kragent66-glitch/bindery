@@ -35,6 +35,35 @@ func TestBookFileRepo_AddAndListByBook(t *testing.T) {
 	}
 }
 
+// TestBookFileRepo_RecentEbookPaths: the Calibre Test connection wants the
+// newest ebook first and never an audiobook, which the bridge cannot add.
+func TestBookFileRepo_RecentEbookPaths(t *testing.T) {
+	database, _, book := openTestDB(t)
+	ctx := context.Background()
+	files := NewBookFileRepo(database)
+
+	for _, f := range []struct{ format, path string }{
+		{models.MediaTypeEbook, "/lib/old.epub"},
+		{models.MediaTypeAudiobook, "/audio/new.m4b"},
+		{models.MediaTypeEbook, "/lib/new.epub"},
+	} {
+		if err := files.Add(ctx, book.ID, f.format, f.path); err != nil {
+			t.Fatalf("Add %s: %v", f.path, err)
+		}
+	}
+
+	got, err := files.RecentEbookPaths(ctx, 10)
+	if err != nil {
+		t.Fatalf("RecentEbookPaths: %v", err)
+	}
+	if len(got) != 2 || got[0] != "/lib/new.epub" || got[1] != "/lib/old.epub" {
+		t.Errorf("RecentEbookPaths = %v, want [/lib/new.epub /lib/old.epub]", got)
+	}
+	if got, _ := files.RecentEbookPaths(ctx, 1); len(got) != 1 {
+		t.Errorf("limit 1 returned %v", got)
+	}
+}
+
 func TestBookFileRepo_DuplicatePathIgnored(t *testing.T) {
 	database, _, book := openTestDB(t)
 	ctx := context.Background()
@@ -224,6 +253,158 @@ func TestBookRepo_MigrationBackfill(t *testing.T) {
 	}
 }
 
+// TestBookFileRepo_ListByBooks verifies the batch lookup groups rows by
+// book_id in one query (#2480: replaces an N+1 ListByBook-per-book call in
+// the manual-import scan's confident-match format check).
+func TestBookFileRepo_ListByBooks(t *testing.T) {
+	database, author, book := openTestDB(t)
+	ctx := context.Background()
+	repo := NewBookRepo(database)
+	files := NewBookFileRepo(database)
+
+	_ = repo.AddBookFile(ctx, book.ID, models.MediaTypeEbook, "/lib/one.epub")
+
+	b2 := &models.Book{
+		ForeignID: "OL-LB-B2", AuthorID: author.ID,
+		Title: "Second Book", SortTitle: "Second Book",
+		Status: models.BookStatusWanted, Monitored: true,
+	}
+	if err := repo.Create(ctx, b2); err != nil {
+		t.Fatalf("create b2: %v", err)
+	}
+	_ = repo.AddBookFile(ctx, b2.ID, models.MediaTypeEbook, "/lib/two.epub")
+	_ = repo.AddBookFile(ctx, b2.ID, models.MediaTypeAudiobook, "/lib/two.m4b")
+
+	// A third book with no files at all should simply be absent from the map.
+	b3 := &models.Book{
+		ForeignID: "OL-LB-B3", AuthorID: author.ID,
+		Title: "Third Book", SortTitle: "Third Book",
+		Status: models.BookStatusWanted, Monitored: true,
+	}
+	if err := repo.Create(ctx, b3); err != nil {
+		t.Fatalf("create b3: %v", err)
+	}
+
+	got, err := files.ListByBooks(ctx, []int64{book.ID, b2.ID, b3.ID})
+	if err != nil {
+		t.Fatalf("ListByBooks: %v", err)
+	}
+	if len(got[book.ID]) != 1 || got[book.ID][0].Path != "/lib/one.epub" {
+		t.Errorf("book1 files = %+v, want just one.epub", got[book.ID])
+	}
+	if len(got[b2.ID]) != 2 {
+		t.Errorf("book2 files = %+v, want 2 rows", got[b2.ID])
+	}
+	if _, ok := got[b3.ID]; ok {
+		t.Errorf("book3 has no files and should be absent from the map, got %+v", got[b3.ID])
+	}
+
+	empty, err := files.ListByBooks(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListByBooks(nil): %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("ListByBooks(nil) = %+v, want empty map", empty)
+	}
+}
+
+// TestBookFileRepo_Fingerprint verifies the (count, maxID) snapshot changes on
+// every mutating method, is stable across pure reads, and — the point of
+// reading it from the table rather than an in-process counter (#2480 review)
+// — also changes when a row disappears through a path that never goes through
+// BookFileRepo at all, such as the books(id) ON DELETE CASCADE FK a book
+// delete triggers.
+func TestBookFileRepo_Fingerprint(t *testing.T) {
+	database, _, book := openTestDB(t)
+	ctx := context.Background()
+	files := NewBookFileRepo(database)
+	books := NewBookRepo(database)
+
+	count0, maxID0, err := files.Fingerprint(ctx)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+
+	if err := files.Add(ctx, book.ID, models.MediaTypeEbook, "/lib/v.epub"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	count1, maxID1, err := files.Fingerprint(ctx)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	if count1 == count0 && maxID1 == maxID0 {
+		t.Errorf("Fingerprint did not change after Add: (%d, %d)", count1, maxID1)
+	}
+
+	if _, err := files.ListByBook(ctx, book.ID); err != nil {
+		t.Fatalf("ListByBook: %v", err)
+	}
+	if count2, maxID2, err := files.Fingerprint(ctx); err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	} else if count2 != count1 || maxID2 != maxID1 {
+		t.Errorf("Fingerprint changed on a pure read: (%d, %d) -> (%d, %d)", count1, maxID1, count2, maxID2)
+	}
+
+	if _, err := files.DeleteByPath(ctx, "/lib/v.epub"); err != nil {
+		t.Fatalf("DeleteByPath: %v", err)
+	}
+	count3, maxID3, err := files.Fingerprint(ctx)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	if count3 == count1 && maxID3 == maxID1 {
+		t.Errorf("Fingerprint did not change after DeleteByPath: (%d, %d)", count3, maxID3)
+	}
+
+	// A book delete removes book_files rows via ON DELETE CASCADE — not
+	// through any BookFileRepo method — which is exactly the path an
+	// in-process mutation counter cannot see (#2480 review repro: seed a
+	// tracked file, delete the book keeping the file, and the cache stayed
+	// stale). Reading the fingerprint from the table itself must still catch it.
+	if err := files.Add(ctx, book.ID, models.MediaTypeEbook, "/lib/v2.epub"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	count4, maxID4, err := files.Fingerprint(ctx)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	if err := books.Delete(ctx, book.ID); err != nil {
+		t.Fatalf("Delete book: %v", err)
+	}
+	count5, maxID5, err := files.Fingerprint(ctx)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	if count5 == count4 && maxID5 == maxID4 {
+		t.Errorf("Fingerprint did not change after the owning book was deleted (FK cascade): (%d, %d)", count5, maxID5)
+	}
+}
+
+// TestBookRepo_RemoveBookFile_KeepsImportedWithSibling verifies removing one
+// of multiple files in a format does not make the book wanted.
+func TestBookRepo_RemoveBookFile_KeepsImportedWithSibling(t *testing.T) {
+	database, _, book := openTestDB(t)
+	ctx := context.Background()
+	repo := NewBookRepo(database)
+
+	for _, path := range []string{"/lib/first.epub", "/lib/second.epub"} {
+		if err := repo.AddBookFile(ctx, book.ID, models.MediaTypeEbook, path); err != nil {
+			t.Fatalf("AddBookFile: %v", err)
+		}
+	}
+	if _, err := repo.RemoveBookFile(ctx, "/lib/first.epub"); err != nil {
+		t.Fatalf("RemoveBookFile: %v", err)
+	}
+
+	got, _ := repo.GetByID(ctx, book.ID)
+	if got.Status != models.BookStatusImported {
+		t.Errorf("status should remain imported while a sibling remains, got %q", got.Status)
+	}
+	if got.EbookFilePath != "/lib/second.epub" {
+		t.Errorf("EbookFilePath should point to the surviving file, got %q", got.EbookFilePath)
+	}
+}
+
 // TestBookRepo_RemoveBookFile_StatusFlips verifies removing the last file
 // flips the book back to "wanted".
 func TestBookRepo_RemoveBookFile_StatusFlips(t *testing.T) {
@@ -248,5 +429,53 @@ func TestBookRepo_RemoveBookFile_StatusFlips(t *testing.T) {
 	}
 	if got2.EbookFilePath != "" {
 		t.Errorf("EbookFilePath should be cleared, got %q", got2.EbookFilePath)
+	}
+}
+
+// TestBookFileRepo_PathEpoch pins the half of the #2480 cache key that
+// Fingerprint cannot provide: UpdatePath rewrites a row in place, leaving
+// (count, maxID) untouched, so it must bump the epoch instead. The epoch is
+// per database, not per repo, because reorganize and the manual-import scan
+// reach book_files through different repo instances; and a failed UpdatePath
+// changes nothing, so it must not force a rebuild.
+func TestBookFileRepo_PathEpoch(t *testing.T) {
+	database, _, book := openTestDB(t)
+	ctx := context.Background()
+	writer := NewBookFileRepo(database)
+	reader := NewBookRepo(database)
+
+	if err := writer.Add(ctx, book.ID, models.MediaTypeEbook, "/lib/old.epub"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rows, err := writer.ListByBook(ctx, book.ID)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListByBook: %v (%d rows)", err, len(rows))
+	}
+	count0, maxID0, err := writer.Fingerprint(ctx)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	epoch0 := reader.BookFilesPathEpoch()
+
+	if err := writer.UpdatePath(ctx, rows[0].ID, "/lib/new.epub"); err != nil {
+		t.Fatalf("UpdatePath: %v", err)
+	}
+	count1, maxID1, err := writer.Fingerprint(ctx)
+	if err != nil {
+		t.Fatalf("Fingerprint: %v", err)
+	}
+	if count1 != count0 || maxID1 != maxID0 {
+		t.Fatalf("premise: UpdatePath changed the fingerprint (%d,%d) -> (%d,%d); the epoch would be redundant", count0, maxID0, count1, maxID1)
+	}
+	epoch1 := reader.BookFilesPathEpoch()
+	if epoch1 == epoch0 {
+		t.Fatalf("PathEpoch did not change after UpdatePath through another repo instance (still %d)", epoch1)
+	}
+
+	if err := writer.UpdatePath(ctx, rows[0].ID+999, "/lib/nowhere.epub"); err == nil {
+		t.Fatal("UpdatePath on a missing row: want error")
+	}
+	if got := reader.BookFilesPathEpoch(); got != epoch1 {
+		t.Errorf("PathEpoch moved on a failed UpdatePath: %d -> %d", epoch1, got)
 	}
 }

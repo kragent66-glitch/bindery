@@ -51,7 +51,14 @@ type libraryEntry struct {
 	// which the author pre-filter has always exempted.
 	firstDir string
 	title    string
-	author   string
+	// layoutTitle is the cleaned book-folder name, "" when the file has no
+	// book folder of its own. It never makes a match on its words, it only
+	// supplies the volume number when it carries one: a Libation-style
+	// "Series NN/Series_ASIN_….m4b" layout keeps the volume number only in
+	// the folder, and without it every volume's file looked like the one the
+	// next volume was asking for (#2810).
+	layoutTitle string
+	author      string
 }
 
 // NewLibrarySnapshot builds an empty snapshot over the given roots. Roots are
@@ -83,7 +90,17 @@ func (ls *LibrarySnapshot) FindExisting(ctx context.Context, title, authorName, 
 			if authorName != "" && e.firstDir != "" && !authorMatch(authorName, e.firstDir) {
 				continue
 			}
-			if titleMatch(e.title, title) && authorMatch(authorName, e.author) {
+			if !authorMatch(authorName, e.author) {
+				continue
+			}
+			// A numbered book folder settles the volume before the filename
+			// is read, so track numbers never veto a book's own files
+			// (#2810). libraryVolumeConflict is the same rule the library
+			// scan applies (#2860).
+			if libraryVolumeConflict(e.title, e.layoutTitle, title) {
+				continue
+			}
+			if titleWordsMatch(e.title, title) {
 				return e.path
 			}
 		}
@@ -181,11 +198,13 @@ func walkLibraryEntries(ctx context.Context, root string) ([]libraryEntry, bool)
 			}
 		}
 		parsed := ParseFilename(path)
+		_, layoutTitle, _ := authorTitleFromLayout(path, root)
 		entries = append(entries, libraryEntry{
-			path:     path,
-			firstDir: firstDir,
-			title:    parsed.Title,
-			author:   parsed.Author,
+			path:        path,
+			firstDir:    firstDir,
+			title:       parsed.Title,
+			layoutTitle: layoutTitle,
+			author:      parsed.Author,
 		})
 		return nil
 	})

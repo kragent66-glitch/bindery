@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -107,19 +108,116 @@ func (c *Client) Test(ctx context.Context) error {
 // -1 unlimited sentinel maps to seedRatioMode=2 (no ratio limit) because the
 // Transmission RPC rejects a negative seedRatioLimit float. A nil pointer
 // leaves both fields unset so the torrent keeps Transmission's global rule.
+// The ratio is applied by a torrent-set after the add; see AddTorrentWithLimits.
 func (c *Client) AddTorrent(ctx context.Context, magnetOrURL, downloadDir string, seedRatio *float64) (int64, error) {
+	added, err := c.AddTorrentDetailed(ctx, magnetOrURL, downloadDir, seedRatio)
+	if err != nil {
+		return 0, err
+	}
+	return added.ID, nil
+}
+
+// AddTorrentDetailed adds a torrent and returns the whole record Transmission
+// reported for it, so the caller can persist the info hash rather than the
+// numeric id. Transmission ids are session-scoped: the daemon renumbers every
+// torrent on restart, so a stored id silently starts pointing at a different
+// torrent (or at nothing). Only hashString is stable for the life of the
+// torrent. See AddTorrent for the argument semantics.
+func (c *Client) AddTorrentDetailed(ctx context.Context, magnetOrURL, downloadDir string, seedRatio *float64) (Torrent, error) {
+	return c.AddTorrentWithLimits(ctx, magnetOrURL, downloadDir, SeedLimits{Ratio: seedRatio})
+}
+
+// SeedLimits is the set of per-torrent seeding overrides Transmission can
+// carry. A nil field leaves that rule on Transmission's global setting.
+type SeedLimits struct {
+	// Ratio is the per-indexer seed ratio override (#883), with -1 as the
+	// unlimited sentinel.
+	Ratio *float64
+	// IdleMinutes is the inactive seeding limit (#2206): stop seeding after
+	// this many minutes without activity. Transmission has no total seeding
+	// time limit, so there is no field for one.
+	IdleMinutes *int
+}
+
+func (l SeedLimits) isZero() bool { return l.Ratio == nil && l.IdleMinutes == nil }
+
+// AddTorrentWithLimits is AddTorrentDetailed with every seeding override
+// Transmission supports.
+//
+// The limits are applied with a torrent-set once the torrent exists, not as
+// torrent-add arguments. torrent-add reads none of seedRatioLimit,
+// seedRatioMode, seedIdleLimit or seedIdleMode (compare torrentAdd and
+// torrentSet in libtransmission/rpcimpl.cc; the RPC spec lists them under
+// torrent-set only), so until #2206 the ratio override was silently dropped.
+// The torrent is already added when torrent-set runs, so its failure is logged
+// rather than returned, the same as qBittorrent and Deluge.
+func (c *Client) AddTorrentWithLimits(ctx context.Context, magnetOrURL, downloadDir string, limits SeedLimits) (Torrent, error) {
+	added, err := c.addTorrent(ctx, magnetOrURL, downloadDir)
+	if err != nil {
+		return Torrent{}, err
+	}
+	if !limits.isZero() {
+		if err := c.SetSeedLimits(ctx, torrentRef(added), limits); err != nil {
+			slog.Warn("transmission: failed to set seed limits", "hash", added.HashString, "id", added.ID, "error", err)
+		}
+	}
+	return added, nil
+}
+
+// torrentRef is how a torrent-set addresses a torrent: its info hash, which
+// Transmission accepts anywhere an id is taken, or the session id when the
+// daemon reported no hash.
+func torrentRef(t Torrent) any {
+	if h := strings.ToLower(strings.TrimSpace(t.HashString)); h != "" {
+		return h
+	}
+	return t.ID
+}
+
+// SetSeedLimits applies seeding overrides to an existing torrent through
+// torrent-set. ref is an info hash or a numeric id. A zero SeedLimits sends
+// nothing.
+func (c *Client) SetSeedLimits(ctx context.Context, ref any, limits SeedLimits) error {
+	if limits.isZero() {
+		return nil
+	}
+	args := map[string]interface{}{"ids": []any{ref}}
+	applySeedRatioArgs(args, limits.Ratio)
+	applySeedIdleArgs(args, limits.IdleMinutes)
+	req, err := c.buildRequest(ctx, "torrent-set", args)
+	if err != nil {
+		return err
+	}
+	respBody, err := c.doRequest(req)
+	if err != nil {
+		return err
+	}
+	var resp struct {
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return fmt.Errorf("decode torrent-set response: %w", err)
+	}
+	if resp.Result != "success" {
+		return fmt.Errorf("torrent-set failed: %s", resp.Result)
+	}
+	return nil
+}
+
+// addTorrent performs the torrent-add itself and returns the torrent
+// Transmission reported, new or duplicate.
+func (c *Client) addTorrent(ctx context.Context, magnetOrURL, downloadDir string) (Torrent, error) {
 	args := map[string]interface{}{}
 	if downloadDir != "" {
 		args["download-dir"] = downloadDir
 	}
-	applySeedRatioArgs(args, seedRatio)
 
 	if isMagnetLink(magnetOrURL) {
 		args["filename"] = magnetOrURL
 	} else {
 		fetched, err := c.fetchTorrentContent(ctx, magnetOrURL)
 		if err != nil {
-			return 0, err
+			return Torrent{}, err
 		}
 		// An indexer http(s) link can 30x-redirect to a magnet: URI (common
 		// with public trackers like The Pirate Bay / Knaben surfaced via
@@ -136,31 +234,33 @@ func (c *Client) AddTorrent(ctx context.Context, magnetOrURL, downloadDir string
 
 	req, err := c.buildRequest(ctx, "torrent-add", args)
 	if err != nil {
-		return 0, err
+		return Torrent{}, err
 	}
 	respBody, err := c.doRequest(req)
 	if err != nil {
-		return 0, err
+		return Torrent{}, err
 	}
 
 	var resp TorrentAddResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return 0, fmt.Errorf("decode add torrent response: %w", err)
+		return Torrent{}, fmt.Errorf("decode add torrent response: %w", err)
 	}
 
 	if resp.Result != "success" {
-		return 0, fmt.Errorf("add torrent failed: %s", resp.Result)
+		return Torrent{}, fmt.Errorf("add torrent failed: %s", resp.Result)
 	}
 
-	// Return the ID of the added torrent (prefer newly added, fall back to duplicate)
+	// Prefer the newly added torrent, fall back to the duplicate: re-adding a
+	// torrent Transmission already holds is reported under torrent-duplicate
+	// and is a successful grab as far as Bindery is concerned.
 	if resp.Arguments.TorrentAdded.ID != 0 {
-		return resp.Arguments.TorrentAdded.ID, nil
+		return resp.Arguments.TorrentAdded, nil
 	}
 	if resp.Arguments.TorrentDuplicate.ID != 0 {
-		return resp.Arguments.TorrentDuplicate.ID, nil
+		return resp.Arguments.TorrentDuplicate, nil
 	}
 
-	return 0, fmt.Errorf("no torrent ID returned")
+	return Torrent{}, fmt.Errorf("no torrent ID returned")
 }
 
 // Transmission seedRatioMode values (RPC spec): 0 = use global limit,
@@ -170,8 +270,35 @@ const (
 	seedRatioModeUnlimited = 2
 )
 
+// Transmission seedIdleMode values (tr_idlelimit): 0 = use global limit,
+// 1 = use the per-torrent seedIdleLimit, 2 = no idle limit.
+const seedIdleModeSingle = 1
+
+// maxSeedIdleMinutes is the largest idle limit Transmission can hold: the
+// daemon stores it as a uint16 (tr_torrentSetIdleLimit), so anything above
+// would wrap around to a short limit rather than a long one.
+const maxSeedIdleMinutes = 65535
+
+// applySeedIdleArgs writes the seedIdleLimit/seedIdleMode pair into a
+// torrent-set argument map for an inactive seeding override (#2206). nil
+// leaves the map untouched (keep the global rule). The API only accepts a
+// value of one minute or more; one above what the daemon can store is clamped.
+func applySeedIdleArgs(args map[string]interface{}, idleMinutes *int) {
+	if idleMinutes == nil || *idleMinutes < 1 {
+		return
+	}
+	v := *idleMinutes
+	if v > maxSeedIdleMinutes {
+		slog.Debug("transmission: inactive seed time clamped to the daemon's maximum",
+			"requested_minutes", v, "applied_minutes", maxSeedIdleMinutes)
+		v = maxSeedIdleMinutes
+	}
+	args["seedIdleLimit"] = v
+	args["seedIdleMode"] = seedIdleModeSingle
+}
+
 // applySeedRatioArgs writes the seedRatioLimit/seedRatioMode pair into a
-// torrent-add (or torrent-set) argument map for the given override. nil leaves
+// torrent-set argument map for the given override. nil leaves
 // the map untouched (keep the global rule). A non-negative value sets a single
 // per-torrent ratio; the -1 unlimited sentinel becomes seedRatioMode=2 since
 // the RPC rejects a negative seedRatioLimit. Other negatives are treated as
@@ -196,7 +323,7 @@ func (c *Client) GetTorrents(ctx context.Context, downloadDir string) ([]Torrent
 		"fields": []string{"id", "hashString", "name", "totalSize", "downloadedEver",
 			"leftUntilDone", "status", "errorString", "rateDownload", "rateUpload", "eta",
 			"percentDone", "metadataPercentComplete", "peersConnected", "downloadDir",
-			"labels"},
+			"labels", "addedDate"},
 	}
 
 	req, err := c.buildRequest(ctx, "torrent-get", args)
@@ -295,10 +422,28 @@ func (c *Client) Files(ctx context.Context, torrentID int64) ([]File, error) {
 	return out, nil
 }
 
-// RemoveTorrent removes a torrent by ID.
+// RemoveTorrent removes a torrent by its session-scoped numeric ID. Prefer
+// RemoveTorrentByHash when the caller is working from a persisted identifier:
+// a stored numeric id goes stale the moment the daemon restarts, and removing
+// a stale id deletes whichever torrent has inherited that number.
 func (c *Client) RemoveTorrent(ctx context.Context, torrentID int64, deleteFiles bool) error {
+	return c.removeTorrent(ctx, torrentID, fmt.Sprintf("%d", torrentID), deleteFiles)
+}
+
+// RemoveTorrentByHash removes a torrent by its info hash. The Transmission RPC
+// spec accepts a SHA1 hash string anywhere an id is taken, and unlike the
+// numeric id the hash is stable across daemon restarts.
+func (c *Client) RemoveTorrentByHash(ctx context.Context, hash string, deleteFiles bool) error {
+	hash = strings.ToLower(strings.TrimSpace(hash))
+	if hash == "" {
+		return fmt.Errorf("remove torrent: empty info hash")
+	}
+	return c.removeTorrent(ctx, hash, hash, deleteFiles)
+}
+
+func (c *Client) removeTorrent(ctx context.Context, id interface{}, label string, deleteFiles bool) error {
 	args := map[string]interface{}{
-		"ids": []int64{torrentID},
+		"ids": []interface{}{id},
 	}
 	if deleteFiles {
 		args["delete-local-data"] = true
@@ -326,7 +471,7 @@ func (c *Client) RemoveTorrent(ctx context.Context, torrentID int64, deleteFiles
 		if reason == "" {
 			reason = "Transmission gave no reason"
 		}
-		return fmt.Errorf("transmission rejected the removal of torrent %d: %s", torrentID, reason)
+		return fmt.Errorf("transmission rejected the removal of torrent %s: %s", label, reason)
 	}
 	return nil
 }

@@ -125,6 +125,36 @@ type stubMetaProvider struct {
 	getAuthorGate chan struct{}
 }
 
+type languageEvidenceMetaProvider struct {
+	stubMetaProvider
+	evidence map[string]metadata.AuthorWorkLanguageEvidence
+	err      error
+	calls    int
+}
+
+func (p *languageEvidenceMetaProvider) GetAuthorWorkLanguageEvidence(_ context.Context, _ []models.Book, _ []string) (map[string]metadata.AuthorWorkLanguageEvidence, error) {
+	p.calls++
+	return p.evidence, p.err
+}
+
+type languageEvidenceFillerMetaProvider struct {
+	languageEvidenceMetaProvider
+	fillLanguage string
+	fillCalls    int
+}
+
+func (p *languageEvidenceFillerMetaProvider) FillMissingWorkLanguages(_ context.Context, books []models.Book) int {
+	p.fillCalls++
+	filled := 0
+	for i := range books {
+		if books[i].Language == "" {
+			books[i].Language = p.fillLanguage
+			filled++
+		}
+	}
+	return filled
+}
+
 func (p *stubMetaProvider) Name() string {
 	if p.name != "" {
 		return p.name
@@ -1155,6 +1185,63 @@ func TestFetchAuthorBooks_SkipsSearchForOwnedBooks(t *testing.T) {
 	}
 	if ownedBook.FilePath != finder.ownedPath {
 		t.Errorf("expected file path %q, got %q", finder.ownedPath, ownedBook.FilePath)
+	}
+}
+
+// TestHandleNewWantedBook_DoesNotBindAnotherBooksFile is the ownership half of
+// #2810: FindExisting matches on the title alone, so a new book must not take
+// a file that book_files already gives to another book. Volume 1 owns its
+// audiobook folder; the match FindExisting offers volume 17 is the m4b inside
+// it. The book must stay unbound so auto-search runs. A file nobody owns is
+// still bound.
+func TestHandleNewWantedBook_DoesNotBindAnotherBooksFile(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	ctx := context.Background()
+
+	author := &models.Author{ForeignID: "hc:thefirstdefier", Name: "TheFirstDefier", SortName: "TheFirstDefier"}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	vol1Dir := "/books/audiobooks/TheFirstDefier/Defiance of the Fall"
+	vol1 := &models.Book{ForeignID: "hc:defiance-of-the-fall", AuthorID: author.ID, Title: "Defiance of the Fall",
+		Status: models.BookStatusImported, MediaType: models.MediaTypeAudiobook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, vol1); err != nil {
+		t.Fatal(err)
+	}
+	if err := bookRepo.AddBookFile(ctx, vol1.ID, models.MediaTypeAudiobook, vol1Dir); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name, title, path string
+		wantBound         bool
+	}{
+		{"track inside an owned folder", "Defiance of the Fall 17", vol1Dir + "/Defiance of the Fall [B094JZMCJX].m4b", false},
+		{"the owned path itself", "Defiance of the Fall 18", vol1Dir, false},
+		{"a file nobody owns", "Defiance of the Fall 19", "/books/audiobooks/TheFirstDefier/Defiance of the Fall 19/Defiance of the Fall 19.m4b", true},
+	} {
+		book := &models.Book{ForeignID: "hc:" + tc.title, AuthorID: author.ID, Title: tc.title,
+			Status: models.BookStatusWanted, MediaType: models.MediaTypeAudiobook, Genres: []string{}}
+		if err := bookRepo.Create(ctx, book); err != nil {
+			t.Fatal(err)
+		}
+		finder := &stubLibraryFinder{ownedTitle: tc.title, ownedPath: tc.path}
+		if got := handleNewWantedBook(ctx, bookRepo, nil, finder, *book, author.Name); got != tc.wantBound {
+			t.Errorf("%s: handleNewWantedBook = %v, want %v", tc.name, got, tc.wantBound)
+		}
+		files, err := bookRepo.ListFiles(ctx, book.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bound := len(files) > 0; bound != tc.wantBound {
+			t.Errorf("%s: book_files rows = %v, want bound=%v", tc.name, files, tc.wantBound)
+		}
 	}
 }
 
@@ -5246,6 +5333,120 @@ func TestAddBook_DirectInsertHydratesMatchedHardcoverEditions(t *testing.T) {
 	}
 }
 
+// TestAddBook_MediaTypePinIsForwardedToHydration is the #2768 regression for
+// the add path. The direct insert forwards an explicit request format to
+// hydration as a pin, so an "ebook" the user named stays ebook even though the
+// work has an audio edition; a format the provider supplied (no request value)
+// is still a guess and hydration may widen it to "both" — the behaviour #1732
+// and #1802 added the pin to keep for unpinned rows.
+func TestAddBook_MediaTypePinIsForwardedToHydration(t *testing.T) {
+	cases := []struct {
+		name        string
+		requestType string
+		want        string
+		wantASIN    string
+	}{
+		{
+			name:        "explicit ebook is pinned",
+			requestType: models.MediaTypeEbook,
+			want:        models.MediaTypeEbook,
+		},
+		{
+			name:     "provider ebook with no request value still widens",
+			want:     models.MediaTypeBoth,
+			wantASIN: "B2768DIRECT",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database, err := db.OpenMemory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer database.Close()
+			database.SetMaxOpenConns(1)
+
+			authorRepo := db.NewAuthorRepo(database)
+			bookRepo := db.NewBookRepo(database)
+			editionRepo := db.NewEditionRepo(database)
+			settingsRepo := db.NewSettingsRepo(database)
+			profileRepo := db.NewMetadataProfileRepo(database)
+			ctx := context.Background()
+			enableHardcoverFeatureForTest(t, ctx, settingsRepo)
+
+			primaryBook := &models.Book{
+				ForeignID:          "OL-PIN-W",
+				Title:              "Pinned Book",
+				SortTitle:          "Pinned Book",
+				Language:           "eng",
+				Status:             models.BookStatusWanted,
+				Genres:             []string{},
+				MetadataProvider:   "openlibrary",
+				MediaType:          models.MediaTypeEbook,
+				HardcoverForeignID: "hc:pinned-book",
+			}
+			primary := &stubMetaProvider{
+				name: "openlibrary",
+				getBookByID: map[string]*models.Book{
+					"OL-PIN-W": primaryBook,
+				},
+			}
+			audioASIN := "B2768DIRECT"
+			hardcover := &stubMetaProvider{
+				name: "hardcover",
+				editionsByBook: map[string][]models.Edition{
+					"hc:pinned-book": {{
+						ForeignID: "hc:pinned-book-audio",
+						Title:     "Pinned Book",
+						ASIN:      &audioASIN,
+						Format:    "Audiobook",
+						Monitored: true,
+					}},
+				},
+			}
+			agg := metadata.NewAggregator(primary, hardcover).WithAudnexClient(nil)
+			h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil).
+				WithHardcoverFeatureSettings(settingsRepo, true).
+				WithEditionHydration(editionRepo)
+
+			body := map[string]any{
+				"foreignBookId":   "OL-PIN-W",
+				"foreignAuthorId": "OL2768A",
+				"authorName":      "Pin Author",
+			}
+			if tc.requestType != "" {
+				body["mediaType"] = tc.requestType
+			}
+			raw, _ := json.Marshal(body)
+			rec := httptest.NewRecorder()
+			h.AddBook(rec, httptest.NewRequest(http.MethodPost, "/api/v1/author/book", bytes.NewReader(raw)))
+			if rec.Code != http.StatusCreated {
+				t.Fatalf("expected 201, got %d: %s", rec.Code, rec.Body.String())
+			}
+
+			got, err := bookRepo.GetByForeignID(ctx, "OL-PIN-W")
+			if err != nil || got == nil {
+				t.Fatalf("book not persisted: err=%v got=%v", err, got)
+			}
+			if got.MediaType != tc.want {
+				t.Fatalf("MediaType = %q, want %q", got.MediaType, tc.want)
+			}
+			if got.ASIN != tc.wantASIN {
+				t.Fatalf("ASIN = %q, want %q", got.ASIN, tc.wantASIN)
+			}
+			// Hydration still ran in both cases, so the media type holding is
+			// the pin and not a skipped hydration.
+			editions, err := editionRepo.ListByBook(ctx, got.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(editions) != 1 || editions[0].ForeignID != "hc:pinned-book-audio" {
+				t.Fatalf("expected hydrated edition, got %+v", editions)
+			}
+		})
+	}
+}
+
 // TestCanUpgradeToBoth validates the helper that decides whether two
 // complementary media types should be merged into a dual-format row.
 func TestCanUpgradeToBoth(t *testing.T) {
@@ -5379,13 +5580,18 @@ func TestFetchAuthorBooks_MajorityLanguageFallbackRescuesUnresolvedWork(t *testi
 		{ForeignID: "OL993W", Title: "Resolved English Three", SortTitle: "resolved english three", Language: "eng",
 			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary"},
 		// No sampled edition reported a language for this one (a real,
-		// common OpenLibrary data gap) — the stub provider doesn't
-		// implement the edition-sample backfill, so this stays blank
-		// exactly as it would when that backfill genuinely can't resolve it.
+		// common OpenLibrary data gap), so the majority fallback must rescue it
+		// even when the evidence capability also reports it as indeterminate.
 		{ForeignID: "OL994W", Title: "Unresolved Language Work", SortTitle: "unresolved language work", Language: "",
 			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary"},
 	}
-	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	provider := &languageEvidenceMetaProvider{
+		stubMetaProvider: stubMetaProvider{name: "openlibrary", works: works},
+		evidence: map[string]metadata.AuthorWorkLanguageEvidence{
+			"OL994W": {State: metadata.AuthorWorkLanguageIndeterminate},
+		},
+	}
+	agg := metadata.NewAggregator(provider)
 	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
 	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
 
@@ -5400,9 +5606,293 @@ func TestFetchAuthorBooks_MajorityLanguageFallbackRescuesUnresolvedWork(t *testi
 	if !byTitle["Unresolved Language Work"] {
 		t.Error("work with no resolved language should have been rescued by the majority-language fallback, but was skipped")
 	}
+	if provider.calls != 1 {
+		t.Errorf("language evidence calls = %d, want 1", provider.calls)
+	}
 
 	if summary := h.syncSummaries.get(author.ID); summary != nil && summary.SkippedLanguage != 0 {
 		t.Errorf("summary.SkippedLanguage = %d, want 0 (the unresolved work should have been rescued, not skipped)", summary.SkippedLanguage)
+	}
+}
+
+func TestFetchAuthorBooks_EditionSamplingSurvivesIndeterminateEvidence(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile): profile=%+v err=%v", profile, err)
+	}
+	profile.AllowedLanguages = "eng"
+	profile.UnknownLanguageBehavior = models.UnknownLanguageFail
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	author := &models.Author{
+		ForeignID: "hc:sampled-author", Name: "Sampled Author", SortName: "Author, Sampled",
+		MetadataProvider: "hardcover", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	provider := &languageEvidenceFillerMetaProvider{
+		languageEvidenceMetaProvider: languageEvidenceMetaProvider{
+			stubMetaProvider: stubMetaProvider{name: "hardcover", works: []models.Book{{
+				ForeignID: "hc:sampled-work", Title: "Sampled Work", SortTitle: "Sampled Work",
+				MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover",
+			}}},
+			evidence: map[string]metadata.AuthorWorkLanguageEvidence{
+				"hc:sampled-work": {State: metadata.AuthorWorkLanguageIndeterminate},
+			},
+		},
+		fillLanguage: "eng",
+	}
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(provider), nil, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	books, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(books) != 1 || books[0].Language != "eng" {
+		t.Fatalf("books = %+v, want the edition-sampled English work", books)
+	}
+	if provider.calls != 1 || provider.fillCalls != 1 {
+		t.Fatalf("evidence calls=%d fill calls=%d, want 1/1", provider.calls, provider.fillCalls)
+	}
+	if summary := h.syncSummaries.get(author.ID); summary == nil || summary.SkippedLanguage != 0 {
+		t.Fatalf("sync summary = %+v, want no language skips", summary)
+	}
+}
+
+// TestFetchAuthorBooks_HardcoverEditionLanguageEvidence is the regression for
+// a translated default edition (for example, a Portuguese default for an
+// English work). The default remains useful evidence, but an allowed-language
+// edition found by the bounded Hardcover batch query wins for catalogue
+// filtering without rewriting the provider's preferred/display language.
+// Complete non-allowed evidence and unresolved evidence still honor a strict
+// profile.
+func TestFetchAuthorBooks_HardcoverEditionLanguageEvidence(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile): profile=%+v err=%v", profile, err)
+	}
+	profile.AllowedLanguages = "eng"
+	profile.UnknownLanguageBehavior = models.UnknownLanguageFail
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	author := &models.Author{
+		ForeignID: "hc:test-author", Name: "Test Author", SortName: "Author, Test",
+		MetadataProvider: "hardcover", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	provider := &languageEvidenceMetaProvider{
+		stubMetaProvider: stubMetaProvider{name: "hardcover", works: []models.Book{
+			{ForeignID: "hc:translated-default", Title: "Translated Default", SortTitle: "Translated Default", Language: "por", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+			{ForeignID: "hc:english-default", Title: "English Default", SortTitle: "English Default", Language: "eng", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+			{ForeignID: "hc:foreign-only", Title: "Foreign Only", SortTitle: "Foreign Only", Language: "spa", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+			{ForeignID: "hc:unresolved", Title: "Unresolved", SortTitle: "Unresolved", Language: "por", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+		}},
+		evidence: map[string]metadata.AuthorWorkLanguageEvidence{
+			"hc:translated-default": {State: metadata.AuthorWorkLanguageAllowed, Language: "eng"},
+			"hc:english-default":    {State: metadata.AuthorWorkLanguageAllowed, Language: "eng"},
+			"hc:foreign-only":       {State: metadata.AuthorWorkLanguageNotAllowed, Language: "spa"},
+			"hc:unresolved":         {State: metadata.AuthorWorkLanguageIndeterminate},
+		},
+	}
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(provider), nil, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	books, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTitle := make(map[string]models.Book, len(books))
+	for _, book := range books {
+		byTitle[book.Title] = book
+	}
+	wantLanguage := map[string]string{"Translated Default": "por", "English Default": "eng"}
+	for title, language := range wantLanguage {
+		book, ok := byTitle[title]
+		if !ok {
+			t.Errorf("%q was rejected by the English-only profile", title)
+			continue
+		}
+		if book.Language != language {
+			t.Errorf("%q Language = %q, want preferred/display language %q", title, book.Language, language)
+		}
+	}
+	for _, title := range []string{"Foreign Only", "Unresolved"} {
+		if _, ok := byTitle[title]; ok {
+			t.Errorf("%q survived a strict English-only profile", title)
+		}
+	}
+	if provider.calls != 1 {
+		t.Errorf("language evidence calls = %d, want 1 batched lookup", provider.calls)
+	}
+	if summary := h.syncSummaries.get(author.ID); summary == nil || summary.SkippedLanguage != 2 {
+		t.Fatalf("sync summary = %+v, want two language skips", summary)
+	}
+}
+
+func TestFetchAuthorBooks_LanguageEvidenceFailureUsesExistingPipeline(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile): profile=%+v err=%v", profile, err)
+	}
+	profile.AllowedLanguages = "eng"
+	profile.UnknownLanguageBehavior = models.UnknownLanguageFail
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+	author := &models.Author{
+		ForeignID: "hc:evidence-error-author", Name: "Evidence Error Author", SortName: "Author, Evidence Error",
+		MetadataProvider: "hardcover", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	works := []models.Book{
+		{ForeignID: "hc:english-one", Title: "English One", SortTitle: "English One", Language: "eng", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+		{ForeignID: "hc:english-two", Title: "English Two", SortTitle: "English Two", Language: "eng", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+		{ForeignID: "hc:english-three", Title: "English Three", SortTitle: "English Three", Language: "eng", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+		{ForeignID: "hc:unresolved", Title: "Unresolved", SortTitle: "Unresolved", MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "hardcover"},
+	}
+	evidence := make(map[string]metadata.AuthorWorkLanguageEvidence, len(works))
+	for _, work := range works {
+		evidence[work.ForeignID] = metadata.AuthorWorkLanguageEvidence{State: metadata.AuthorWorkLanguageIndeterminate}
+	}
+	provider := &languageEvidenceMetaProvider{
+		stubMetaProvider: stubMetaProvider{name: "hardcover", works: works},
+		evidence:         evidence,
+		err:              errors.New("language evidence unavailable"),
+	}
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(provider), nil, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	books, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(books) != len(works) {
+		t.Fatalf("books = %+v, want all %d works retained by scalar/majority fallbacks", books, len(works))
+	}
+	for _, book := range books {
+		if book.Language != "eng" {
+			t.Errorf("%q language = %q, want eng", book.Title, book.Language)
+		}
+	}
+	if provider.calls != 1 {
+		t.Errorf("language evidence calls = %d, want 1", provider.calls)
+	}
+	if summary := h.syncSummaries.get(author.ID); summary == nil || summary.SkippedLanguage != 0 || summary.Total != len(works) {
+		t.Fatalf("sync summary = %+v, want total=%d and no language skips", summary, len(works))
+	}
+}
+
+func TestAuthorWorkPassesLanguageFilter_UnrestrictedProfileIgnoresEvidence(t *testing.T) {
+	book := models.Book{ForeignID: "hc:work", Language: "por"}
+	evidence := map[string]metadata.AuthorWorkLanguageEvidence{
+		"hc:work": {State: metadata.AuthorWorkLanguageNotAllowed, Language: "por"},
+	}
+
+	allowed, indeterminate := authorWorkPassesLanguageFilter(&book, nil, true, evidence)
+	if !allowed || indeterminate {
+		t.Fatalf("allowed=%v indeterminate=%v, want true/false for an unrestricted profile", allowed, indeterminate)
+	}
+	if book.Language != "por" {
+		t.Fatalf("language = %q, want original display language preserved", book.Language)
+	}
+}
+
+func TestAuthorWorkPassesLanguageFilter_EvidenceFallsBackWithoutMutatingDisplayLanguage(t *testing.T) {
+	tests := []struct {
+		name              string
+		scalarLanguage    string
+		evidence          metadata.AuthorWorkLanguageEvidence
+		unknownFail       bool
+		locked            bool
+		wantAllowed       bool
+		wantIndeterminate bool
+	}{
+		{
+			name: "allowed evidence accepts translated display language", scalarLanguage: "por",
+			evidence: metadata.AuthorWorkLanguageEvidence{State: metadata.AuthorWorkLanguageAllowed, Language: "eng"},
+			locked:   true, wantAllowed: true,
+		},
+		{
+			name: "definitive non-allowed evidence rejects allowed scalar", scalarLanguage: "eng",
+			evidence: metadata.AuthorWorkLanguageEvidence{State: metadata.AuthorWorkLanguageNotAllowed, Language: "spa"},
+		},
+		{
+			name: "indeterminate blank strict", evidence: metadata.AuthorWorkLanguageEvidence{State: metadata.AuthorWorkLanguageIndeterminate},
+			unknownFail: true, wantIndeterminate: true,
+		},
+		{
+			name: "indeterminate blank permissive", evidence: metadata.AuthorWorkLanguageEvidence{State: metadata.AuthorWorkLanguageIndeterminate},
+			wantAllowed: true, wantIndeterminate: true,
+		},
+		{
+			name: "indeterminate allowed scalar", scalarLanguage: "eng",
+			evidence:    metadata.AuthorWorkLanguageEvidence{State: metadata.AuthorWorkLanguageIndeterminate},
+			unknownFail: true, wantAllowed: true,
+		},
+		{
+			name: "indeterminate non-allowed scalar", scalarLanguage: "spa",
+			evidence:    metadata.AuthorWorkLanguageEvidence{State: metadata.AuthorWorkLanguageIndeterminate},
+			unknownFail: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			book := models.Book{ForeignID: "hc:work", Language: tt.scalarLanguage}
+			if tt.locked {
+				book.LockField(models.BookFieldLanguage)
+			}
+			evidence := map[string]metadata.AuthorWorkLanguageEvidence{"hc:work": tt.evidence}
+
+			allowed, indeterminate := authorWorkPassesLanguageFilter(&book, []string{"eng"}, tt.unknownFail, evidence)
+			if allowed != tt.wantAllowed || indeterminate != tt.wantIndeterminate {
+				t.Fatalf("allowed=%v indeterminate=%v, want %v/%v", allowed, indeterminate, tt.wantAllowed, tt.wantIndeterminate)
+			}
+			if book.Language != tt.scalarLanguage {
+				t.Fatalf("language = %q, want display language unchanged at %q", book.Language, tt.scalarLanguage)
+			}
+			if tt.locked && !book.IsFieldLocked(models.BookFieldLanguage) {
+				t.Fatal("language field lock was lost")
+			}
+		})
 	}
 }
 
@@ -7365,6 +7855,274 @@ func TestFetchAuthorBooks_SkipMissingISBNExemptsAlreadyTrackedBook(t *testing.T)
 
 	if summary := h.syncSummaries.get(author.ID); summary != nil && summary.SkippedMissingISBN != 0 {
 		t.Errorf("summary.SkippedMissingISBN = %d, want 0 (already-tracked book must not be counted as skipped)", summary.SkippedMissingISBN)
+	}
+}
+
+// thinClusterTestWorks is the catalogue for the MinEditionCount tests (#2235).
+// "Thin Novel" sits below a floor of 3 and is the work the filter drops.
+// "Fat Novel" clears it. "Unknown Novel" reports no edition count at all —
+// the Hardcover-primary shape — and must pass. "Clustered Novel" appears as
+// two works under one title, one thin (1) and one well-editioned (5): the
+// filter judges the cluster's best-known count, so both survive.
+func thinClusterTestWorks() []models.Book {
+	return []models.Book{
+		{ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1},
+		{ForeignID: "OL991W", Title: "Fat Novel", SortTitle: "fat novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 5},
+		{ForeignID: "OL992W", Title: "Unknown Novel", SortTitle: "unknown novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary"},
+		{ForeignID: "OL993W", Title: "Clustered Novel", SortTitle: "clustered novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1},
+		{ForeignID: "OL994W", Title: "Clustered Novel", SortTitle: "clustered novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 5},
+	}
+}
+
+// TestFetchAuthorBooks_SkipsThinCluster verifies that once a metadata
+// profile's MinEditionCount is set, works whose title cluster reports fewer
+// editions than the floor are dropped, while works clearing the floor, works
+// with no known edition count (unknown, not zero), and a title cluster that
+// carries at least one well-editioned work all come through.
+func TestFetchAuthorBooks_SkipsThinCluster(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile) failed: %v", err)
+	}
+	profile.MinEditionCount = 3
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{
+		ForeignID: "OL990A", Name: "Editions Author", SortName: "Author, Editions",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	works := thinClusterTestWorks()
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	got, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byTitle := make(map[string]bool, len(got))
+	for _, b := range got {
+		byTitle[b.Title] = true
+	}
+
+	if byTitle["Thin Novel"] {
+		t.Error("work below the edition-count floor should have been skipped, but was created")
+	}
+	for _, want := range []string{"Fat Novel", "Unknown Novel", "Clustered Novel"} {
+		if !byTitle[want] {
+			t.Errorf("work %q should have been created, but was skipped", want)
+		}
+	}
+
+	summary := h.syncSummaries.get(author.ID)
+	if summary == nil {
+		t.Fatal("expected a recorded sync summary, got nil")
+	}
+	if want := 1; summary.SkippedThinCluster != want {
+		t.Errorf("summary.SkippedThinCluster = %d, want %d", summary.SkippedThinCluster, want)
+	}
+	if summary.SkippedTotal() < summary.SkippedThinCluster {
+		t.Errorf("summary.SkippedTotal() = %d should include SkippedThinCluster = %d", summary.SkippedTotal(), summary.SkippedThinCluster)
+	}
+	sampleTitles := make(map[string]bool, len(summary.SkippedThinClusterSample))
+	for _, b := range summary.SkippedThinClusterSample {
+		sampleTitles[b.Title] = true
+	}
+	if !sampleTitles["Thin Novel"] {
+		t.Errorf("expected %q in summary.SkippedThinClusterSample, got %+v", "Thin Novel", summary.SkippedThinClusterSample)
+	}
+}
+
+// TestFetchAuthorBooks_ThinClusterKeptWhenZero verifies the inverse of
+// TestFetchAuthorBooks_SkipsThinCluster: with MinEditionCount left at its
+// default (0), no work is dropped by the edition-count filter — it is
+// opt-in, and a profile without it pays nothing.
+func TestFetchAuthorBooks_ThinClusterKeptWhenZero(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	author := &models.Author{
+		ForeignID: "OL991A", Name: "Editions Author Two", SortName: "Author, Editions Two",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	works := thinClusterTestWorks()
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	got, err := bookRepo.ListByAuthor(ctx, author.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Four books, not five: the two "Clustered Novel" works share a title,
+	// and the sync's pre-existing title dedup folds the second into the
+	// first (matched, not created). That merge is independent of the
+	// edition-count filter — the point here is that nothing is DROPPED.
+	if len(got) != 4 {
+		t.Errorf("got %d books, want 4 (MinEditionCount defaults to 0, nothing should be dropped; the twin Clustered Novel works merge via title dedup)", len(got))
+	}
+	if summary := h.syncSummaries.get(author.ID); summary != nil && summary.SkippedThinCluster != 0 {
+		t.Errorf("summary.SkippedThinCluster = %d, want 0 (filter is opt-in)", summary.SkippedThinCluster)
+	}
+}
+
+// TestFetchAuthorBooks_ThinClusterExemptsAlreadyTrackedBook verifies that the
+// edition-count filter screens works out of discovery without stopping the
+// maintenance of a book the user already owns: a thin work that resolves to
+// an existing row is refreshed, not dropped, and not counted as skipped.
+func TestFetchAuthorBooks_ThinClusterExemptsAlreadyTrackedBook(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile) failed: %v", err)
+	}
+	profile.MinEditionCount = 3
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{
+		ForeignID: "OL992A", Name: "Editions Author Three", SortName: "Author, Editions Three",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	owned := &models.Book{
+		ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel",
+		AuthorID: author.ID, Language: "eng", Status: models.BookStatusWanted,
+		MediaType: models.MediaTypeEbook, MetadataProvider: "openlibrary",
+	}
+	if err := bookRepo.Create(ctx, owned); err != nil {
+		t.Fatal(err)
+	}
+
+	works := []models.Book{
+		{ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1, AverageRating: 4.2, RatingsCount: 250},
+	}
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.FetchAuthorBooks(author, false, models.MediaTypeEbook)
+
+	updated, err := bookRepo.GetByForeignID(ctx, "OL990W")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated == nil {
+		t.Fatal("already-tracked thin work was deleted, want it kept")
+	}
+	if updated.RatingsCount != 250 {
+		t.Errorf("RatingsCount = %d, want 250 (already-tracked book should still receive updates)", updated.RatingsCount)
+	}
+
+	if summary := h.syncSummaries.get(author.ID); summary != nil && summary.SkippedThinCluster != 0 {
+		t.Errorf("summary.SkippedThinCluster = %d, want 0 (already-tracked book must not be counted as skipped)", summary.SkippedThinCluster)
+	}
+}
+
+// TestFetchAuthorBooks_ThinClusterSingleWorkExempt verifies the #1612
+// exemption on the edition-count filter: an explicit add of one specific
+// work must not be vetoed by catalogue-sync heuristics, so a single-work run
+// creates the requested work even when it sits below the profile's floor.
+func TestFetchAuthorBooks_ThinClusterSingleWorkExempt(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	settingsRepo := db.NewSettingsRepo(database)
+	ctx := context.Background()
+
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile) failed: %v", err)
+	}
+	profile.MinEditionCount = 3
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{
+		ForeignID: "OL993A", Name: "Editions Author Four", SortName: "Author, Editions Four",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	works := []models.Book{
+		{ForeignID: "OL990W", Title: "Thin Novel", SortTitle: "thin novel", Language: "eng",
+			MediaType: models.MediaTypeEbook, Status: models.BookStatusWanted, MetadataProvider: "openlibrary",
+			EditionCount: 1},
+	}
+	agg := metadata.NewAggregator(&stubMetaProvider{works: works})
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, agg, settingsRepo, profileRepo, nil)
+	h.fetchAuthorBooks(ctx, author, catalogueSyncOptions{mediaType: models.MediaTypeEbook, onlyForeignID: "OL990W"})
+
+	created, err := bookRepo.GetByForeignID(ctx, "OL990W")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created == nil {
+		t.Fatal("explicitly added single work was vetoed by the edition-count filter, want it created (#1612)")
 	}
 }
 

@@ -2,7 +2,6 @@ package importer
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"github.com/vavallee/bindery/internal/calibre"
-	"github.com/vavallee/bindery/internal/covers"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -65,6 +63,54 @@ func (s *Scanner) configuredImportMode(ctx context.Context) string {
 		}
 	}
 	return ""
+}
+
+// configuredImportModeFor returns the operator-set import mode for one media
+// format (#1632). Ebooks always use "import.mode". Audiobooks use
+// "import.audiobook.mode" when it names a mode, so a Calibre-Web-Automated +
+// Audiobookshelf library can drop ebooks into an ingest folder while
+// audiobooks are placed by copy or hardlink in the audiobook root. An unset,
+// empty or unrecognised override means "same as import.mode", which keeps
+// every existing install behaving exactly as before. An explicit "auto"
+// override returns "" (the auto default) even when import.mode is set,
+// because that is what the operator asked for. Keep the literal in sync with
+// api.SettingImportAudiobookMode.
+func (s *Scanner) configuredImportModeFor(ctx context.Context, format string) string {
+	if format == models.MediaTypeAudiobook && s.settings != nil {
+		if setting, err := s.settings.Get(ctx, "import.audiobook.mode"); err == nil && setting != nil {
+			switch v := strings.TrimSpace(setting.Value); v {
+			case "move", "copy", "hardlink", "external":
+				return v
+			case "auto":
+				return ""
+			}
+		}
+	}
+	return s.configuredImportMode(ctx)
+}
+
+// downloadImportMode resolves the configured import mode for one download,
+// before any placement decision is taken (#1632). When ebooks and audiobooks
+// share a mode, which is every install that never set the audiobook override,
+// it returns that mode without touching the filesystem. Only when they differ
+// does it work out the download's format, with exactly the inputs the
+// placement branches use later (the caller's format hint, else the
+// extensions of the discovered book files), so the mode chosen here and the
+// branch the download ends up in agree.
+func (s *Scanner) downloadImportMode(ctx context.Context, downloadPath, formatHint string, explicitFiles []string) string {
+	ebookMode := s.configuredImportModeFor(ctx, models.MediaTypeEbook)
+	audiobookMode := s.configuredImportModeFor(ctx, models.MediaTypeAudiobook)
+	if ebookMode == audiobookMode {
+		return ebookMode
+	}
+	format := formatHint
+	if format != models.MediaTypeAudiobook && format != models.MediaTypeEbook {
+		format = detectDownloadFormat(discoverBookFiles(downloadPath, explicitFiles))
+	}
+	if format == models.MediaTypeAudiobook {
+		return audiobookMode
+	}
+	return ebookMode
 }
 
 // isUsenetClient reports whether clientType names a usenet download client.
@@ -163,6 +209,29 @@ func (s *Scanner) audiobookFileTemplate(ctx context.Context) string {
 		return ""
 	}
 	return strings.TrimSpace(setting.Value)
+}
+
+// singleAudiobookFileName is the name a single-file audiobook takes inside its
+// folder: the source file's own name, or, when naming.audiobook_file_template
+// is set, that template rendered the way the folder branch renders a track,
+// with {Part} left out as AudiobookSingleFileName describes (#2900). The
+// import's single-file branch and Rename files both call it, so a reorganized
+// file lands where a fresh import would put it. The extension is lowercased
+// for the template, the same as flattenAudiobookDirNamed does for each track.
+// A template that renders to nothing usable keeps the source name rather than
+// placing a file called "." or with no name at all.
+func (s *Scanner) singleAudiobookFileName(ctx context.Context, author *models.Author, book *models.Book, seriesTitle, seriesNum, src string) string {
+	name := filepath.Base(src)
+	tmpl := s.audiobookFileTemplate(ctx)
+	if tmpl == "" {
+		return name
+	}
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(src)), ".")
+	rendered := s.renamer.AudiobookSingleFileName(tmpl, author, book, seriesTitle, seriesNum, ext)
+	if rendered == "" || rendered == "." || rendered == ".." || rendered == string(filepath.Separator) {
+		return name
+	}
+	return rendered
 }
 
 // pushToCWA copies the just-imported file into the directory watched by a
@@ -273,18 +342,18 @@ func importableSourceFile(p string) bool {
 	return fi.Mode()&os.ModeSymlink == 0
 }
 
-// dropSettings reads the external-mode drop-folder configuration (#941).
-// Defaults: layout "flat", link mode "copy". An empty folder means the feature
-// is off. Keep the literal keys in sync with the api.SettingImportDrop*
-// constants (the importer can't import the api package — cycle).
-func (s *Scanner) dropSettings(ctx context.Context) (folder, layout, linkMode string) {
+// dropSettings reads the external-mode drop-folder configuration (#941) for
+// one media format. Defaults: layout "flat", link mode "copy". An empty folder
+// means the feature is off for that format. Layout and link mode are shared by
+// both formats; the folder comes from dropFolderFor. Keep the literal keys in
+// sync with the api.SettingImportDrop* constants (the importer can't import
+// the api package, cycle).
+func (s *Scanner) dropSettings(ctx context.Context, format string) (folder, layout, linkMode string) {
 	layout, linkMode = "flat", "copy"
 	if s.settings == nil {
 		return "", layout, linkMode
 	}
-	if v, err := s.settings.Get(ctx, "import.drop_folder"); err == nil && v != nil {
-		folder = strings.TrimSpace(v.Value)
-	}
+	folder = s.dropFolderFor(ctx, format)
 	if v, err := s.settings.Get(ctx, "import.drop_layout"); err == nil && v != nil && v.Value == "templated" {
 		layout = "templated"
 	}
@@ -292,6 +361,37 @@ func (s *Scanner) dropSettings(ctx context.Context) (folder, layout, linkMode st
 		linkMode = "hardlink"
 	}
 	return folder, layout, linkMode
+}
+
+// dropFolderFor returns the drop folder one media format is handed off into,
+// or "" when that format has none. Audiobooks use import.audiobook.drop_folder
+// when it is set and fall back to import.drop_folder otherwise (#1632), so an
+// install that never set the audiobook folder drops both formats into the one
+// folder exactly as before, which is what Storyteller pair gating (#942)
+// relies on. Keep the literal in sync with api.SettingImportAudiobookDropFolder.
+func (s *Scanner) dropFolderFor(ctx context.Context, format string) string {
+	if s.settings == nil {
+		return ""
+	}
+	if format == models.MediaTypeAudiobook {
+		if v, err := s.settings.Get(ctx, "import.audiobook.drop_folder"); err == nil && v != nil {
+			if folder := strings.TrimSpace(v.Value); folder != "" {
+				return folder
+			}
+		}
+	}
+	if v, err := s.settings.Get(ctx, "import.drop_folder"); err == nil && v != nil {
+		return strings.TrimSpace(v.Value)
+	}
+	return ""
+}
+
+// formatDrops reports whether a format, under the current settings, is handed
+// off into a drop folder: its effective import mode is external AND it has a
+// drop folder. Pair gating (#942) uses it to decide whether waiting for the
+// sibling format can ever end with the pair landing together.
+func (s *Scanner) formatDrops(ctx context.Context, format string) bool {
+	return s.configuredImportModeFor(ctx, format) == "external" && s.dropFolderFor(ctx, format) != ""
 }
 
 // dropToFolder handles import.mode=external WHEN a drop folder is configured:
@@ -304,12 +404,25 @@ func (s *Scanner) dropSettings(ctx context.Context) (folder, layout, linkMode st
 // whether it succeeded or failed via failImport), false when no drop folder is
 // configured so the caller falls back to plain external mode.
 func (s *Scanner) dropToFolder(ctx context.Context, dl *models.Download, downloadPath, formatHint string, explicitFiles []string) bool {
-	folder, layout, linkMode := s.dropSettings(ctx)
+	// No drop folder for either format: plain external mode, decided before
+	// touching the download, which may not even be mounted on this host.
+	if s.dropFolderFor(ctx, models.MediaTypeEbook) == "" && s.dropFolderFor(ctx, models.MediaTypeAudiobook) == "" {
+		return false
+	}
+
+	// The format decides the destination (#1632): audiobooks may have a drop
+	// folder of their own, so it is resolved before the folder is read.
+	bookFiles := discoverBookFiles(downloadPath, explicitFiles)
+	detectedFormat := detectDownloadFormat(bookFiles)
+	if formatHint == models.MediaTypeAudiobook || formatHint == models.MediaTypeEbook {
+		detectedFormat = formatHint
+	}
+
+	folder, layout, linkMode := s.dropSettings(ctx, detectedFormat)
 	if folder == "" {
 		return false
 	}
 
-	bookFiles := discoverBookFiles(downloadPath, explicitFiles)
 	if len(bookFiles) == 0 {
 		if _, statErr := os.Stat(downloadPath); os.IsNotExist(statErr) {
 			s.failImport(ctx, dl, models.StateImportFailed,
@@ -328,16 +441,14 @@ func (s *Scanner) dropToFolder(ctx context.Context, dl *models.Download, downloa
 		return true
 	}
 
-	detectedFormat := detectDownloadFormat(bookFiles)
-	if formatHint == models.MediaTypeAudiobook || formatHint == models.MediaTypeEbook {
-		detectedFormat = formatHint
-	}
-
 	// Pair gating (#942): a media_type=both book only hands off once BOTH
 	// formats are present, so the drop of this format may be held back until its
 	// sibling arrives. Single-format books, and everything when gating is off,
-	// fall through to the immediate placement below unchanged.
-	if s.dropPairGatingEnabled(ctx) && book.MediaType == models.MediaTypeBoth {
+	// fall through to the immediate placement below unchanged. So does a book
+	// whose sibling format is not handed off at all (#1632: audiobooks imported
+	// into the library while ebooks drop): nothing but the timeout would ever
+	// release the hold, so holding would only delay this format by days.
+	if s.dropPairGatingEnabled(ctx) && book.MediaType == models.MediaTypeBoth && s.formatDrops(ctx, siblingFormatOf(detectedFormat)) {
 		return s.dropPairGated(ctx, dl, book, author, downloadPath, bookFiles, explicitFiles, detectedFormat, folder, layout, linkMode)
 	}
 
@@ -532,101 +643,59 @@ func (s *Scanner) dropPlaceAudiobook(ctx context.Context, downloadPath string, b
 	return dropPlaceFile(ctx, source, filepath.Join(destDir, filepath.Base(source)), linkMode)
 }
 
-// pushToCalibre mirrors a just-imported book into Calibre via calibredb add.
-// Failures are logged and swallowed — Calibre sync is best-effort and must
-// never roll back an otherwise-good Bindery import.
-func (s *Scanner) pushToCalibre(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum, path string) {
-	if s.calibreMode == nil || book == nil {
-		return
+// enqueueCalibreDelivery queues one just-imported ebook file for the Calibre
+// delivery worker (#2832). It used to push inline, per file, inside the
+// import: a closed Calibre cost up to thirty seconds per file and the book
+// was then missed for good, with one WARN line as the only record. Now the
+// import only writes a ledger row and the worker delivers it, retrying with
+// backoff until Calibre is reachable. It reports whether a row was queued,
+// so the caller knows to kick the worker once the loop is done.
+//
+// Only ebook files are queued. The Calibre hand off takes one ebook file:
+// the plugin derives the format from the extension and rejects a folder, and
+// calibredb scans a folder against Calibre's BOOK_EXTENSIONS, which carry no
+// audio format.
+func (s *Scanner) enqueueCalibreDelivery(ctx context.Context, book *models.Book, dl *models.Download, edition *models.Edition, path string) bool {
+	if s.calibreQueue == nil || s.calibreMode == nil || book == nil {
+		return false
 	}
 	mode := s.calibreMode()
-	if mode == calibre.ModeCalibredb || mode == calibre.ModePlugin {
-		s.pushCalibreAdd(ctx, book, s.calibreMetadata(ctx, book, author, edition, seriesTitle, seriesNum, mode), path, mode)
+	if mode != calibre.ModeCalibredb && mode != calibre.ModePlugin {
+		return false
 	}
-}
-
-// pushCalibreAdd invokes the configured adder (calibredb CLI or plugin HTTP
-// client) and persists the resulting calibre_id. Failures are best-effort —
-// logged and swallowed so Bindery's own import stays good.
-func (s *Scanner) pushCalibreAdd(ctx context.Context, book *models.Book, meta calibre.Metadata, path string, mode calibre.Mode) {
-	if s.calibreAdder == nil {
-		slog.Debug("calibre: adder is nil, skipping", "mode", mode, "bookId", book.ID)
-		return
-	}
-	id, err := s.calibreAdder.Add(ctx, path, meta)
+	files, err := s.books.ListFiles(ctx, book.ID)
 	if err != nil {
-		if errors.Is(err, calibre.ErrDisabled) {
-			return
-		}
-		if errors.Is(err, calibre.ErrAlreadyInCalibre) {
-			slog.Info("calibre: book already in library", "mode", mode, "bookId", book.ID, "path", path, "calibreId", id)
-			if id > 0 {
-				if perr := s.books.SetCalibreID(ctx, book.ID, id); perr != nil {
-					slog.Warn("calibre: persist calibre_id failed", "bookId", book.ID, "calibreId", id, "error", perr)
-				}
-			}
-			return
-		}
-		slog.Warn("calibre: add failed, continuing", "mode", mode, "bookId", book.ID, "path", path, "error", err)
-		return
+		slog.Warn("calibre: could not queue the delivery, listing the book's files failed", "bookId", book.ID, "path", path, "error", err)
+		return false
 	}
-	if err := s.books.SetCalibreID(ctx, book.ID, id); err != nil {
-		slog.Warn("calibre: persist calibre_id failed", "bookId", book.ID, "calibreId", id, "error", err)
-		return
-	}
-	slog.Info("calibre: book mirrored", "mode", mode, "bookId", book.ID, "calibreId", id, "path", path)
-}
-
-func (s *Scanner) calibreMetadata(ctx context.Context, book *models.Book, author *models.Author, edition *models.Edition, seriesTitle, seriesNum string, mode calibre.Mode) calibre.Metadata {
-	if book == nil {
-		return calibre.Metadata{}
-	}
-	meta := calibre.Metadata{
-		Title:         book.Title,
-		Description:   book.Description,
-		Genres:        book.Genres,
-		Language:      calibre.NormalizeLanguageForCalibre(book.Language),
-		Series:        seriesTitle,
-		SeriesIndex:   seriesNum,
-		PublishedDate: calibre.FormatPublishedDate(book.ReleaseDate),
-		Rating:        book.AverageRating,
-		Identifiers:   calibre.IdentifiersForBook(book, edition),
-	}
-	if author != nil {
-		meta.Authors = []string{author.Name}
-		meta.AuthorSort = author.SortName
-	}
-	imageURL := book.ImageURL
-	if edition != nil {
-		if strings.TrimSpace(edition.Publisher) != "" {
-			meta.Publisher = edition.Publisher
-		}
-		if edition.PublishDate != nil {
-			meta.PublishedDate = calibre.FormatPublishedDate(edition.PublishDate)
-		}
-		if strings.TrimSpace(edition.Language) != "" {
-			meta.Language = calibre.NormalizeLanguageForCalibre(edition.Language)
-		}
-		if strings.TrimSpace(edition.ImageURL) != "" {
-			imageURL = edition.ImageURL
+	clean := filepath.Clean(path)
+	var fileID int64
+	for _, f := range files {
+		if f.Format == models.MediaTypeEbook && filepath.Clean(f.Path) == clean {
+			fileID = f.ID
+			break
 		}
 	}
-	if mode == calibre.ModeCalibredb {
-		if covers.IsRef(imageURL) {
-			// A cover Bindery stored itself (#2564): hand calibredb the
-			// file directly. MaterializeCover only knows how to fetch URLs.
-			if coverPath, _, ok := s.coverStore.Resolve(imageURL); ok {
-				meta.CoverPath = coverPath
-			}
-			return meta
-		}
-		if coverPath, err := calibre.MaterializeCover(ctx, s.calibreCoverCacheDir, imageURL); err != nil {
-			slog.Debug("calibre: cover materialization skipped", "bookId", book.ID, "error", err)
-		} else if coverPath != "" {
-			meta.CoverPath = coverPath
-		}
+	if fileID == 0 {
+		slog.Warn("calibre: could not queue the delivery, the file is not tracked under this book", "bookId", book.ID, "path", path)
+		return false
 	}
-	return meta
+	// The edition the download was grabbed for, when there was one. Without
+	// it the worker matches an edition by format at delivery time.
+	var editionID *int64
+	if dl != nil && dl.EditionID != nil && edition != nil && edition.ID == *dl.EditionID {
+		id := edition.ID
+		editionID = &id
+	}
+	queued, err := s.calibreQueue.Enqueue(ctx, book.ID, fileID, editionID, path)
+	if err != nil {
+		slog.Warn("calibre: could not queue the delivery", "bookId", book.ID, "path", path, "error", err)
+		return false
+	}
+	if queued {
+		slog.Debug("calibre: delivery queued", "mode", mode, "bookId", book.ID, "path", path)
+	}
+	return queued
 }
 
 func firstString(values ...*string) string {

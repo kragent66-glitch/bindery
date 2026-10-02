@@ -335,6 +335,11 @@ export default function WantedPage() {
                       )}
                       {year != null && <span> · {year}</span>}
                     </div>
+                    {book.authorUnmonitored && (
+                      <div className="truncate text-[10px] text-amber-700 dark:text-amber-400">
+                        {t('wanted.authorNotMonitored', 'Author not monitored, so this is not searched automatically')}
+                      </div>
+                    )}
                   </div>
 
                   {/* format control — compact select, still changes the value */}

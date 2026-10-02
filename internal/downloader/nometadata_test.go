@@ -13,6 +13,64 @@ import (
 	"github.com/vavallee/bindery/internal/models"
 )
 
+// transHash is a distinct 40 character info hash for fixture torrent n, upper
+// case on the wire the way some daemons send it, so a test that looks it up
+// lower-cased also proves the key is normalised.
+func transHash(n int) string {
+	return strings.ToUpper(fmt.Sprintf("%040x", n))
+}
+
+// transKey is transHash as a download stores it and the report keys it.
+func transKey(n int) string { return strings.ToLower(transHash(n)) }
+
+// TestGetStalledTorrents_Transmission_PollsAudiobookCategory: a Transmission
+// client with a separate audiobook directory holds its audiobook magnets under
+// CategoryAudiobook, and polling Category alone left every one of them out of
+// stall detection, the gap #2712 closed for the importer. A torrent both
+// filters return (a shared label) is counted once.
+func TestGetStalledTorrents_Transmission_PollsAudiobookCategory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"arguments": map[string]any{
+				"torrents": []map[string]any{
+					{"id": 1, "hashString": transHash(1), "downloadDir": "/data/books", "totalSize": 0, "percentDone": 0},
+					{"id": 2, "hashString": transHash(2), "downloadDir": "/data/audiobooks", "totalSize": 0, "percentDone": 0},
+					{"id": 3, "hashString": transHash(3), "downloadDir": "/data/audiobooks", "status": 0, "errorString": "tracker error", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
+					{"id": 4, "hashString": transHash(4), "downloadDir": "/data/books", "labels": []string{"/data/audiobooks"}, "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
+					{"id": 5, "hashString": transHash(5), "downloadDir": "/data/other", "totalSize": 0, "percentDone": 0},
+				},
+			},
+			"result": "success",
+		})
+	}))
+	defer srv.Close()
+
+	host, port := serverHostPort(t, srv.URL)
+	client := &models.DownloadClient{
+		Type: "transmission", Host: host, Port: port,
+		Category: "/data/books", CategoryAudiobook: "/data/audiobooks",
+	}
+	report, err := GetStalledTorrents(context.Background(), client)
+	if err != nil {
+		t.Fatalf("GetStalledTorrents: %v", err)
+	}
+	if !report.NoMetadata[transKey(1)] {
+		t.Error("ebook magnet with no metadata: want a NoMetadata entry")
+	}
+	if !report.NoMetadata[transKey(2)] {
+		t.Error("audiobook magnet with no metadata: want a NoMetadata entry, the audiobook category must be polled")
+	}
+	if !report.ClientReported[transKey(3)] {
+		t.Error("errored audiobook torrent: want a ClientReported entry")
+	}
+	if report.NoMetadata[transKey(5)] {
+		t.Error("a torrent outside both categories belongs to someone else and must not be reported")
+	}
+	if report.Incomplete != 4 {
+		t.Errorf("incomplete count: want 4 (the shared torrent once, the foreign one not at all), got %d", report.Incomplete)
+	}
+}
+
 // TestGetStalledTorrents_Transmission_NoMetadata is the reporter's torrent
 // (#2709): Transmission has held it for weeks with no file list, no total size
 // and no connected peers, and errorString is empty because Transmission does
@@ -25,32 +83,32 @@ func TestGetStalledTorrents_Transmission_NoMetadata(t *testing.T) {
 				"torrents": []map[string]any{
 					// The reported shape.
 					{
-						"id": 7, "status": 0, "errorString": "",
+						"id": 7, "hashString": transHash(7), "status": 0, "errorString": "",
 						"totalSize": 0, "percentDone": 0,
 						"metadataPercentComplete": 0, "peersConnected": 0,
 					},
 					// The same shape, but Transmission is still actively
 					// trying (status 4). Just as dead.
 					{
-						"id": 8, "status": 4, "errorString": "",
+						"id": 8, "hashString": transHash(8), "status": 4, "errorString": "",
 						"totalSize": 0, "percentDone": 0,
 						"metadataPercentComplete": 0, "peersConnected": 3,
 					},
 					// Healthy: metadata resolved, downloading.
 					{
-						"id": 9, "status": 4, "errorString": "",
+						"id": 9, "hashString": transHash(9), "status": 4, "errorString": "",
 						"totalSize": 8192, "percentDone": 0.25,
 						"metadataPercentComplete": 1, "peersConnected": 12,
 					},
 					// Healthy: metadata resolved, nothing downloaded yet.
 					{
-						"id": 10, "status": 4, "errorString": "",
+						"id": 10, "hashString": transHash(10), "status": 4, "errorString": "",
 						"totalSize": 8192, "percentDone": 0,
 						"metadataPercentComplete": 1, "peersConnected": 1,
 					},
 					// A real error still reports as the client's own signal.
 					{
-						"id": 11, "status": 0, "errorString": "tracker error",
+						"id": 11, "hashString": transHash(11), "status": 0, "errorString": "tracker error",
 						"totalSize": 8192, "percentDone": 0.5,
 						"metadataPercentComplete": 1,
 					},
@@ -68,22 +126,22 @@ func TestGetStalledTorrents_Transmission_NoMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetStalledTorrents: %v", err)
 	}
-	if !report.NoMetadata["7"] {
+	if !report.NoMetadata[transKey(7)] {
 		t.Error("stopped magnet with no metadata: want a NoMetadata entry")
 	}
-	if !report.NoMetadata["8"] {
+	if !report.NoMetadata[transKey(8)] {
 		t.Error("downloading magnet with no metadata: want a NoMetadata entry")
 	}
-	if report.NoMetadata["9"] || report.ClientReported["9"] {
+	if report.NoMetadata[transKey(9)] || report.ClientReported[transKey(9)] {
 		t.Error("a healthy downloading torrent must not be reported as stalled")
 	}
-	if report.NoMetadata["10"] || report.ClientReported["10"] {
+	if report.NoMetadata[transKey(10)] || report.ClientReported[transKey(10)] {
 		t.Error("a torrent with metadata but no progress yet must not be reported as stalled")
 	}
-	if !report.ClientReported["11"] {
+	if !report.ClientReported[transKey(11)] {
 		t.Error("errored torrent: want a ClientReported entry")
 	}
-	if report.NoMetadata["11"] {
+	if report.NoMetadata[transKey(11)] {
 		t.Error("an errored torrent must not also be reported as missing metadata")
 	}
 	// Two of the five have finished nothing but are not stuck; all five are

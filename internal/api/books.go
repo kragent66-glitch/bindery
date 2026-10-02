@@ -127,7 +127,10 @@ func (h *BookHandler) WithEditionFetcher(fetcher bookhydrate.EditionFetcher) *Bo
 	return h
 }
 
-func (h *BookHandler) hydrateHardcoverEditions(ctx context.Context, book *models.Book, provider string) {
+// hydrateHardcoverEditions fills the book's editions from Hardcover.
+// mediaTypePinned forwards the caller's "this format was chosen, not guessed"
+// signal so hydration leaves the media type alone (#2768).
+func (h *BookHandler) hydrateHardcoverEditions(ctx context.Context, book *models.Book, provider string, mediaTypePinned bool) {
 	if book == nil || h.editions == nil {
 		return
 	}
@@ -142,12 +145,13 @@ func (h *BookHandler) hydrateHardcoverEditions(ctx context.Context, book *models
 		}
 	}
 	bookhydrate.HydrateHardcoverEditions(ctx, bookhydrate.Options{
-		Book:          book,
-		Provider:      providerName,
-		Editions:      h.editions,
-		Books:         h.books,
-		FetchEditions: fetcher,
-		Enricher:      h.meta,
+		Book:            book,
+		Provider:        providerName,
+		Editions:        h.editions,
+		Books:           h.books,
+		FetchEditions:   fetcher,
+		Enricher:        h.meta,
+		MediaTypePinned: mediaTypePinned,
 	})
 }
 
@@ -397,6 +401,7 @@ func (h *BookHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oldStatus := book.Status
+	oldMonitored := book.Monitored
 	oldMediaType := book.MediaType
 
 	// Note: file_path is deliberately NOT accepted here. It's set by the
@@ -531,21 +536,22 @@ func (h *BookHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fire an immediate indexer search when a book transitions into wanted
-	// status (e.g. "Delete file" flips imported → wanted, a manual status edit,
-	// or a media-type change that exposes a missing format — #1148). Gate on
-	// searcher to keep tests that don't wire it nil-safe. Detach the request
-	// context so the search outlives the HTTP response but keeps any
-	// request-scoped values.
+	// Fire an immediate indexer search when this write leaves the book wanted
+	// and monitored and it was not both before (e.g. "Delete file" flips
+	// imported → wanted, a manual status edit, a media-type change that exposes
+	// a missing format, or monitoring a book that was already wanted — #1148,
+	// #2722). Gate on searcher to keep tests that don't wire it nil-safe.
+	// Detach the request context so the search outlives the HTTP response but
+	// keeps any request-scoped values.
 	//
-	// Monitored is checked here because this hook is the one place a status
-	// transition grabs without the caller asking for a search. Widening a
-	// book to 'both' exposes a missing format and immediately downloads it;
-	// unmonitoring is the only way a user can say "record this, don't fetch
-	// it", and it was being ignored. The 12h wanted scan already filters on
-	// monitored (ListPageFiltered adds `AND books.monitored = 1` for the
-	// wanted status), so this closes the gap rather than opening a new one.
-	if h.searcher != nil && book.Monitored && book.Status == models.BookStatusWanted && oldStatus != models.BookStatusWanted {
+	// Monitored is part of the gate because this hook is the one place a
+	// status transition grabs without the caller asking for a search.
+	// Widening a book to 'both' exposes a missing format and immediately
+	// downloads it; unmonitoring is the only way a user can say "record this,
+	// don't fetch it", and it was being ignored. The 12h wanted scan already
+	// filters on monitored (ListPageFiltered adds `AND books.monitored = 1` for
+	// the wanted status), so this closes the gap rather than opening a new one.
+	if h.searcher != nil && book.BecameSearchable(oldStatus, oldMonitored) {
 		b := *book
 		bgCtx := h.bgCtx()
 		// Respect the global auto-grab kill-switch.
@@ -638,6 +644,10 @@ func (h *BookHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 	id := existing.ID
 
 	if path := r.URL.Query().Get("path"); path != "" {
+		if r.URL.Query().Get("delete") == "true" {
+			h.deleteTrackedBookFile(w, r, id, path)
+			return
+		}
 		h.deregisterBookFile(w, r, id, path)
 		return
 	}
@@ -734,6 +744,71 @@ func (h *BookHandler) DeleteFile(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	writeJSON(w, http.StatusOK, book)
+}
+
+// deleteTrackedBookFile removes exactly one tracked book_files row and its
+// on-disk payload. Unlike the format-scoped delete, an ebook never sweeps
+// same-stem siblings. If the containment or ownership guard refuses the
+// on-disk removal, the request is refused (409) rather than dropping the row
+// for a file that is still there — see safeRemoveBookPathExact's skipped
+// return.
+func (h *BookHandler) deleteTrackedBookFile(w http.ResponseWriter, r *http.Request, id int64, requested string) {
+	files, err := h.books.ListFiles(r.Context(), id)
+	if err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+	want := filepath.Clean(requested)
+	var target *models.BookFile
+	for i := range files {
+		if filepath.Clean(files[i].Path) == want {
+			target = &files[i]
+			break
+		}
+	}
+	if target == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "path is not tracked against this book"})
+		return
+	}
+
+	skipped, err := safeRemoveBookPathExact(r.Context(), h.roots, h.books, id, target.Path, target.Format, "id", id)
+	if err != nil {
+		slog.Error("failed to remove individual book file", "id", id, "path", target.Path, "error", err)
+		writeServerError(w, r, err)
+		return
+	}
+	// skipped means the containment or ownership guard refused the unlink —
+	// the file is still on disk. Dropping the book_files row and reporting
+	// 200 here would tell the caller a destructive action succeeded when it
+	// didn't, so refuse the request instead: the row and the file stay in
+	// sync, and the caller finds out immediately rather than from a history
+	// event nobody reads.
+	if skipped {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "file could not be removed from disk; refusing to drop the tracked row"})
+		return
+	}
+	if _, err := h.books.RemoveBookFile(r.Context(), target.Path); err != nil {
+		writeServerError(w, r, err)
+		return
+	}
+
+	book, err := h.books.GetByID(r.Context(), id)
+	if err != nil || book == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "book not found"})
+		return
+	}
+	h.attachBookFiles(r.Context(), book)
+	cleanBookDescription(book)
+	if h.history != nil {
+		data, marshalErr := json.Marshal(map[string]any{"paths": []string{target.Path}, "individual": true})
+		if marshalErr == nil {
+			_ = h.history.Create(r.Context(), &models.HistoryEvent{
+				BookID: &book.ID, EventType: models.HistoryEventBookFileDeleted,
+				SourceTitle: book.Title, Data: string(data),
+			})
+		}
+	}
 	writeJSON(w, http.StatusOK, book)
 }
 
@@ -1022,7 +1097,30 @@ func (h *BookHandler) ListWanted(w http.ResponseWriter, r *http.Request) {
 	for i := range books {
 		cleanBookDescription(&books[i])
 	}
+	h.markUnmonitoredAuthors(r.Context(), books)
 	writeJSON(w, http.StatusOK, books)
+}
+
+// markUnmonitoredAuthors flags the rows whose author is not monitored, so the
+// Wanted page can say why they are sitting there (#2742). One query for the
+// whole page, not one per row.
+//
+// Best effort: with no authors repo, or a read that fails, the rows are left
+// alone. Claiming "the author is not monitored" on a page that could not check
+// would be worse than saying nothing, because it accuses the setting the user
+// is most likely to go and change.
+func (h *BookHandler) markUnmonitoredAuthors(ctx context.Context, books []models.Book) {
+	if h.authors == nil || len(books) == 0 {
+		return
+	}
+	unmonitored, err := h.authors.UnmonitoredAuthorIDs(ctx)
+	if err != nil {
+		slog.Warn("wanted list: failed to load unmonitored authors", "error", err)
+		return
+	}
+	for i := range books {
+		books[i].AuthorUnmonitored = unmonitored[books[i].AuthorID]
+	}
 }
 
 // Rebind updates a book's foreign_id and metadata_provider, then re-fetches
@@ -1153,7 +1251,10 @@ func (h *BookHandler) Rebind(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
-	h.hydrateHardcoverEditions(r.Context(), book, req.Provider)
+	// MediaType is in the preserved-fields list above because it belongs to the
+	// user, so a rebind is exactly the case the pin exists for: hydration must
+	// not widen the format the user keeps (#2768).
+	h.hydrateHardcoverEditions(r.Context(), book, req.Provider, true)
 
 	// Re-link series membership: remove all existing links for this book, then
 	// attach whatever the upstream record declares.

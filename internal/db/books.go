@@ -757,6 +757,48 @@ func (r *BookRepo) Update(ctx context.Context, b *models.Book) error {
 	return nil
 }
 
+// FillMissingAudiobookDuration persists a duration derived from edition metadata
+// without rewriting a book that may have changed during the provider fetch.
+// On a guarded-write miss, it returns the current duration only if the book's
+// provider, media type, and ASIN still match the source of the fetched runtime.
+func (r *BookRepo) FillMissingAudiobookDuration(ctx context.Context, b *models.Book) (bool, int, error) {
+	if b == nil || b.ID == 0 || b.DurationSeconds <= 0 {
+		return false, 0, fmt.Errorf("fill missing audiobook duration: invalid book")
+	}
+	if b.MediaType != models.MediaTypeAudiobook && b.MediaType != models.MediaTypeBoth {
+		return false, 0, nil
+	}
+	now := time.Now().UTC()
+	res, err := r.exec.ExecContext(ctx, `
+		UPDATE books SET duration_seconds = ?, updated_at = ?
+		WHERE id = ? AND foreign_id = ? AND metadata_provider = ? AND media_type = ?
+		  AND asin = ? AND duration_seconds <= 0`,
+		b.DurationSeconds, timeValueArg(now), b.ID, b.ForeignID, b.MetadataProvider, b.MediaType, b.ASIN)
+	if err != nil {
+		return false, 0, fmt.Errorf("fill missing audiobook duration for book %d: %w", b.ID, err)
+	}
+	updated, err := res.RowsAffected()
+	if err != nil {
+		return false, 0, fmt.Errorf("check audiobook duration update for book %d: %w", b.ID, err)
+	}
+	if updated == 0 {
+		var currentDuration int
+		err := r.exec.QueryRowContext(ctx, `
+			SELECT duration_seconds FROM books
+			WHERE id = ? AND foreign_id = ? AND metadata_provider = ? AND media_type = ? AND asin = ?`,
+			b.ID, b.ForeignID, b.MetadataProvider, b.MediaType, b.ASIN).Scan(&currentDuration)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, 0, nil
+		}
+		if err != nil {
+			return false, 0, fmt.Errorf("read current audiobook duration for book %d: %w", b.ID, err)
+		}
+		return false, currentDuration, nil
+	}
+	b.UpdatedAt = now
+	return true, b.DurationSeconds, nil
+}
+
 // MarkWantedMonitored updates only the fields needed to queue a book for
 // searching, preserving metadata that may not be present on sparse callers.
 func (r *BookRepo) MarkWantedMonitored(ctx context.Context, id int64) error {
@@ -856,6 +898,29 @@ func (r *BookRepo) PathOwnedByOtherBook(ctx context.Context, path string, exclud
 // Used by ScanLibrary to build the set of already-tracked files efficiently.
 func (r *BookRepo) ListAllBookFilePaths(ctx context.Context) ([]string, error) {
 	return r.files.ListAllPaths(ctx)
+}
+
+// BookFilesFingerprint returns a (count, maxID) snapshot read directly from
+// book_files, so a cache derived from it (the manual-import scan's
+// tracked-file index, #2480) can tell whether it needs to rebuild. See
+// BookFileRepo.Fingerprint for why this reads the table instead of an
+// in-process counter.
+func (r *BookRepo) BookFilesFingerprint(ctx context.Context) (int64, int64, error) {
+	return r.files.Fingerprint(ctx)
+}
+
+// BookFilesPathEpoch returns the in place path rewrite counter for book_files
+// (see BookFileRepo.PathEpoch). Fingerprint alone misses the reorganize
+// action's UpdatePath, which changes neither the row count nor the max id.
+func (r *BookRepo) BookFilesPathEpoch() uint64 {
+	return r.files.PathEpoch()
+}
+
+// ListFilesForBooks returns every book_files row for the given book IDs in a
+// single query, grouped by book_id. Replaces an N+1 ListFiles-per-book call
+// (the manual-import scan's confident-match format check, #2480).
+func (r *BookRepo) ListFilesForBooks(ctx context.Context, bookIDs []int64) (map[int64][]models.BookFile, error) {
+	return r.files.ListByBooks(ctx, bookIDs)
 }
 
 // ListBookFiles returns the book_files rows for a single book.
@@ -1111,13 +1176,15 @@ func (r *BookRepo) SetFormatFilePath(ctx context.Context, id int64, mediaType, f
 // infers the format from the book's current media_type. Callers that know the
 // explicit format should use SetFormatFilePath directly.
 func (r *BookRepo) SetFilePath(ctx context.Context, id int64, filePath string) error {
+	// No fallback write when the book can't be loaded: a bare UPDATE of
+	// books.file_path would skip book_files and refreshBookStatus, and for a
+	// missing row it matched nothing yet still reported success (#2819).
 	b, err := r.GetByID(ctx, id)
-	if err != nil || b == nil {
-		// Fall back to the legacy single-column update so existing code paths
-		// never break even if the book can't be loaded.
-		_, err2 := r.db.ExecContext(ctx, "UPDATE books SET file_path=?, status=? WHERE id=?",
-			filePath, models.BookStatusImported, id)
-		return err2
+	if err != nil {
+		return fmt.Errorf("load book %d: %w", id, err)
+	}
+	if b == nil {
+		return fmt.Errorf("book %d not found", id)
 	}
 	mediaType := b.MediaType
 	if mediaType == models.MediaTypeBoth {
@@ -1161,6 +1228,22 @@ func (r *BookRepo) ListWithLocalImagePath(ctx context.Context) ([]models.Book, e
 func (r *BookRepo) SetCalibreID(ctx context.Context, id, calibreID int64) error {
 	_, err := r.db.ExecContext(ctx, "UPDATE books SET calibre_id=? WHERE id=?", calibreID, id)
 	return err
+}
+
+// SetCalibreIDIfUnset stores calibreID only when the book has none yet, and
+// reports whether it did. The Calibre delivery worker (#2832) uses it: it may
+// fill books.calibre_id from a delivery into the source library, but it never
+// replaces an id something else already recorded.
+func (r *BookRepo) SetCalibreIDIfUnset(ctx context.Context, id, calibreID int64) (bool, error) {
+	res, err := r.db.ExecContext(ctx, "UPDATE books SET calibre_id=? WHERE id=? AND calibre_id IS NULL", calibreID, id)
+	if err != nil {
+		return false, fmt.Errorf("set calibre_id if unset for book %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("set calibre_id if unset rows for book %d: %w", id, err)
+	}
+	return n > 0, nil
 }
 
 // GetByCalibreID returns the Bindery book row that currently points at the
@@ -1215,7 +1298,23 @@ func (r *BookRepo) FindByAuthorAndTitle(ctx context.Context, authorID int64, tit
 // When several rows qualify, an exact-key match is returned in preference to a
 // subtitle-divergent one; see dedupCandidates.
 func (r *BookRepo) FindByAuthorAndDedupKey(ctx context.Context, authorID int64, title string) (*models.Book, error) {
-	books, err := r.dedupCandidates(ctx, authorID, title)
+	return r.FindByAuthorAndDedupKeyVisibleTo(ctx, authorID, title, 0)
+}
+
+// FindByAuthorAndDedupKeyVisibleTo is FindByAuthorAndDedupKey restricted to the
+// books userID can see: owned by that user or with a NULL owner, via
+// QueryScopeForIncludingNull. userID 0 is unscoped and behaves exactly like
+// FindByAuthorAndDedupKey.
+//
+// Scoping by author alone is not enough for a caller that is about to create a
+// row on one user's behalf: an author can legitimately be shared (NULL owner),
+// and the books hanging off it are not. The Hardcover list syncer uses this so
+// one user's library row cannot silently cancel another user's import (#2766).
+// It matches GetByForeignIDVisibleTo rather than the stricter
+// GetByForeignIDForUser because an unowned book is in everybody's library list,
+// so deduping against it is right for every caller.
+func (r *BookRepo) FindByAuthorAndDedupKeyVisibleTo(ctx context.Context, authorID int64, title string, userID int64) (*models.Book, error) {
+	books, err := r.dedupCandidates(ctx, authorID, title, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -1230,7 +1329,7 @@ func (r *BookRepo) FindByAuthorAndDedupKey(ctx context.Context, authorID int64, 
 // case (more than one local row qualifies) and route to review instead of
 // guessing which row to bind.
 func (r *BookRepo) FindAllByAuthorAndDedupKey(ctx context.Context, authorID int64, title string) ([]models.Book, error) {
-	return r.dedupCandidates(ctx, authorID, title)
+	return r.dedupCandidates(ctx, authorID, title, 0)
 }
 
 // dedupCandidates is the shared two-tier work-identity lookup behind both
@@ -1267,7 +1366,10 @@ func (r *BookRepo) FindAllByAuthorAndDedupKey(ctx context.Context, authorID int6
 // corroborating signal (Calibre, the API add-book path) accept it, which
 // preserves the pre-#2042 behaviour for that case — it is overwhelmingly one
 // work whose publisher subtitle one source omitted.
-func (r *BookRepo) dedupCandidates(ctx context.Context, authorID int64, title string) ([]models.Book, error) {
+// userID scopes the candidate set to the books that user can see (owned or
+// NULL owner); 0 leaves it unscoped, which is what every caller but the
+// Hardcover list syncer passes.
+func (r *BookRepo) dedupCandidates(ctx context.Context, authorID int64, title string, userID int64) ([]models.Book, error) {
 	key := indexer.CanonicalDedupKey(title)
 	if key == "" {
 		return nil, nil
@@ -1276,11 +1378,12 @@ func (r *BookRepo) dedupCandidates(ctx context.Context, authorID int64, title st
 	if mainKey == "" {
 		mainKey = key
 	}
-	books, err := r.query(ctx,
-		bookCTE+" SELECT "+bookColumns+" FROM books "+bookJoins+
-			" WHERE author_id = ? AND (books.dedup_key = ? OR books.dedup_key = ?"+
+	where, args := QueryScopeForIncludingNull("books.owner_user_id",
+		"WHERE author_id = ? AND (books.dedup_key = ? OR books.dedup_key = ?"+
 			" OR (books.dedup_key >= ? AND books.dedup_key < ?))",
-		[]any{authorID, key, mainKey, mainKey + " ", mainKey + "!"})
+		userID, authorID, key, mainKey, mainKey+" ", mainKey+"!")
+	books, err := r.query(ctx,
+		bookCTE+" SELECT "+bookColumns+" FROM books "+bookJoins+" "+where, args)
 	if err != nil {
 		return nil, err
 	}

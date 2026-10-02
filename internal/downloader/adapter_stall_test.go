@@ -87,12 +87,14 @@ func TestGetStalledTorrents_QBittorrent_EmptyList(t *testing.T) {
 
 // TestGetStalledTorrents_Transmission_StoppedWithError verifies that Transmission
 // torrents in status 0 (stopped) with a non-empty errorString are reported
-// as stalled, while other states are not.
+// as stalled, while other states are not. Entries are keyed by info hash,
+// which is what a download stores: the caller removes what it matches here,
+// and a renumbered session id would remove the wrong torrent.
 //
 // Every torrent in the fixture carries a totalSize, which is what a torrent
 // whose metadata has arrived looks like. Without it they would all also match
 // the no-metadata rule (#2709) and the test would be asserting two things at
-// once; the no-metadata rule has its own test below.
+// once; the no-metadata rule has its own test.
 func TestGetStalledTorrents_Transmission_StoppedWithError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/transmission/rpc" {
@@ -101,10 +103,10 @@ func TestGetStalledTorrents_Transmission_StoppedWithError(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"arguments": map[string]any{
 				"torrents": []map[string]any{
-					{"id": 1, "status": 0, "errorString": "tracker error", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
-					{"id": 2, "status": 0, "errorString": "", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
-					{"id": 3, "status": 2, "errorString": "some error", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
-					{"id": 4, "status": 0, "errorString": "   ", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
+					{"id": 1, "hashString": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "status": 0, "errorString": "tracker error", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
+					{"id": 2, "hashString": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "status": 0, "errorString": "", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
+					{"id": 3, "hashString": "cccccccccccccccccccccccccccccccccccccccc", "status": 2, "errorString": "some error", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
+					{"id": 4, "hashString": "dddddddddddddddddddddddddddddddddddddddd", "status": 0, "errorString": "   ", "totalSize": 4096, "percentDone": 0.5, "metadataPercentComplete": 1},
 				},
 			},
 			"result": "success",
@@ -125,8 +127,10 @@ func TestGetStalledTorrents_Transmission_StoppedWithError(t *testing.T) {
 	if len(report.ClientReported) != 1 {
 		t.Fatalf("expected 1 stalled entry, got %d: %v", len(report.ClientReported), report.ClientReported)
 	}
-	if !report.ClientReported["1"] {
-		t.Error("expected transmission id '1' to be stalled")
+	// Lower-cased: downloads store the hash lower-cased, and the caller looks
+	// it up that way.
+	if !report.ClientReported["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] {
+		t.Errorf("expected the stopped-with-error torrent to be stalled, got %v", report.ClientReported)
 	}
 	if len(report.NoMetadata) != 0 {
 		t.Errorf("no torrent here is missing metadata, got %v", report.NoMetadata)

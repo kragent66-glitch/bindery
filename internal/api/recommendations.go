@@ -65,7 +65,10 @@ func (h *RecommendationHandler) WithEditionFetcher(fetcher bookhydrate.EditionFe
 	return h
 }
 
-func (h *RecommendationHandler) hydrateHardcoverEditions(ctx context.Context, book *models.Book) {
+// hydrateHardcoverEditions fills the book's editions from Hardcover.
+// mediaTypePinned forwards the caller's "this format was chosen, not guessed"
+// signal so hydration leaves the media type alone (#2768).
+func (h *RecommendationHandler) hydrateHardcoverEditions(ctx context.Context, book *models.Book, mediaTypePinned bool) {
 	if book == nil || h.editions == nil {
 		return
 	}
@@ -76,12 +79,13 @@ func (h *RecommendationHandler) hydrateHardcoverEditions(ctx context.Context, bo
 		}
 	}
 	bookhydrate.HydrateHardcoverEditions(ctx, bookhydrate.Options{
-		Book:          book,
-		Provider:      book.MetadataProvider,
-		Editions:      h.editions,
-		Books:         h.books,
-		FetchEditions: fetcher,
-		Enricher:      h.meta,
+		Book:            book,
+		Provider:        book.MetadataProvider,
+		Editions:        h.editions,
+		Books:           h.books,
+		FetchEditions:   fetcher,
+		Enricher:        h.meta,
+		MediaTypePinned: mediaTypePinned,
 	})
 }
 
@@ -235,7 +239,12 @@ func (h *RecommendationHandler) Add(w http.ResponseWriter, r *http.Request) {
 		writeServerError(w, r, err)
 		return
 	}
-	h.hydrateHardcoverEditions(r.Context(), book)
+	// A recommendation's format is not a user choice: the add request carries
+	// no body, and the recommender fills MediaType from the provider or falls
+	// back to ebook. Under the AddBook rule a provider or default derived
+	// format is not a pin, so hydration may widen it when Hardcover lists an
+	// audio edition.
+	h.hydrateHardcoverEditions(r.Context(), book, false)
 
 	fileFound := handleNewWantedBook(r.Context(), h.books, h.series, h.finder, *book, rec.AuthorName)
 

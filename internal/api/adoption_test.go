@@ -515,3 +515,68 @@ func TestAdoptionList_NoProviderCallsAndOneHydrationQuery(t *testing.T) {
 		t.Fatalf("provider calls during list = %d, want 0", n)
 	}
 }
+
+// TestAdopt_IntoABookThatAlreadyHasItsFile is the outcome #2879 makes
+// reachable from a suggestion: the scan now offers a book already Imported
+// with a file, because an untracked copy of it is common. Adopting there adds
+// the copy alongside the existing file, keeps the book Imported and still
+// showing that file, says so in the response, and Undo removes only the copy.
+func TestAdopt_IntoABookThatAlreadyHasItsFile(t *testing.T) {
+	f := newAdoptionFixture(t, &stubMetaProvider{name: "openlibrary"})
+	ctx := context.Background()
+	book := f.seedBook(t, "The Matsumoto")
+	existing := f.write(t, "Sarah K.L. Wilson/The Matsumoto (13110)/The Matsumoto - Sarah K.L. Wilson.epub")
+	if err := f.books.AddBookFile(ctx, book.ID, models.MediaTypeEbook, existing); err != nil {
+		t.Fatal(err)
+	}
+	copyPath := f.write(t, "Sarah K. L. Wilson/The Matsumoto (13110)/The Matsumoto - Sarah K. L. Wilson.epub")
+	id := f.seedUnit(t, db.UnmatchedUnitScan{UnitPath: copyPath, MemberPaths: []string{copyPath}})
+
+	rec := f.post(t, fmt.Sprintf("/library/unmatched/%d/adopt", id), map[string]any{"bookId": book.ID})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adopt = %d %s", rec.Code, rec.Body.String())
+	}
+	it := decodeItem(t, rec)
+	if it.State != db.UnmatchedStateAdopted || it.Message != alreadyHasFileMessage {
+		t.Fatalf("adopted item = state %s message %q, want adopted with the already had a file message", it.State, it.Message)
+	}
+	if got := filePaths(t, f.books, book.ID); len(got) != 2 || got[0] != existing || got[1] != copyPath {
+		t.Fatalf("book files = %v, want the existing file then the adopted copy", got)
+	}
+	after, _ := f.books.GetByID(ctx, book.ID)
+	if after.Status != models.BookStatusImported || after.EbookFilePath != existing {
+		t.Fatalf("book after adopt = status %s showing %q, want imported still showing %s", after.Status, after.EbookFilePath, existing)
+	}
+
+	rec = f.post(t, fmt.Sprintf("/library/unmatched/%d/undo", id), nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("undo = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := filePaths(t, f.books, book.ID); len(got) != 1 || got[0] != existing {
+		t.Fatalf("book files after undo = %v, want only the existing file", got)
+	}
+	if b, _ := f.books.GetByID(ctx, book.ID); b.Status != models.BookStatusImported {
+		t.Fatalf("book after undo = status %s, want imported", b.Status)
+	}
+	for _, p := range []string{existing, copyPath} {
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("%s touched on disk: %v", p, err)
+		}
+	}
+}
+
+// TestAdopt_IntoAWantedBookSaysNothingExtra: the message is only for a book
+// that already had a file, so an ordinary adoption stays quiet.
+func TestAdopt_IntoAWantedBookSaysNothingExtra(t *testing.T) {
+	f := newAdoptionFixture(t, &stubMetaProvider{name: "openlibrary"})
+	book := f.seedBook(t, "Ancillary Sword")
+	path := f.write(t, "Ann Leckie/Ancillary Sword.epub")
+	id := f.seedUnit(t, db.UnmatchedUnitScan{UnitPath: path, MemberPaths: []string{path}})
+	rec := f.post(t, fmt.Sprintf("/library/unmatched/%d/adopt", id), map[string]any{"bookId": book.ID})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("adopt = %d %s", rec.Code, rec.Body.String())
+	}
+	if it := decodeItem(t, rec); it.Message != "" {
+		t.Fatalf("message = %q, want none", it.Message)
+	}
+}

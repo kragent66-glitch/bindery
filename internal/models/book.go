@@ -39,8 +39,15 @@ type Book struct {
 	Narrator          string     `json:"narrator"`
 	DurationSeconds   int        `json:"durationSeconds"`
 	ASIN              string     `json:"asin"`
-	CalibreID         *int64     `json:"calibre_id,omitempty"`
-	MetadataProvider  string     `json:"metadataProvider"`
+	// CalibreID is the book's id in the Calibre library at
+	// calibre.library_path, the library Bindery imports from (#2832). It is
+	// not the id in the push target: a delivery records that on its
+	// calibre_deliveries row. The delivery worker only fills this when it is
+	// NULL, the book did not come from a Calibre import, and the push target
+	// is that same library (or no library path is set). It never clears or
+	// replaces a value.
+	CalibreID        *int64 `json:"calibre_id,omitempty"`
+	MetadataProvider string `json:"metadataProvider"`
 	// DedupKey is the canonical cross-source title key (#940), computed by
 	// indexer.CanonicalDedupKey at every book-create path. It is the only
 	// signal used to bind the same work imported from different sources
@@ -70,6 +77,15 @@ type Book struct {
 	LockedFields []string `json:"lockedFields"`
 
 	Excluded bool `json:"excluded"`
+
+	// AuthorUnmonitored says this book's author is not monitored, so Bindery
+	// will not search for it by itself (#2742). Transport only: there is no
+	// column, and only the Wanted list computes it, because that is the one
+	// page where a book that will never be grabbed automatically otherwise
+	// looks identical to one whose grab is merely slow. Omitted when false, so
+	// a response that never computed it says nothing rather than claiming
+	// every author is monitored.
+	AuthorUnmonitored bool `json:"authorUnmonitored,omitempty"`
 
 	// EbookFilePath and AudiobookFilePath are computed views over the book_files
 	// table (first path per format), kept for API backwards compatibility.
@@ -139,6 +155,26 @@ func (b *Book) IsFieldLocked(field string) bool {
 	return false
 }
 
+// CanWrite reports whether a refresh, enrichment or merge path is allowed to
+// write the named field. It is the single way that question is asked in the
+// Hardcover hydration and metadata enrichment paths (#2767), so there is one
+// name to grep for rather than a scatter of negated IsFieldLocked calls.
+//
+// It answers ownership only. Whether the field is empty is a separate test the
+// caller still makes for itself, because "fill when empty" and "overwrite
+// unconditionally" are different merge rules and a lock has to block both.
+// Conflating the two is what produced #2757: a guard that asked whether the
+// value was empty read a deliberate clear as a gap to fill.
+//
+// Nil safe, so a guard can sit in front of a book pointer the caller has not
+// yet checked.
+func (b *Book) CanWrite(field string) bool {
+	if b == nil {
+		return true
+	}
+	return !b.IsFieldLocked(field)
+}
+
 // LockField adds the named field to LockedFields if not already present.
 func (b *Book) LockField(field string) {
 	if !b.IsFieldLocked(field) {
@@ -181,6 +217,25 @@ func (b *Book) ReevaluateStatus() {
 	if b.EbookFilePath != "" || b.AudiobookFilePath != "" {
 		b.Status = BookStatusImported
 	}
+}
+
+// BecameSearchable reports whether a write left this book in the state that
+// earns one immediate indexer search (wanted and monitored) when it was not in
+// that state before it. prevStatus and prevMonitored are the values read before
+// the write; pass an empty status and false for a row that did not exist yet.
+//
+// Every path that can move a book into the wanted set decides from this: the
+// book handler's PATCH, the bulk monitor action and the Hardcover list sync
+// (#2722). Keeping the rule here is the same move ReevaluateStatus made for the
+// wanted/imported boundary in #1634 — the callers live in different packages,
+// and the rule is the part that must not drift. A book that was already wanted
+// and monitored returns false, so a re-sync or a second monitor click does not
+// queue a duplicate search; repeat searches belong to the wanted sweep.
+func (b *Book) BecameSearchable(prevStatus string, prevMonitored bool) bool {
+	if !b.Monitored || b.Status != BookStatusWanted {
+		return false
+	}
+	return prevStatus != BookStatusWanted || !prevMonitored
 }
 
 // HasFileForCurrentFormat reports whether the book already holds a file for the

@@ -48,6 +48,11 @@ type Metadata struct {
 	CoverPath     string            `json:"coverPath,omitempty"`
 }
 
+// IsEmpty reports whether there is nothing worth sending. Exported for
+// callers outside this package, e.g. the importer deciding whether a metadata
+// update would be a no-op.
+func (m Metadata) IsEmpty() bool { return m.empty() }
+
 func (m Metadata) empty() bool {
 	return strings.TrimSpace(m.Title) == "" &&
 		len(m.Authors) == 0 &&

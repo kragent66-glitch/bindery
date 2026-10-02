@@ -16,8 +16,9 @@ type Remapper struct {
 }
 
 // remapRule is one from:to prefix pair. Either side may be a Windows path
-// (`S:\Downloads`), which is matched case-insensitively and treats `\` and `/`
-// as interchangeable separators, the way Windows itself does. POSIX sides stay
+// (`S:\Downloads`, or a network share such as `\\nas\books`), which is
+// matched case-insensitively and treats `\` and `/` as interchangeable
+// separators, the way Windows itself does. POSIX sides stay
 // case-sensitive and `/`-only.
 type remapRule struct {
 	from string
@@ -41,8 +42,9 @@ type remapRule struct {
 // Parse accepts a comma-separated list of `from:to` pairs, e.g.
 // `/downloads:/media,/srv/sab:/mnt/sab`. Windows drive letters are understood
 // on either side (`S:\Downloads:/downloads`): the colon of a drive designator
-// is not treated as the pair separator. Empty or malformed entries are skipped.
-// A nil-safe zero Remapper is returned on empty input.
+// is not treated as the pair separator. Network shares (`\\nas\books`,
+// `//nas/books`) count as Windows sides too. Empty or malformed entries are
+// skipped. A nil-safe zero Remapper is returned on empty input.
 func Parse(spec string) *Remapper {
 	r := &Remapper{}
 	for entry := range strings.SplitSeq(spec, ",") {
@@ -54,7 +56,7 @@ func Parse(spec string) *Remapper {
 		if !ok {
 			continue
 		}
-		fromWin, toWin := IsWindowsPath(rawFrom), IsWindowsPath(rawTo)
+		fromWin, toWin := isWindowsSide(rawFrom), isWindowsSide(rawTo)
 		from := cleanPrefix(rawFrom, fromWin)
 		to := cleanPrefix(rawTo, toWin)
 		if from == "" || to == "" {
@@ -85,13 +87,21 @@ func Validate(spec string) error {
 		}
 		from, to, ok := splitPair(pair)
 		if !ok || strings.TrimSpace(from) == "" || strings.TrimSpace(to) == "" {
-			if IsWindowsPath(pair) {
+			if isWindowsSide(pair) {
 				// The commonest form of this mistake is pasting only the
 				// client-side Windows path and expecting Bindery to infer the
 				// rest, so name the working shape rather than just refusing.
+				if !IsWindowsPath(pair) {
+					return fmt.Errorf(`pair %d %q is not in 'from:to' format; a network share needs the Bindery-visible path after it, e.g. '\\nas\books:/books'`, i+1, pair)
+				}
 				return fmt.Errorf(`pair %d %q is not in 'from:to' format; a Windows path needs the Bindery-visible path after it, e.g. 'S:\Downloads:/downloads'`, i+1, pair)
 			}
 			return fmt.Errorf("pair %d %q is not in 'from:to' format", i+1, pair)
+		}
+		for _, side := range []string{from, to} {
+			if isIncompleteShare(side) {
+				return fmt.Errorf(`pair %d %q: %q is not a complete network share; write the server and the share, e.g. '\\nas\books'`, i+1, pair, strings.TrimSpace(side))
+			}
 		}
 	}
 	return nil
@@ -169,6 +179,67 @@ func IsWindowsPath(p string) bool {
 	return p[2] == '\\' || p[2] == '/'
 }
 
+// IsUNCPath reports whether p is a Windows network share path with both a
+// server and a share segment: `\\nas\books`, `//nas/books`, or the extended
+// form `\\?\UNC\nas\books`. A forward-slash path needs both segments to
+// count, so a POSIX path such as `//data` stays POSIX.
+func IsUNCPath(p string) bool {
+	host, share, ok := uncParts(strings.TrimSpace(p))
+	return ok && host != "" && share != ""
+}
+
+// isWindowsSide reports whether one side of a remap rule lives in a Windows
+// namespace: a drive letter, a network share, or anything opening with `\\`
+// (an extended `\\?\C:\` path, or a share missing its share segment, which
+// Validate rejects). A leading `\\` is never a meaningful POSIX prefix.
+func isWindowsSide(p string) bool {
+	p = strings.TrimSpace(p)
+	return IsWindowsPath(p) || IsUNCPath(p) || strings.HasPrefix(p, `\\`)
+}
+
+// uncParts splits a share path into its server and share segments. ok is
+// false when p does not open with two separators, or when it is an
+// extended local path (`\\?\C:\`, `\\.\device`) rather than a share.
+func uncParts(p string) (host, share string, ok bool) {
+	if len(p) < 3 || !isSep(p[0]) || !isSep(p[1]) {
+		return "", "", false
+	}
+	rest := p[2:]
+	if len(rest) >= 6 && matchKey(rest[:6], true) == "?/unc/" {
+		rest = rest[6:]
+	}
+	host, rest, _ = cutSep(rest)
+	if host == "?" || host == "." {
+		return "", "", false
+	}
+	share, _, _ = cutSep(rest)
+	return host, share, true
+}
+
+// isIncompleteShare reports a side that opens with `\\` but is missing the
+// server or the share (`\\nas`, `\\nas\`, `\\?\UNC\nas`), which Windows
+// cannot open as a folder. Extended local paths (`\\?\C:\`) are left alone.
+func isIncompleteShare(p string) bool {
+	p = strings.TrimSpace(p)
+	if !strings.HasPrefix(p, `\\`) {
+		return false
+	}
+	host, share, ok := uncParts(p)
+	if !ok && len(p) >= 4 && (p[2] == '?' || p[2] == '.') && isSep(p[3]) {
+		return false
+	}
+	return !ok || host == "" || share == ""
+}
+
+func cutSep(s string) (before, after string, found bool) {
+	if i := strings.IndexAny(s, `/\`); i >= 0 {
+		return s[:i], s[i+1:], true
+	}
+	return s, "", false
+}
+
+func isSep(c byte) bool { return c == '/' || c == '\\' }
+
 func (r *Remapper) sort() {
 	for i := 1; i < len(r.rules); i++ {
 		for j := i; j > 0 && len(r.rules[j].from) > len(r.rules[j-1].from); j-- {
@@ -182,9 +253,13 @@ func (r *Remapper) sort() {
 // are non-empty.
 func splitPair(entry string) (string, string, bool) {
 	start := 0
-	if IsWindowsPath(entry) {
+	switch {
+	case IsWindowsPath(entry):
 		// Skip past `X:` so the drive colon is never the split point.
 		start = 2
+	case isWindowsSide(entry) && len(entry) > 4 && entry[2] == '?' && isSep(entry[3]) && IsWindowsPath(entry[4:]):
+		// The same for an extended drive path, `\\?\X:\...`.
+		start = 6
 	}
 	colon := strings.Index(entry[start:], ":")
 	if colon < 0 {
@@ -235,6 +310,9 @@ func matchKey(p string, win bool) string {
 // joinRemainder appends rest to target. rest is normalised first when it came
 // off a Windows source, because filepath.Join on a Linux binary does not treat
 // `\` as a separator and would otherwise bake it into the POSIX result.
+//
+// A share target keeps its two leading separators out of path.Join, which
+// would otherwise collapse `//nas/books` to `/nas/books`, no longer a share.
 func joinRemainder(target string, targetWin bool, targetSep, rest string, sourceWin bool) string {
 	if sourceWin {
 		rest = strings.ReplaceAll(rest, `\`, "/")
@@ -242,7 +320,12 @@ func joinRemainder(target string, targetWin bool, targetSep, rest string, source
 	if !targetWin {
 		return path.Join(target, rest)
 	}
-	joined := path.Join(strings.ReplaceAll(target, `\`, "/"), rest)
+	slashed := strings.ReplaceAll(target, `\`, "/")
+	lead := ""
+	if strings.HasPrefix(slashed, "//") {
+		lead, slashed = "//", slashed[2:]
+	}
+	joined := lead + path.Join(slashed, rest)
 	if targetSep == `\` {
 		return strings.ReplaceAll(joined, "/", `\`)
 	}
