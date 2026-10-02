@@ -22,20 +22,21 @@ func titleIdentityWords(s string) []string {
 // the left side names the requested title. Title-only releases remain valid;
 // release metadata and narrator credits are not treated as authors.
 //
-// Both sides are compared with volume markers folded to one spelling
-// (foldVolumeMarkers), because the keyword matchers accept "Vol 17" for a
-// "Volume 17" title: without the fold, "Title Vol 17 - Other Author" would be
-// accepted on its title while its attribution went unread.
+// Both sides are compared with volume markers folded to one spelling and
+// numbers stripped of zero padding (foldTitleTokens), because the keyword
+// matchers accept "Vol 07" for a "Volume 7" title: without the fold,
+// "Title Vol 07 - Other Author" would be accepted on its title while its
+// attribution went unread.
 func conflictingTitleAuthor(release, title string, authorSets [][]string) bool {
-	normalizedTitle := foldVolumeMarkers(NormalizeRelease(title))
-	normalizedRelease := foldVolumeMarkers(NormalizeRelease(release))
+	normalizedTitle := foldTitleTokens(NormalizeRelease(title))
+	normalizedRelease := foldTitleTokens(NormalizeRelease(release))
 	var attribution string
 	if after, ok := strings.CutPrefix(normalizedRelease, normalizedTitle+" by "); ok {
 		attribution = after
 	} else {
 		for _, separator := range []string{" - ", " – ", " — "} {
 			before, after, ok := strings.Cut(release, separator)
-			if ok && foldVolumeMarkers(NormalizeRelease(before)) == normalizedTitle {
+			if ok && foldTitleTokens(NormalizeRelease(before)) == normalizedTitle {
 				attribution = NormalizeRelease(after)
 				break
 			}
@@ -68,15 +69,22 @@ func conflictingTitleAuthor(release, title string, authorSets [][]string) bool {
 	return knownAuthor
 }
 
-// foldVolumeMarkers rewrites every volume marker spelling in a
-// NormalizeRelease string to "vol", so two strings that differ only in how
-// they spell the marker compare equal. Used for equality tests only.
-func foldVolumeMarkers(s string) string {
+// foldTitleTokens rewrites every volume marker spelling in a
+// NormalizeRelease string to "vol" and strips zero padding from every number
+// ("07" to "7", "00" to "0"), so two strings that differ only in how they
+// spell the marker or pad a number compare equal. This mirrors what
+// keywordPattern accepts. Used for equality tests only.
+func foldTitleTokens(s string) string {
 	toks := strings.Fields(s)
 	changed := false
 	for i, tok := range toks {
 		if newznab.IsVolumeMarker(tok) && tok != "vol" {
 			toks[i] = "vol"
+			changed = true
+		} else if len(tok) > 1 && tok[0] == '0' && isAllDigits(tok) {
+			if toks[i] = strings.TrimLeft(tok, "0"); toks[i] == "" {
+				toks[i] = "0"
+			}
 			changed = true
 		}
 	}
