@@ -368,6 +368,28 @@ set as one record), matching packs are allowed for it.
 the indexer, and why the category (default `books`) must already exist in the
 client. Bindery fetches the .torrent/NZB itself and hands it over.
 
+**Seeding limits.** A torrent indexer can carry its own seeding rules in
+Settings → Indexers, so a private tracker's minimum is met without changing the
+client's global rules for everything else. **Seed ratio** stops seeding at that
+upload ratio (or never, with *Unlimited*). **Seed time** stops seeding after
+that many minutes in total, and **Inactive seed time** after that many minutes
+without uploading. Leave a field blank to keep the client's own rule. They are
+applied to each torrent as it is grabbed, so changing them affects later grabs,
+not torrents already in the client. Indexers synced from Prowlarr pick up
+Prowlarr's per indexer seed ratio and seed time until you edit them yourself;
+Prowlarr has no inactive seed time. Not every client can hold every limit per
+torrent, and a limit the client cannot take is skipped (with a debug log line)
+rather than approximated:
+
+| Client | Seed ratio | Seed time | Inactive seed time |
+|---|---|---|---|
+| qBittorrent | yes | yes | yes, 4.6 or later |
+| Transmission | yes | no | yes |
+| Deluge | yes | no | no |
+| rTorrent | no | no | no |
+
+Usenet clients have no seeding, so the limits do nothing there.
+
 **Import.** When the client reports the job complete, Bindery matches it to
 the book, places the file per your import mode and naming template, and marks
 the book **In Library**. Ebooks land under the author's root folder (falling

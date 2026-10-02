@@ -1354,6 +1354,8 @@ describe('SettingsPage', () => {
         priority: 0,
         enabled: true,
         seedRatio: null,
+        seedTimeMinutes: null,
+        inactiveSeedTimeMinutes: null,
         freeleechOnly: false,
         dailyQueryLimit: null,
       })
@@ -1385,6 +1387,8 @@ describe('SettingsPage', () => {
         categories: [7020, 3030],
         includeParentCategories: false,
         seedRatio: null,
+        seedTimeMinutes: null,
+        inactiveSeedTimeMinutes: null,
         freeleechOnly: false,
         dailyQueryLimit: null,
       })
@@ -1444,6 +1448,68 @@ describe('SettingsPage', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'common.edit' }))
     expect(screen.getByLabelText('settings.indexers.form.seedRatioUnlimited')).toBeChecked()
+  })
+
+  it('saves per-indexer seed time and inactive seed time in minutes (#2206)', async () => {
+    const indexer = makeIndexer({ id: 31, name: 'TimedIdx' })
+    renderSettings({ indexers: [indexer] })
+    await openIndexersTab()
+
+    fireEvent.click(screen.getByRole('button', { name: 'common.edit' }))
+    expect(screen.getByText('settings.indexers.form.seedTimeHint')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('settings.indexers.form.seedTime'), { target: { value: '4320' } })
+    // A fraction rounds down to whole minutes.
+    fireEvent.change(screen.getByLabelText('settings.indexers.form.inactiveSeedTime'), { target: { value: '90.7' } })
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }))
+
+    await waitFor(() => {
+      expect(api.updateIndexer).toHaveBeenCalledWith(31, expect.objectContaining({ seedTimeMinutes: 4320, inactiveSeedTimeMinutes: 90 }))
+    })
+  })
+
+  it('clears stored seed times to null, and reads zero as blank rather than a limit', async () => {
+    const indexer = makeIndexer({ id: 32, name: 'ClearIdx', seedTimeMinutes: 600, inactiveSeedTimeMinutes: 60 })
+    renderSettings({ indexers: [indexer] })
+    await openIndexersTab()
+
+    fireEvent.click(screen.getByRole('button', { name: 'common.edit' }))
+    const seedTime = screen.getByLabelText('settings.indexers.form.seedTime')
+    const inactive = screen.getByLabelText('settings.indexers.form.inactiveSeedTime')
+    expect(seedTime).toHaveValue(600)
+    expect(inactive).toHaveValue(60)
+    fireEvent.change(seedTime, { target: { value: '' } })
+    fireEvent.change(inactive, { target: { value: '0' } })
+    fireEvent.blur(inactive)
+    expect(inactive).toHaveValue(null)
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }))
+
+    await waitFor(() => {
+      expect(api.updateIndexer).toHaveBeenCalledWith(32, expect.objectContaining({ seedTimeMinutes: null, inactiveSeedTimeMinutes: null }))
+    })
+  })
+
+  it('marks a seed time that came from Prowlarr', async () => {
+    const indexer = makeIndexer({ id: 33, name: 'ProwlarrTimed', seedTimeMinutes: 2880, seedTimeSource: 'prowlarr' })
+    renderSettings({ indexers: [indexer] })
+    await openIndexersTab()
+
+    fireEvent.click(screen.getByRole('button', { name: 'common.edit' }))
+    expect(screen.getByText('settings.indexers.form.seedTimeFromProwlarr')).toBeInTheDocument()
+  })
+
+  it('sends seed times when adding an indexer', async () => {
+    renderSettings()
+    await openIndexersTab()
+
+    fireEvent.click(screen.getByRole('button', { name: 'settings.indexers.addButton' }))
+    fireEvent.change(screen.getByPlaceholderText('settings.indexers.form.namePlaceholderExample'), { target: { value: 'Tracker' } })
+    fireEvent.change(screen.getByPlaceholderText('settings.indexers.form.urlPlaceholderExample'), { target: { value: 'http://prowlarr:9696/2/api' } })
+    fireEvent.change(screen.getByLabelText('settings.indexers.form.seedTime'), { target: { value: '10080' } })
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }))
+
+    await waitFor(() => {
+      expect(api.addIndexer).toHaveBeenCalledWith(expect.objectContaining({ seedTimeMinutes: 10080, inactiveSeedTimeMinutes: null }))
+    })
   })
 
   it('saves a per-indexer daily query limit', async () => {
