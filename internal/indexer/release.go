@@ -190,12 +190,24 @@ const volumeMarkerPattern = `(?:vol(?:ume)?s?)`
 // "vol" still cannot match inside "volcano" or "revolution". Which VOLUME a
 // cross spelling match names is checked separately, see volumeNumberAgrees.
 //
+// A keyword made only of digits matches the same number with any zero
+// padding: "7", "07" and "007" are one number, because release names pad
+// series and volume positions ("Vol 07", "Book 07") while titles usually do
+// not. The callers' word boundaries keep "7" from matching inside "17" or
+// "70". This is the same rule sameVolumeNumber applies to volume numbers.
+//
 // Every other keyword is QuoteMeta'd with the umlaut flex, exactly as before.
 // lower is the keyword lowercased for the marker lookup only; the fragment
 // keeps the caller's own casing so the umlaut flex sees what it always saw.
 func keywordPattern(kw, lower string) string {
 	if newznab.IsVolumeMarker(lower) {
 		return volumeMarkerPattern
+	}
+	if isAllDigits(kw) {
+		if n := strings.TrimLeft(kw, "0"); n != "" {
+			return `0*` + n
+		}
+		return `0+`
 	}
 	return umlautFlexRegex(regexp.QuoteMeta(kw))
 }

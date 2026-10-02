@@ -66,16 +66,13 @@ func TestFilterRelevantVolumeMarkerSpelling(t *testing.T) {
 			want:    true,
 		},
 		{
-			// KNOWN GAP, not a goal: this is the right release and it is
-			// dropped. The title identity gate compares "7" and "07" as
-			// different words (the volume guard itself ignores zero padding).
-			// Production search kept it until #2812 put the identity gate on
-			// that path too; flip this to true when the gate learns to
-			// ignore leading zeros.
+			// The title identity gate used to compare "7" and "07" as
+			// different words. A number now matches with any zero padding
+			// (keywordPattern), the same as the volume guard.
 			name:    "zero padded volume number in the release",
 			title:   "The Rising of the Shield Hero Volume 7",
 			release: "Aneko Yusagi - The Rising of the Shield Hero Vol 07 - epub",
-			want:    false,
+			want:    true,
 		},
 		{
 			name:    "mid title format qualifier is not a keyword",
@@ -144,5 +141,87 @@ func TestFilterRelevantVolumeMarkerSpelling(t *testing.T) {
 				t.Errorf("filterRelevantDebug(%q, %q) kept=%v, want %v", tc.title, tc.release, gotDebug, tc.want)
 			}
 		})
+	}
+}
+
+// TestFilterRelevantNumberPadding pins that a number in a title matches the
+// same number with zero padding in a release, and the other way round, and
+// that the padding rule cannot make one number match another. Release names
+// pad series and volume positions ("Vol 07", "Book 07"); titles usually do
+// not. Every case runs through both filter wrappers, which share one
+// implementation.
+func TestFilterRelevantNumberPadding(t *testing.T) {
+	cases := []struct {
+		name, title, author, release string
+		want                         bool
+	}{
+		{"Volume 7 title, Vol 07 release", "The Rising of the Shield Hero Volume 7", "Aneko Yusagi",
+			"Aneko Yusagi - The Rising of the Shield Hero Vol 07 - epub", true},
+		{"bare 7 title, 07 release", "The Rising of the Shield Hero 7", "Aneko Yusagi",
+			"Aneko Yusagi - The Rising of the Shield Hero 07 - epub", true},
+		{"Book 7 title, Book 07 release", "Dungeon Crawler Carl Book 7", "Matt Dinniman",
+			"Matt Dinniman - Dungeon Crawler Carl Book 07 - This Inevitable Ruin", true},
+		{"padded title, bare release", "Dungeon Crawler Carl Book 07", "Matt Dinniman",
+			"Matt Dinniman - Dungeon Crawler Carl Book 7 - This Inevitable Ruin", true},
+		{"triple padded release", "The Rising of the Shield Hero 7", "Aneko Yusagi",
+			"Aneko Yusagi - The Rising of the Shield Hero 007 - epub", true},
+
+		// Padding never makes one number match another.
+		{"Volume 16 release for Volume 17 title", "The Rising of the Shield Hero Volume 17", "Aneko Yusagi",
+			"Aneko Yusagi - The Rising of the Shield Hero Volume 16 - epub", false},
+		{"7 does not match 17", "The Rising of the Shield Hero 7", "Aneko Yusagi",
+			"Aneko Yusagi - The Rising of the Shield Hero 17 - epub", false},
+		{"7 does not match 70", "The Rising of the Shield Hero 7", "Aneko Yusagi",
+			"Aneko Yusagi - The Rising of the Shield Hero 70 - epub", false},
+		{"Book 7 does not match Book 017", "Dungeon Crawler Carl Book 7", "Matt Dinniman",
+			"Matt Dinniman - Dungeon Crawler Carl Book 017", false},
+		{"padded release for another author is still caught", "Dungeon Crawler Carl Book 7", "Matt Dinniman",
+			"Dungeon Crawler Carl Book 07 - Some Other Writer", false},
+
+		// KNOWN GAP, not a goal: this is the right release and it is
+		// dropped. A digit and a spelled out number ("7" and "Seven") are
+		// different words to the title identity gate, and only zero padding
+		// is treated as equal. Production search kept it until #2812 put the
+		// identity gate on that path.
+		{"7 does not match Seven", "The 7 Habits of Highly Effective People", "Stephen R. Covey",
+			"Stephen R. Covey - The Seven Habits of Highly Effective People", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := []newznab.SearchResult{{Title: tc.release}}
+			gotPlain := len(filterRelevant(in, tc.title, tc.author, nil)) == 1
+			kept, _ := filterRelevantDebug(in, tc.title, tc.author, nil)
+			gotDebug := len(kept) == 1
+			if gotPlain != tc.want {
+				t.Errorf("filterRelevant(%q, %q) kept=%v, want %v", tc.title, tc.release, gotPlain, tc.want)
+			}
+			if gotDebug != tc.want {
+				t.Errorf("filterRelevantDebug(%q, %q) kept=%v, want %v", tc.title, tc.release, gotDebug, tc.want)
+			}
+		})
+	}
+}
+
+// TestContainsPhraseNumberPadding pins the number rule in keywordPattern at
+// the matcher level, where the word boundaries do the work.
+func TestContainsPhraseNumberPadding(t *testing.T) {
+	cases := []struct {
+		haystack string
+		phrase   []string
+		want     bool
+	}{
+		{"book 07", []string{"book", "7"}, true},
+		{"book 7", []string{"book", "07"}, true},
+		{"book 007", []string{"book", "7"}, true},
+		{"book 0", []string{"book", "00"}, true},
+		{"book 17", []string{"book", "7"}, false},
+		{"book 70", []string{"book", "7"}, false},
+		{"book 107", []string{"book", "07"}, false},
+		{"book 0", []string{"book", "7"}, false},
+	}
+	for _, c := range cases {
+		if got := ContainsPhrase(c.haystack, c.phrase); got != c.want {
+			t.Errorf("ContainsPhrase(%q, %q) = %v, want %v", c.haystack, c.phrase, got, c.want)
+		}
 	}
 }
