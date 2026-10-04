@@ -4,7 +4,7 @@ All notable changes to Bindery are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com) and versions follow
 [Semantic Versioning](https://semver.org).
 
-## [v1.40.0] - 2026-10-02
+## [v1.40.0] - 2026-10-03
 
 Separate import handling for audiobooks, torrent cleanup and seed limits, and stricter search matching
 
