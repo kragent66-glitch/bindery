@@ -699,6 +699,34 @@ describe('BookDetailPage — search', () => {
     expect(await screen.findByText('Grab refreshed history')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByText('Grab Me')).not.toBeInTheDocument())
   })
+
+  // #2933: the combined search of a dual-format book groups results under
+  // Ebooks and Audiobooks. Grabbing from the Audiobooks group must say
+  // 'audiobook', not the book's 'both', or the client files it under its
+  // ebook category.
+  it.each([
+    ['Audiobooks', 'au-guid', 'Primal Hunter 9 audio', 'audiobook'],
+    ['Ebooks', 'eb-guid', 'Primal Hunter 9 ebook', 'ebook'],
+  ])('grabs from the %s group of a combined search with that media type', async (heading, guid, title, mediaType) => {
+    vi.mocked(api.getBook).mockResolvedValue(makeBook({ mediaType: 'both' }))
+    vi.mocked(api.listIndexers).mockResolvedValue([makeIndexer()])
+    vi.mocked(api.searchBook).mockResolvedValue({
+      results: [
+        makeResult({ guid: 'eb-guid', title: 'Primal Hunter 9 ebook', mediaType: 'ebook' }),
+        makeResult({ guid: 'au-guid', title: 'Primal Hunter 9 audio', mediaType: 'audiobook' }),
+      ],
+      debug: null,
+    })
+
+    renderBookDetailPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: /Search ebook \+ audiobook indexers/ }))
+    const group = (await screen.findByRole('heading', { name: new RegExp(`^${heading}`) })).closest('section')!
+    fireEvent.click(within(group).getByRole('button', { name: 'Grab' }))
+
+    await waitFor(() => expect(api.grab).toHaveBeenCalledTimes(1))
+    expect(api.grab).toHaveBeenCalledWith(expect.objectContaining({ guid, title, mediaType }))
+  })
 })
 
 describe('BookDetailPage — media type selector', () => {
