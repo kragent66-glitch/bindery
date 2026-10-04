@@ -44,6 +44,7 @@ type stubManualImportScanner struct {
 	importCalls int
 	lastPath    string
 	lastBookID  int64
+	lastFiles   []string
 
 	// Fix Match destination preview (#2055).
 	preview        importer.DestinationPreview
@@ -75,6 +76,17 @@ func (s *stubManualImportScanner) ImportFromPath(_ context.Context, dl *models.D
 	defer s.importMu.Unlock()
 	s.importCalls++
 	s.lastPath = path
+	if dl.BookID != nil {
+		s.lastBookID = *dl.BookID
+	}
+}
+
+func (s *stubManualImportScanner) ImportFilesFromPath(_ context.Context, dl *models.Download, dir string, files []string, _ string) {
+	s.importMu.Lock()
+	defer s.importMu.Unlock()
+	s.importCalls++
+	s.lastPath = dir
+	s.lastFiles = append([]string(nil), files...)
 	if dl.BookID != nil {
 		s.lastBookID = *dl.BookID
 	}

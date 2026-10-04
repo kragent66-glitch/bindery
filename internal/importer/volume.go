@@ -38,24 +38,84 @@ func stripPartMarker(s string) string {
 	return strings.TrimRight(strings.TrimSpace(s), " ,.:;-_")
 }
 
-// differentVolumes is seriesmatch.DifferentVolumes after volumeTitles: true
-// only when both titles carry a volume number and the numbers disagree.
+// differentVolumes is volumesDisagree after volumeTitles: true only when both
+// titles carry a volume number and the numbers disagree.
 func differentVolumes(a, b string) bool {
 	a, b = volumeTitles(a, b)
-	return seriesmatch.DifferentVolumes(a, b)
+	return volumesDisagree(a, b)
+}
+
+// volumesDisagree is seriesmatch.DifferentVolumes widened to a bare number
+// that is followed by a subtitle (see differentNumberedStems).
+func volumesDisagree(a, b string) bool {
+	return seriesmatch.DifferentVolumes(a, b) || differentNumberedStems(a, b)
+}
+
+// stemNumberRe splits a title at its first standalone number: the words before
+// it and the number. Standalone means no letter or digit touches it on either
+// side, so the "8" in "The 8th Habit" is not one.
+var stemNumberRe = regexp.MustCompile(`^(.*?)(?:^|[^\p{L}\p{N}])(\d+(?:\.\d+)?)(?:$|[^\p{L}\p{N}])`)
+
+// stemmedNumber returns the cleaned words before s's first standalone number
+// and the number. ok is false when there is no such number or nothing but
+// noise words precede it: "2001: A Space Odyssey" and "The 7 Habits" open
+// with their number, which names the book rather than a place in a series.
+func stemmedNumber(s string) (stem, num string, ok bool) {
+	m := stemNumberRe.FindStringSubmatch(s)
+	if m == nil {
+		return "", "", false
+	}
+	stem = seriesmatch.CleanTitle(m[1])
+	if stem == "" {
+		return "", "", false
+	}
+	return stem, m[2], true
+}
+
+// differentNumberedStems reports whether two titles are the same words
+// followed by different numbers, whatever comes after the number: "The Primal
+// Hunter 3" against "The Primal Hunter 17: A LitRPG Adventure".
+//
+// seriesmatch.DifferentVolumes reads a bare number only at the END of a title,
+// so a subtitle after it hid the number completely. One author's catalogue
+// carries "The Primal Hunter 3", "The Primal Hunter 9: A LitRPG Adventure" and
+// "The Primal Hunter 7 - A LitRPG Adventure" side by side, and with nothing to
+// compare the two shared words "primal" and "hunter" carried the match: volume
+// 3's audiobook was bound to volume 17, and volume 3's own import then wrote
+// nothing because book_files.path is unique (#2934).
+//
+// Requiring identical words before the number keeps this as narrow as the
+// trailing rule: "Fahrenheit 451" against "Catch 22" has different stems, and
+// a title against itself with or without its subtitle has the same number.
+func differentNumberedStems(a, b string) bool {
+	as, an, aok := stemmedNumber(a)
+	if !aok {
+		return false
+	}
+	bs, bn, bok := stemmedNumber(b)
+	if !bok || as != bs {
+		return false
+	}
+	return !seriesmatch.SamePosition(an, bn)
 }
 
 // trailingDigitRe reports a title that ends in a number, the bare-number
 // spelling seriesmatch.DifferentVolumes compares ("Defiance of the Fall 01").
 var trailingDigitRe = regexp.MustCompile(`\d\s*$`)
 
-// carriesVolumeNumber reports whether s has a number DifferentVolumes could
-// compare: an explicit marker ("Vol. 3", "Book 3", "#3") or a trailing one.
+// carriesVolumeNumber reports whether s has a number volumesDisagree could
+// compare: an explicit marker ("Vol. 3", "Book 3", "#3"), a trailing one, or
+// one after the series words and before a subtitle ("The Primal Hunter 3 A
+// LitRPG Adventure").
 func carriesVolumeNumber(s string) bool {
 	if _, ok := seriesmatch.VolumeNumber(s); ok {
 		return true
 	}
-	return trailingDigitRe.MatchString(s)
+	if trailingDigitRe.MatchString(s) {
+		return true
+	}
+	_, _, ok := stemmedNumber(s)
+	return ok
 }
 
 // libraryVolumeConflict reports whether a library file is provably a different
@@ -74,7 +134,7 @@ func carriesVolumeNumber(s string) bool {
 // beside track files named "Defiance of the Fall 01.mp3" inside "Defiance of
 // the Fall 7" the filename's number counts tracks, so letting it veto would
 // lose the book's own files. Either way the comparison is
-// seriesmatch.DifferentVolumes after volumeTitles, so a one-sided "Part N"
+// volumesDisagree after volumeTitles, so a one-sided "Part N"
 // never stands in for a series position, and a number that is part of a
 // title ("Fahrenheit 451", "Catch-22") never vetoes its own book.
 //
@@ -86,7 +146,7 @@ func libraryVolumeConflict(fileTitle, folderTitle, wanted string) bool {
 	}
 	folder, w := volumeTitles(folderTitle, wanted)
 	if carriesVolumeNumber(folder) {
-		return seriesmatch.DifferentVolumes(folder, w)
+		return volumesDisagree(folder, w)
 	}
 	if fileTitle == "" || normalizeTitle(fileTitle) == normalizeTitle(wanted) {
 		return false

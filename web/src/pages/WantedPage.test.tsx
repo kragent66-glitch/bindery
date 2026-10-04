@@ -390,6 +390,25 @@ describe('WantedPage', () => {
     expect(screen.getByText('No wanted books. Add an author to start tracking.')).toBeInTheDocument()
   })
 
+  // #2933: a dual-format book's search classifies each result, and that, not
+  // the book's 'both', is what the grab must carry.
+  it('grabs an audiobook result of a dual-format book as an audiobook', async () => {
+    vi.mocked(api.listWanted).mockResolvedValue([makeBook({ id: 1, title: 'Dune', mediaType: 'both' })])
+    vi.mocked(api.searchBook).mockResolvedValue({
+      results: [makeResult({ guid: 'dune-audio', title: 'Dune Unabridged', mediaType: 'audiobook' })],
+      debug: null,
+    })
+
+    renderWantedPage()
+
+    await screen.findByRole('link', { name: 'Dune' })
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Grab' }))
+
+    await waitFor(() => expect(api.grab).toHaveBeenCalledTimes(1))
+    expect(api.grab).toHaveBeenCalledWith(expect.objectContaining({ guid: 'dune-audio', mediaType: 'audiobook' }))
+  })
+
   it('unmonitors a single wanted book and removes it from the list', async () => {
     const book = makeBook({ id: 1, title: 'Dune' })
     let resolveUpdate: (book: Book) => void = () => {}

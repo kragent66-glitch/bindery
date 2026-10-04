@@ -177,11 +177,17 @@ func (h *PendingHandler) Grab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up the book's media type.
-	mediaType := "ebook"
-	if h.books != nil {
-		if book, err := h.books.GetByID(r.Context(), pr.BookID); err == nil && book != nil {
-			mediaType = book.MediaType
+	// The pending row is scoped to the format leg that found it, which is
+	// the release's own media type. Only an older row without one falls back
+	// to the book's, and grab() still resolves a dual-format "both" from the
+	// release title (#2933).
+	mediaType := pr.MediaType
+	if mediaType != models.MediaTypeEbook && mediaType != models.MediaTypeAudiobook {
+		mediaType = models.MediaTypeEbook
+		if h.books != nil {
+			if book, err := h.books.GetByID(r.Context(), pr.BookID); err == nil && book != nil {
+				mediaType = book.MediaType
+			}
 		}
 	}
 	stored.BookID = &pr.BookID

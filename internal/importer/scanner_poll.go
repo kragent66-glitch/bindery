@@ -1519,15 +1519,91 @@ func (e *PerFileCollisionError) Error() string {
 // placement calls below would actually do, and on a case-sensitive filesystem
 // "Track.mp3" and "track.mp3" genuinely coexist.
 func checkPerFileCollisions(destDir string, bookFiles []string) error {
+	names := make([]string, len(bookFiles))
+	for i, f := range bookFiles {
+		names[i] = filepath.Base(f)
+	}
+	return checkPerFileCollisionsNamed(destDir, bookFiles, names)
+}
+
+// checkPerFileCollisionsNamed is checkPerFileCollisions for files placed under
+// the names perFileAudiobookNames chose rather than their own basenames.
+// names[i] is the destination basename of bookFiles[i].
+func checkPerFileCollisionsNamed(destDir string, bookFiles, names []string) error {
 	seen := make(map[string]string, len(bookFiles))
-	for _, f := range bookFiles {
-		dst := filepath.Join(destDir, filepath.Base(f))
+	for i, f := range bookFiles {
+		dst := filepath.Join(destDir, names[i])
 		if prev, ok := seen[dst]; ok {
 			return &PerFileCollisionError{Dest: dst, FirstSrc: prev, SecondSrc: f}
 		}
 		seen[dst] = f
 	}
 	return nil
+}
+
+// perFileAudiobookNames returns the destination basename for each of
+// bookFiles in the per-file audiobook placement, aligned by index.
+//
+// Without naming.audiobook_file_template every file keeps its own name, as
+// this branch always did. With one, the audio tracks are named from it the
+// way the folder branch names them (#1126): in playback order, numbered from
+// {Part}, and a lone track gets the single file name (#2900). This is the
+// branch a manual import of an audiobook's loose tracks takes (#2935), so
+// leaving the template out here would name those tracks differently from the
+// same audiobook imported as a folder. Non-audio files (a companion PDF) keep
+// their names.
+//
+// A template that gives two tracks the same name (one without {Part}) is an
+// error: placing both would overwrite one with the other.
+func (s *Scanner) perFileAudiobookNames(ctx context.Context, downloadPath string, bookFiles []string, author *models.Author, book *models.Book, seriesTitle, seriesNum string) ([]string, error) {
+	names := make([]string, len(bookFiles))
+	for i, f := range bookFiles {
+		names[i] = filepath.Base(f)
+	}
+	tmpl := s.audiobookFileTemplate(ctx)
+	if tmpl == "" || book == nil {
+		return names, nil
+	}
+	index := make(map[string]int, len(bookFiles))
+	tracks := make([]flattenTrack, 0, len(bookFiles))
+	for i, f := range bookFiles {
+		if !audioFlattenExtensions[strings.ToLower(filepath.Ext(f))] {
+			continue
+		}
+		rel, err := filepath.Rel(downloadPath, f)
+		if err != nil {
+			rel = filepath.Base(f)
+		}
+		index[f] = i
+		tracks = append(tracks, flattenTrack{
+			src:   f,
+			rel:   rel,
+			disc:  extractDiscNumber(filepath.Dir(rel)),
+			track: extractTrackNumber(filepath.Base(f)),
+		})
+	}
+	sortFlattenTracks(tracks)
+	seen := make(map[string]string, len(tracks))
+	for n, tr := range tracks {
+		ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(tr.src)), ".")
+		var rendered string
+		if len(tracks) == 1 {
+			rendered = s.renamer.AudiobookSingleFileName(tmpl, author, book, seriesTitle, seriesNum, ext)
+		} else {
+			rendered = s.renamer.AudiobookFileName(tmpl, author, book, seriesTitle, seriesNum, ext, n+1)
+		}
+		name := filepath.Base(rendered)
+		if rendered == "" || name == "." || name == ".." || name == string(filepath.Separator) {
+			name = filepath.Base(tr.src)
+		}
+		if prev, clash := seen[name]; clash {
+			return nil, fmt.Errorf("the audiobook file template gives %q and %q the same name %q, so one would overwrite the other. Nothing was imported. Include {Part} in the audiobook file template",
+				prev, tr.src, name)
+		}
+		seen[name] = tr.src
+		names[index[tr.src]] = name
+	}
+	return names, nil
 }
 
 // rollbackPlacedFiles removes the files a failed per-file placement attempt

@@ -502,7 +502,13 @@ function BookDetailPageInner() {
         bookId: book.id,
         indexerId: r.indexerId,
         protocol: r.protocol,
-        mediaType: book.mediaType,
+        // The result's own media type, not the book's (#2933). A dual-format
+        // book is 'both', which matches no client category, so an audiobook
+        // grabbed from the Audiobooks group of a combined search landed in the
+        // ebook category. The groups above are built from r.mediaType, so
+        // this is the format the user picked; single-format searches leave it
+        // unset and the book's own type is the answer.
+        mediaType: r.mediaType || book.mediaType,
       })
       // Refresh book + history
       const [b, h] = await Promise.all([

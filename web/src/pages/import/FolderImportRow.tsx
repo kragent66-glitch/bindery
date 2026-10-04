@@ -17,12 +17,16 @@ interface ImportRowProps {
   result: BatchImportResult | undefined
   importing: boolean
   onPick: (b: Book) => void
+  // siblingCount is how many other tracks in this row's folder do not yet
+  // point at this row's book; onApplyToSiblings points them at it (#2935).
+  siblingCount?: number
+  onApplyToSiblings?: () => void
   onToggle: () => void
   onFormat: (f: string) => void
   onImport: () => void
 }
 
-export default function FolderImportRow({ item, row, result, importing, onPick, onToggle, onFormat, onImport }: ImportRowProps) {
+export default function FolderImportRow({ item, row, result, importing, onPick, siblingCount = 0, onApplyToSiblings, onToggle, onFormat, onImport }: ImportRowProps) {
   const { t } = useTranslation()
   const [overriding, setOverriding] = useState(false)
   const chosen = row?.chosen ?? null
@@ -79,6 +83,15 @@ export default function FolderImportRow({ item, row, result, importing, onPick, 
                     className="text-slate-500 dark:text-zinc-400 hover:underline"
                   >
                     {t('manualImport.change', 'Change')}
+                  </button>
+                )}
+                {!accepted && siblingCount > 0 && onApplyToSiblings && (
+                  <button
+                    type="button"
+                    onClick={onApplyToSiblings}
+                    className="text-emerald-700 dark:text-emerald-400 hover:underline"
+                  >
+                    {t('manualImport.applyToTracks', { count: siblingCount, defaultValue: `Use this book for the other ${siblingCount} tracks in this folder` })}
                   </button>
                 )}
               </div>

@@ -1,0 +1,2 @@
+### Fixed
+- **Audiobooks grabbed from a combined search go to the audiobook category** (#2933): on a book that wants both formats, grabbing a release from the Audiobooks group of "Search ebook + audiobook indexers" sent it to your download client's ebook category and download folder. It now uses the audiobook category, the same as "Search audiobook indexers" always did. The Wanted page and force grabbing a held release had the same problem and are fixed too. Automatic search was never affected. Thanks fearvector for the report.

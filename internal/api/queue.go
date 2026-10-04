@@ -1194,6 +1194,23 @@ func protocolClientSuggestions(protocol string) string {
 	return "SABnzbd/NZBGet"
 }
 
+// grabMediaType resolves the media type a grab is dispatched under.
+//
+// A concrete "ebook" or "audiobook" from the caller wins: the interactive
+// search classifies each result by the indexer category leg it came from,
+// which is a stronger signal than the release title. Anything else ("both"
+// from a dual-format book, or "" from a free-text grab) says nothing about the
+// release, so the format token in its title decides, the same inference
+// retryGrabRequest uses. A title with no token stays "", which every consumer
+// treats as "no preference" and sends with the client's default category.
+func grabMediaType(requested, title string) string {
+	switch requested {
+	case models.MediaTypeEbook, models.MediaTypeAudiobook:
+		return requested
+	}
+	return indexer.MediaTypeForFormat(indexer.ParseRelease(title).Format)
+}
+
 // grab executes the core grab logic: creates a download record and sends to the client.
 // It is called by both the HTTP Grab handler and PendingHandler.Grab.
 func (h *QueueHandler) grab(ctx context.Context, req grabRequest) (*models.Download, error) {
@@ -1207,6 +1224,13 @@ func (h *QueueHandler) grab(ctx context.Context, req grabRequest) (*models.Downl
 	if existing != nil && !regrabbable(existing) {
 		return nil, fmt.Errorf("%w: %s", errAlreadyGrabbed, alreadyGrabbedDetail(existing.Status))
 	}
+
+	// The media type picks the client, its category and the download
+	// directory, so it has to name the release being sent, not the book it is
+	// for. A dual-format book is "both", which no client category matches, so
+	// an audiobook grabbed from the book page's combined search landed in the
+	// ebook category (#2933). See grabMediaType.
+	req.MediaType = grabMediaType(req.MediaType, req.Title)
 
 	client, err := h.selectClient(ctx, req.Protocol, req.MediaType)
 	if err != nil {

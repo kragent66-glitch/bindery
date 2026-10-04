@@ -138,7 +138,8 @@ export default function WantedPage() {
         bookId: book.id,
         indexerId: result.indexerId,
         protocol: result.protocol,
-        mediaType: book.mediaType,
+        // The result's own media type wins over the book's 'both' (#2933).
+        mediaType: result.mediaType || book.mediaType,
       })
       setGrabbedGuid(result.guid)
       setTimeout(() => {

@@ -25,6 +25,9 @@ type manualImportScanner interface {
 	Lookup(ctx context.Context, path string) (importer.LookupResult, error)
 	LookupBatchLayout(ctx context.Context, root string, paths []string) ([]importer.LookupResult, error)
 	ImportFromPath(ctx context.Context, dl *models.Download, path, formatHint string)
+	// ImportFilesFromPath imports several files as one unit: an audiobook's
+	// loose tracks submitted as separate batch rows (#2935).
+	ImportFilesFromPath(ctx context.Context, dl *models.Download, dir string, files []string, formatHint string)
 	// PreviewImportDestination reports where importing a path against a book
 	// would place the file, without touching disk (#2055).
 	PreviewImportDestination(ctx context.Context, bookID int64, srcPath, formatHint string) (importer.DestinationPreview, error)
@@ -143,40 +146,62 @@ type manualImportRequest struct {
 // symlink-resolved path. On failure it returns an HTTP status and a message.
 // It is the shared core of Import (one item) and ImportBatch (many).
 func (h *ManualImportHandler) prepareImport(ctx context.Context, rawPath string, bookID int64, format string) (*models.Download, string, int, string) {
+	path, book, status, msg := h.validateImport(ctx, rawPath, bookID, format)
+	if book == nil {
+		return nil, "", status, msg
+	}
+	dl, status, msg := h.createManualDownload(ctx, book)
+	if dl == nil {
+		return nil, "", status, msg
+	}
+	return dl, path, 0, ""
+}
+
+// validateImport is prepareImport's validation half: it resolves rawPath
+// inside a library root and loads the book, creating nothing. On failure the
+// book is nil and status and message describe why.
+func (h *ManualImportHandler) validateImport(ctx context.Context, rawPath string, bookID int64, format string) (string, *models.Book, int, string) {
 	path := filepath.Clean(rawPath)
 	if path == "" || path == "." {
-		return nil, "", http.StatusBadRequest, "path is required"
+		return "", nil, http.StatusBadRequest, "path is required"
 	}
 	if !filepath.IsAbs(path) {
-		return nil, "", http.StatusBadRequest, "path must be absolute"
+		return "", nil, http.StatusBadRequest, "path must be absolute"
 	}
 	// Resolve symlinks and confirm containment so a symlink inside a root that
 	// points outside it can't redirect the read/move to an arbitrary file.
 	resolved, ok := h.roots.ResolveContained(ctx, path)
 	if !ok {
-		return nil, "", http.StatusForbidden, h.outsideRootsMessage(ctx)
+		return "", nil, http.StatusForbidden, h.outsideRootsMessage(ctx)
 	}
 	path = resolved
 	if bookID <= 0 {
-		return nil, "", http.StatusBadRequest, "bookId is required"
+		return "", nil, http.StatusBadRequest, "bookId is required"
 	}
 	if format != "" && format != models.MediaTypeEbook && format != models.MediaTypeAudiobook {
-		return nil, "", http.StatusBadRequest, "format must be \"ebook\" or \"audiobook\""
+		return "", nil, http.StatusBadRequest, "format must be \"ebook\" or \"audiobook\""
 	}
 	info, err := os.Stat(path) //nolint:gosec // #nosec G304 -- path is symlink-resolved and confirmed inside a configured library root; RequireAdmin middleware enforced at route level
 	if err != nil {
-		return nil, "", http.StatusBadRequest, fmt.Sprintf("path not accessible: %v", err)
+		return "", nil, http.StatusBadRequest, fmt.Sprintf("path not accessible: %v", err)
 	}
 	if !info.IsDir() && !importer.IsBookFile(path) {
-		return nil, "", http.StatusBadRequest, "path is not a recognised book file"
+		return "", nil, http.StatusBadRequest, "path is not a recognised book file"
 	}
 	book, err := h.books.GetByID(ctx, bookID)
 	if err != nil || book == nil {
-		return nil, "", http.StatusBadRequest, "book not found"
+		return "", nil, http.StatusBadRequest, "book not found"
 	}
+	return path, book, 0, ""
+}
+
+// createManualDownload creates the synthetic Download record a manual import
+// of book runs under. On failure it returns nil with a status and message.
+func (h *ManualImportHandler) createManualDownload(ctx context.Context, book *models.Book) (*models.Download, int, string) {
+	bookID := book.ID
 	now := time.Now().UTC()
 	dl := &models.Download{
-		GUID:   "manual-" + uuid.New().String(),
+		GUID:   importer.ManualDownloadGUIDPrefix + uuid.New().String(),
 		BookID: &bookID,
 		Title:  book.Title,
 		Status: models.StateCompleted,
@@ -188,9 +213,9 @@ func (h *ManualImportHandler) prepareImport(ctx context.Context, rawPath string,
 	}
 	dl.CompletedAt = &now
 	if err := h.downloads.Create(ctx, dl); err != nil {
-		return nil, "", http.StatusInternalServerError, "failed to create import record"
+		return nil, http.StatusInternalServerError, "failed to create import record"
 	}
-	return dl, path, 0, ""
+	return dl, 0, ""
 }
 
 // Import handles POST /api/v1/queue/manual-import
@@ -790,21 +815,84 @@ func (h *ManualImportHandler) ImportBatch(w http.ResponseWriter, r *http.Request
 	type job struct {
 		dl     *models.Download
 		path   string
+		files  []string // set for a group of tracks; path is then their folder
 		format string
 	}
+	type validItem struct {
+		idx  int
+		path string
+		book *models.Book
+	}
+	results := make([]BatchImportResult, len(items))
 	var jobs []job
-	resp := BatchImportResponse{Results: make([]BatchImportResult, 0, len(items))}
-	for _, it := range items {
-		dl, path, _, msg := h.prepareImport(r.Context(), it.Path, it.BookID, it.Format)
-		if dl == nil {
-			resp.Results = append(resp.Results, BatchImportResult{Path: it.Path, Accepted: false, Error: msg})
+	var singles []validItem
+	// Audiobook tracks submitted as separate rows for the same book (#2935).
+	// Each used to run as its own single file audiobook, so the tracks raced
+	// each other into "Title" and "Title (2)" folders, overwrote one another
+	// under the file template, and every one after the first was marked
+	// imported without being moved. They are one audiobook, so they import as
+	// one: a single job over all of them, the shape a grabbed multi file
+	// download takes.
+	tracksByBook := make(map[int64][]validItem)
+	var trackBooks []int64
+	resp := BatchImportResponse{}
+	for i, it := range items {
+		path, book, _, msg := h.validateImport(r.Context(), it.Path, it.BookID, it.Format)
+		if book == nil {
+			results[i] = BatchImportResult{Path: it.Path, Accepted: false, Error: msg}
 			resp.Failed++
 			continue
 		}
-		jobs = append(jobs, job{dl: dl, path: path, format: it.Format})
-		resp.Results = append(resp.Results, BatchImportResult{Path: it.Path, Accepted: true, DownloadID: dl.ID})
-		resp.Accepted++
+		v := validItem{idx: i, path: path, book: book}
+		if isAudiobookTrack(path, it.Format) {
+			if _, seen := tracksByBook[book.ID]; !seen {
+				trackBooks = append(trackBooks, book.ID)
+			}
+			tracksByBook[book.ID] = append(tracksByBook[book.ID], v)
+			continue
+		}
+		singles = append(singles, v)
 	}
+	accept := func(members []validItem, dl *models.Download) {
+		for _, m := range members {
+			results[m.idx] = BatchImportResult{Path: items[m.idx].Path, Accepted: true, DownloadID: dl.ID}
+			resp.Accepted++
+		}
+	}
+	reject := func(members []validItem, msg string) {
+		for _, m := range members {
+			results[m.idx] = BatchImportResult{Path: items[m.idx].Path, Accepted: false, Error: msg}
+			resp.Failed++
+		}
+	}
+	for _, bookID := range trackBooks {
+		members := tracksByBook[bookID]
+		if len(members) == 1 {
+			singles = append(singles, members[0])
+			continue
+		}
+		dl, _, msg := h.createManualDownload(r.Context(), members[0].book)
+		if dl == nil {
+			reject(members, msg)
+			continue
+		}
+		files := make([]string, len(members))
+		for i, m := range members {
+			files[i] = m.path
+		}
+		jobs = append(jobs, job{dl: dl, path: deepestCommonDir(files), files: files, format: models.MediaTypeAudiobook})
+		accept(members, dl)
+	}
+	for _, v := range singles {
+		dl, _, msg := h.createManualDownload(r.Context(), v.book)
+		if dl == nil {
+			reject([]validItem{v}, msg)
+			continue
+		}
+		jobs = append(jobs, job{dl: dl, path: v.path, format: items[v.idx].Format})
+		accept([]validItem{v}, dl)
+	}
+	resp.Results = results
 
 	if len(jobs) > 0 {
 		started := h.goBackground("manual-batch-import", context.WithoutCancel(r.Context()), func(ctx context.Context) {
@@ -816,6 +904,10 @@ func (h *ManualImportHandler) ImportBatch(w http.ResponseWriter, r *http.Request
 				go func(j job) {
 					defer wg.Done()
 					defer func() { <-sem }()
+					if len(j.files) > 0 {
+						h.scanner.ImportFilesFromPath(ctx, j.dl, j.path, j.files, j.format)
+						return
+					}
 					h.scanner.ImportFromPath(ctx, j.dl, j.path, j.format)
 				}(j)
 			}
@@ -828,6 +920,37 @@ func (h *ManualImportHandler) ImportBatch(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusAccepted, resp)
+}
+
+// isAudiobookTrack reports whether a validated batch path is one audio file
+// of an audiobook, as opposed to a folder or an ebook: the rows ImportBatch
+// gathers into one import per book (#2935).
+func isAudiobookTrack(path, format string) bool {
+	if format == models.MediaTypeEbook {
+		return false
+	}
+	if format != models.MediaTypeAudiobook && !importer.IsAudioFile(path) {
+		return false
+	}
+	info, err := os.Stat(path) //nolint:gosec // #nosec G304 -- path came back from validateImport, symlink-resolved inside a library root
+	return err == nil && !info.IsDir()
+}
+
+// deepestCommonDir returns the deepest folder that contains every one of
+// files, which are absolute, cleaned paths.
+func deepestCommonDir(files []string) string {
+	common := filepath.Dir(files[0])
+	for _, f := range files[1:] {
+		dir := filepath.Dir(f)
+		for common != dir && !strings.HasPrefix(dir, common+string(filepath.Separator)) {
+			parent := filepath.Dir(common)
+			if parent == common {
+				break
+			}
+			common = parent
+		}
+	}
+	return common
 }
 
 // downloadOwnerForRequest resolves the owner to stamp on a download created
