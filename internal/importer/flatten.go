@@ -121,6 +121,13 @@ func collectFlattenTracks(srcRoot string) ([]flattenTrack, error) {
 	if err != nil {
 		return nil, err
 	}
+	sortFlattenTracks(tracks)
+	return tracks, nil
+}
+
+// sortFlattenTracks puts tracks in playback order: by disc, then track
+// number, then relative path so the order is deterministic.
+func sortFlattenTracks(tracks []flattenTrack) {
 	sort.SliceStable(tracks, func(i, j int) bool {
 		a, b := tracks[i], tracks[j]
 		if a.disc != b.disc {
@@ -131,7 +138,6 @@ func collectFlattenTracks(srcRoot string) ([]flattenTrack, error) {
 		}
 		return a.rel < b.rel
 	})
-	return tracks, nil
 }
 
 // isMultiDiscAudiobook reports whether the audio files under srcRoot span two

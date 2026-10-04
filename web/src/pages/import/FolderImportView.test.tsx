@@ -347,4 +347,43 @@ describe('FolderImportView', () => {
     expect(rowCheckbox.checked).toBe(true)
     expect(importButtons[importButtons.length - 1].disabled).toBe(false)
   })
+
+  it('applies one pick to every track in the folder (#2935)', async () => {
+    const book = { id: 44, title: 'The Primal Hunter', author: { authorName: 'Zogarth' } } as never
+    const track = (n: string) => ({
+      path: `/dl/Hunter/${n}.mp3`, name: `${n}.mp3`, match: 'none' as const,
+      parsedTitle: n, parsedAuthor: '', detectedFormat: 'audiobook', alreadyImported: false,
+    })
+    mockScan.mockResolvedValue({
+      truncated: false,
+      items: [
+        { ...track('01'), match: 'confident', book },
+        track('02'),
+        track('03'),
+        { path: '/dl/Other/01.mp3', name: 'other 01.mp3', match: 'none', parsedTitle: '', parsedAuthor: '', detectedFormat: 'audiobook', alreadyImported: false },
+      ],
+    })
+    render(<FolderImportView />)
+    fireEvent.change(screen.getByPlaceholderText('manualImport.pathPlaceholder'), { target: { value: '/dl' } })
+    fireEvent.click(screen.getByText('manualImport.scan'))
+    await screen.findByText('01.mp3')
+
+    // Only the matched track offers it, counting its two folder mates and not
+    // the track in another folder.
+    const apply = screen.getByText(/manualImport\.applyToTracks count=2/)
+    expect(screen.getByText(/manualImport\.importSelected count=1/)).toBeInTheDocument()
+    fireEvent.click(apply)
+
+    expect(screen.queryByText(/manualImport\.applyToTracks/)).not.toBeInTheDocument()
+    expect(screen.getByText(/manualImport\.importSelected count=3/)).toBeInTheDocument()
+
+    mockBatch.mockResolvedValue({ accepted: 3, failed: 0, results: [] })
+    fireEvent.click(screen.getByText(/manualImport\.importSelected count=3/))
+    await waitFor(() => expect(mockBatch).toHaveBeenCalledTimes(1))
+    expect(mockBatch).toHaveBeenCalledWith([
+      { path: '/dl/Hunter/01.mp3', bookId: 44, format: 'audiobook' },
+      { path: '/dl/Hunter/02.mp3', bookId: 44, format: 'audiobook' },
+      { path: '/dl/Hunter/03.mp3', bookId: 44, format: 'audiobook' },
+    ])
+  })
 })

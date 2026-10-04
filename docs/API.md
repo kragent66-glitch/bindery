@@ -451,7 +451,8 @@ POST   /api/v1/pending/{id}/grab                  promote pending to queue immed
 GET    /api/v1/queue/manual-import/lookup         parse + catalogue-match one path (admin)
 GET    /api/v1/queue/manual-import/scan           enumerate + match book units under a folder (admin)
 POST   /api/v1/queue/manual-import                import one path against a book (admin)
-POST   /api/v1/queue/manual-import/batch          import selected {path, bookId} pairs (admin)
+POST   /api/v1/queue/manual-import/batch          import selected {path, bookId} pairs (admin); audio files for
+                                                    the same book import as one audiobook under one download id
 POST   /api/v1/queue/manual-import/reassign       move a mis-matched file to another book (admin)
 GET    /api/v1/queue/manual-import/reassign/preview  where that reassign would move and rename it (admin)
                                                     ?path=…&targetBookId=N[&format=ebook|audiobook]

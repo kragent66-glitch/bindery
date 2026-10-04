@@ -130,6 +130,8 @@
     "parsed": "parsed: {{title}} / {{author}}",
     "selectUnit": "Select {{name}}",
     "change": "Change",
+    "applyToTracks_one": "Use this book for the other track in this folder",
+    "applyToTracks_other": "Use this book for the other {{count}} tracks in this folder",
     "pickCandidate": "Pick the correct book",
     "formatLabel": "Format",
     "formatAuto": "Auto",

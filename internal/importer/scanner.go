@@ -129,6 +129,13 @@ type Scanner struct {
 	// with its reason, so nothing is lost but the elapsed patience.
 	importSkipsMu sync.Mutex
 	importSkips   map[int64]importSkipState
+
+	// manualBookLocks holds one *sync.Mutex per book ID so manual imports
+	// against the same book run one at a time (#2935). Two of them racing
+	// both passed the already-imported check, both ran UniqueDir before
+	// either created its folder, and split one audiobook's tracks across
+	// "Title" and "Title (2)".
+	manualBookLocks sync.Map
 }
 
 // NewScanner creates an import scanner. downloadPathRemap is an optional
@@ -1143,23 +1150,29 @@ func (s *Scanner) failDownloadThatNeverArrived(
 // recorded-but-since-deleted file does not wrongly suppress a legitimate
 // re-import.
 func (s *Scanner) alreadyImportedFormat(ctx context.Context, book *models.Book, format string) bool {
+	return s.importedFormatPath(ctx, book, format) != ""
+}
+
+// importedFormatPath is alreadyImportedFormat returning the recorded path of
+// the on-disk file or folder it found, or "" when there is none.
+func (s *Scanner) importedFormatPath(ctx context.Context, book *models.Book, format string) string {
 	if book == nil {
-		return false
+		return ""
 	}
 	files, err := s.books.ListFiles(ctx, book.ID)
 	if err != nil {
 		slog.Warn("idempotency check: failed to list book files", "bookID", book.ID, "error", err)
-		return false
+		return ""
 	}
 	for _, f := range files {
 		if f.Format != format {
 			continue
 		}
 		if _, statErr := os.Stat(f.Path); statErr == nil {
-			return true
+			return f.Path
 		}
 	}
-	return false
+	return ""
 }
 
 // existingEbookDir returns the directory holding this book's
@@ -1382,7 +1395,37 @@ func (s *Scanner) alreadyImportedPath(ctx context.Context, book *models.Book, de
 // bypassing the download-client polling path. formatHint overrides extension-
 // based format detection when non-empty ("ebook" or "audiobook").
 func (s *Scanner) ImportFromPath(ctx context.Context, dl *models.Download, path, formatHint string) {
+	defer s.lockManualBook(dl)()
 	s.tryImportInternal(ctx, dl, path, "", "", formatHint, nil, nil)
+}
+
+// ImportFilesFromPath imports several files already on disk as ONE unit: the
+// manual import of an audiobook's loose tracks, picked as separate rows from
+// a folder scan (#2935). It runs the same explicit file list path a torrent
+// download takes (#903), so the tracks land together in one audiobook folder
+// for the book, named per the audiobook file template, instead of each track
+// becoming its own single file audiobook. dir is the deepest folder holding
+// every file; files are absolute paths.
+func (s *Scanner) ImportFilesFromPath(ctx context.Context, dl *models.Download, dir string, files []string, formatHint string) {
+	defer s.lockManualBook(dl)()
+	s.tryImportInternal(ctx, dl, dir, "", "", formatHint, nil, files)
+}
+
+// ManualDownloadGUIDPrefix starts the GUID of every synthetic download the
+// manual import handler creates, so the importer can tell an import a person
+// asked for from a grabbed download.
+const ManualDownloadGUIDPrefix = "manual-"
+
+// lockManualBook serialises manual imports of the same book (#2935) and
+// returns the unlock. A download with no book has nothing to collide on.
+func (s *Scanner) lockManualBook(dl *models.Download) func() {
+	if dl == nil || dl.BookID == nil {
+		return func() {}
+	}
+	v, _ := s.manualBookLocks.LoadOrStore(*dl.BookID, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, downloadPath, cleanupClientType, cleanupRemoteID, formatHint string, cleanupFunc func() error, explicitFiles []string) {
@@ -1665,7 +1708,21 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 		// crashed before writing the terminal status, re-importing here would
 		// run AudiobookDestDir through UniqueDir and land a duplicate
 		// "Title (2)" folder. Short-circuit straight to StateImported instead.
-		if s.alreadyImportedFormat(ctx, book, models.MediaTypeAudiobook) {
+		if existing := s.importedFormatPath(ctx, book, models.MediaTypeAudiobook); existing != "" {
+			// A manual import is a person asking for these files to be
+			// placed, not a retry of one that already was. Marking it
+			// imported left every file where it was while the queue and
+			// history said otherwise: the second to forty-fifth tracks of a
+			// folder imported one row at a time all ended up there (#2935).
+			if strings.HasPrefix(dl.GUID, ManualDownloadGUIDPrefix) {
+				slog.Warn("manual audiobook import refused: the book already has an audiobook",
+					"title", dl.Title, "bookID", book.ID, "existing", existing, "src", downloadPath)
+				s.failImport(ctx, dl, models.StateImportBlocked, fmt.Sprintf(
+					"this book already has an audiobook at %s, so nothing was imported and the files were left where they are. "+
+						"To import an audiobook made of several files, import all of its tracks together in one batch; "+
+						"to replace the existing one, delete its files first", existing))
+				return
+			}
 			slog.Info("audiobook already imported — skipping re-import (idempotency guard)",
 				"title", dl.Title, "bookID", book.ID)
 			s.updateDownloadStatus(ctx, dl.ID, models.StateImported)
@@ -1740,7 +1797,14 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 			// of them (silently, in copy and move mode). Checking before the
 			// MkdirAll means a collision blocks the import with nothing
 			// written, rather than halfway through a folder.
-			if collErr := checkPerFileCollisions(destDir, bookFiles); collErr != nil {
+			names, nameErr := s.perFileAudiobookNames(ctx, downloadPath, bookFiles, author, book, seriesTitle, seriesNum)
+			if nameErr != nil {
+				slog.Error("audiobook import blocked: per-file names", "src", audiobookSource, "dst", destDir, "error", nameErr)
+				s.recordUnmatchedImportPath(ctx, dl.ID, downloadPath)
+				s.failImport(ctx, dl, models.StateImportBlocked, nameErr.Error())
+				return
+			}
+			if collErr := checkPerFileCollisionsNamed(destDir, bookFiles, names); collErr != nil {
 				slog.Error("audiobook import blocked: per-file destination collision",
 					"src", audiobookSource, "dst", destDir, "error", collErr)
 				// Record the path so the queue's manual-import action can
@@ -1755,8 +1819,8 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 				// Basenames rather than full paths: rollbackPlacedFiles
 				// removes them through an os.Root opened on destDir.
 				placed := make([]string, 0, len(bookFiles))
-				for _, srcFile := range bookFiles {
-					dstFile := filepath.Join(destDir, filepath.Base(srcFile))
+				for i, srcFile := range bookFiles {
+					dstFile := filepath.Join(destDir, names[i])
 					var fileErr error
 					switch mode {
 					case "hardlink":
@@ -1770,7 +1834,7 @@ func (s *Scanner) tryImportInternal(ctx context.Context, dl *models.Download, do
 						dirErr = fileErr
 						break
 					}
-					placed = append(placed, filepath.Base(srcFile))
+					placed = append(placed, names[i])
 				}
 				// An unexpected placement failure (a full disk, a revoked
 				// permission) used to leave the already-placed files behind

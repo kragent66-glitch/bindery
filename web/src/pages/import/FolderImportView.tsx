@@ -5,7 +5,7 @@ import type { BatchImportItem, BatchImportResult, Book, ScanItem } from '../../a
 import { btn, btnSize } from '../../components/buttons'
 import { useFolderScan } from '../../components/useFolderScan'
 import FolderImportRow from './FolderImportRow'
-import { groupHeading, type RowState } from './folderImport'
+import { groupHeading, trackFolders, type RowState } from './folderImport'
 
 // FolderImportView is the Import page's "From a folder" view, the manual
 // import wizard (#1236). It scans a folder with
@@ -49,6 +49,32 @@ export default function FolderImportView() {
 
   const pickBook = (unitPath: string, book: Book) =>
     patchRow(unitPath, { chosen: book, selected: true })
+
+  // The other tracks in this row's folder that do not yet point at the row's
+  // book: what "use this book for the other tracks" would change (#2935).
+  const tracksByPath = useMemo(() => trackFolders(items ?? []), [items])
+  const pendingSiblings = (unitPath: string): string[] => {
+    const book = rows[unitPath]?.chosen
+    if (!book) return []
+    return (tracksByPath.get(unitPath) ?? [])
+      .filter(p => p !== unitPath && rows[p]?.chosen?.id !== book.id && !results[p]?.accepted)
+  }
+
+  // Bind every other track in the folder to the same book, so a folder of an
+  // audiobook's tracks is resolved with one pick instead of one per track. The
+  // batch import then places them together as one audiobook. Already imported
+  // tracks get the book but stay unchecked, as with Select all (#2480).
+  const applyToSiblings = (unitPath: string) => {
+    const book = rows[unitPath]?.chosen
+    if (!items || !book) return
+    const imported = new Set(items.filter(it => it.alreadyImported).map(it => it.path))
+    const targets = pendingSiblings(unitPath)
+    setRows(prev => {
+      const n = { ...prev }
+      for (const p of targets) n[p] = { ...n[p], chosen: book, selected: !imported.has(p) }
+      return n
+    })
+  }
 
   const toggleSelected = (unitPath: string) =>
     setRows(prev => {
@@ -223,6 +249,8 @@ export default function FolderImportView() {
                       result={results[it.path]}
                       importing={importingPaths.has(it.path)}
                       onPick={b => pickBook(it.path, b)}
+                      siblingCount={pendingSiblings(it.path).length}
+                      onApplyToSiblings={() => applyToSiblings(it.path)}
                       onToggle={() => toggleSelected(it.path)}
                       onFormat={f => patchRow(it.path, { format: f })}
                       onImport={() => submit([it.path])}

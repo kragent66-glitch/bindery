@@ -624,6 +624,16 @@ Things worth knowing:
   named `Book 1`, `Vol 2` or a bare `1` are separate books, because a series
   stored that way is several books rather than one long one, so each gets its
   own row and its own match.
+- Point it at an audiobook's own folder and every track is a row, because the
+  folder you scan can just as well be a downloads folder of separate one file
+  audiobooks. Pick the book on one track and press **Use this book for the
+  other tracks in this folder** to give every track in that folder the same
+  book. Tracks imported together for one book land in one audiobook folder,
+  named from your audiobook file template, the same as a downloaded multi part
+  audiobook. Importing an audiobook onto a book that already has one is
+  refused rather than split into a second folder: the files stay where they
+  were and the queue says why. Delete the existing audiobook first to replace
+  it.
 
 ## Restyling files you already have
 
