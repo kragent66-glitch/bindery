@@ -626,7 +626,9 @@ How to work through the list:
   `Author - Title 1`, `Author - Title 2` and so on. Artist, Album Artist and
   Composer are all checked, so a narrator in Artist beside the author in Album
   Artist is not a conflict, and neither are credits such as Various Artists,
-  Unknown or Full Cast. Such files are also never attached by the scan to the
+  Unknown Author(s), Anonymous, Full Cast, or an audiobook publisher such as
+  Brilliance Audio, Recorded Books or Tantor Audio, however they are
+  punctuated. Such files are also never attached by the scan to the
   book their folder is named after. The row is named after the
   book the files name (the album tag, or the title in those track names), and
   suggestions come from the files' author first, scored on that title. Books
