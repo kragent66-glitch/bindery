@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/vavallee/bindery/internal/db"
+	"github.com/vavallee/bindery/internal/importer"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -290,6 +292,12 @@ func (h *AdoptionHandler) registrationPaths(ctx context.Context, unit *db.Unmatc
 		if _, ok := h.roots.ResolveContained(ctx, p); !ok {
 			return nil, refuse(http.StatusUnprocessableEntity, filepath.Base(p)+" is outside your library folders, so it cannot be adopted.")
 		}
+		// The list labels these and suggests nothing for them, but a row
+		// stored by an older scan, or a request made by hand, would still
+		// make a notes file a book's ebook (#2944).
+		if importer.TooSmallToBeABook(p, info.Size()) {
+			return nil, refuse(http.StatusBadRequest, fmt.Sprintf("%s is only %d bytes, too small to be a book, so it cannot be adopted.", filepath.Base(p), info.Size()))
+		}
 	}
 	if unit.UnitKind != db.UnmatchedKindFolder || unit.Format != models.MediaTypeAudiobook {
 		out := make([]string, len(unit.MemberPaths))
@@ -339,6 +347,13 @@ func (h *AdoptionHandler) register(ctx context.Context, unitID int64, token stri
 	}
 	for _, p := range paths {
 		inserted, err := h.registerFile(ctx, bookID, format, p)
+		var owned *db.PathOwnedError
+		if errors.As(err, &owned) {
+			// Taken by another book between the check above and this write
+			// (#2937): the same refusal the check gives, and the caller
+			// reverses whatever this request already registered.
+			return refuse(http.StatusConflict, filepath.Base(p)+" already belongs to a book in your library.")
+		}
 		if err != nil {
 			return err
 		}

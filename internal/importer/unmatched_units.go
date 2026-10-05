@@ -57,6 +57,28 @@ func (s *Scanner) ScanRunning() bool {
 	return s.scanRunning.Load()
 }
 
+// RootFormat names the format the scanned root holds, so the adoption list
+// can say when a row sits in the other format's folder (#2944): an ebook
+// under the audiobooks root is not where Bindery keeps ebooks. It names the
+// root the row was recorded under (the longest scanned root containing it),
+// which is a label only; it makes no claim about what the reconcile would
+// accept, since an audiobook root nested inside the library is also under
+// the ebook root. With one combined root
+// (BINDERY_AUDIOBOOK_DIR unset, or the same folder as the library) either
+// format belongs anywhere and the answer is "". An unknown root is "" too.
+func (s *Scanner) RootFormat(root string) string {
+	if root == "" || s.audiobookDir == "" || filepath.Clean(s.audiobookDir) == filepath.Clean(s.libraryDir) {
+		return ""
+	}
+	switch filepath.Clean(root) {
+	case filepath.Clean(s.audiobookDir):
+		return models.MediaTypeAudiobook
+	case filepath.Clean(s.libraryDir):
+		return models.MediaTypeEbook
+	}
+	return ""
+}
+
 // walkedFile is what the library walk already knew about a file (P2): its
 // size and mode come from the os.FileInfo filepath.Walk hands over, so
 // grouping costs no extra stat.
@@ -188,10 +210,15 @@ func discSetChecker(roots []string) func(folder string) bool {
 //   - loose audio directly in a library root has no book folder, so each file
 //     stands alone, as in the folder import scan;
 //   - ebooks group by folder and file stem, so Title.epub and Title.mobi are
-//     one book in two formats.
+//     one book in two formats;
+//   - a file too small to be a book stands alone, so a 1 KB Title.txt does
+//     not ride along in Title.epub's row and get adopted with it (#2944).
 //
 // It returns the grouping key, and for a folder unit the folder path.
 func unitKeyFor(f unmatchedScanFile, root string, isDiscSet func(string) bool) (key, folder string) {
+	if f.reason == unmatchedReasonTooSmall {
+		return "file\x00" + f.path, ""
+	}
 	parent := filepath.Dir(f.path)
 	if f.format == models.MediaTypeAudiobook {
 		if parent == root {
@@ -474,10 +501,15 @@ func (s *Scanner) recordUnmatchedUnits(ctx context.Context, c *unmatchedCollecto
 	units := make([]db.UnmatchedUnitScan, len(groups))
 	for i, g := range groups {
 		units[i] = g.unit
-		var reason string
-		units[i].Candidates, reason = candidatesFor(g.rep, g.evidence)
-		if reason != "" {
-			units[i].Reason = reason
+		// Nothing is suggested for a file too small to be a book: a
+		// suggestion is an invitation to adopt it, and its reason stays
+		// too_small whatever the evidence says (#2944).
+		if g.rep.reason != unmatchedReasonTooSmall {
+			var reason string
+			units[i].Candidates, reason = candidatesFor(g.rep, g.evidence)
+			if reason != "" {
+				units[i].Reason = reason
+			}
 		}
 	}
 	truncated := c.truncated || unitsTruncated

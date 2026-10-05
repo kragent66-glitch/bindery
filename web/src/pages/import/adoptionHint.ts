@@ -27,6 +27,13 @@ export function adoptionHint(item: AdoptionItem, t: TFunction): AdoptionHintText
   // files name someone else (#2942); the hint speaks of the files' author.
   const top = preselectable(item)
 
+  if (item.reason === 'too_small') {
+    return {
+      sentence: t('adoption.hint.tooSmall', 'This file is too small to be a book, so it cannot be adopted. Ignore it, or delete it from the folder.'),
+      tooltip,
+    }
+  }
+
   if (top) {
     const strong = matchStrength(item, top) === 'strong'
     return {

@@ -408,6 +408,49 @@ a CWA ingest folder, Grimmory's BookDrop, an Audiobookshelf library scan,
 webhooks. The three ways of reaching Calibre or CWA are easy to mix up; the
 [Calibre integration guide](Calibre-Integration-Wiki.md) tells them apart.
 
+**The file's language is checked at import.** The language filter at grab
+time can only read the release name, so a release that does not say its
+language gets through it. When the download arrives, Bindery reads the
+language the EPUB declares (its `dc:language`) and compares it with the
+languages the book may be in: the allowed languages on the author's metadata
+profile, or, when that profile allows any language, the preferred search
+language if it is set to English. That is the same rule the release name was
+held to, so a file is never judged more strictly than its name would have
+been.
+
+- **The file is in an allowed language**, declares no language, or declares
+  one that is not a specific language (`und`, `mul`): it imports as normal.
+  Every language an EPUB declares counts, so a bilingual edition tagged
+  French and English is allowed under an English profile. Region tags are
+  ignored, so `en-US` and `en_GB` count as English, Bokmål and Nynorsk (`nb`,
+  `nob`, `nn`, `nno`) count as Norwegian, and `cmn` and `yue` count as
+  Chinese. Every two letter ISO 639-1 code is recognised.
+- **The release holds EPUBs in both allowed and disallowed languages**: the
+  allowed ones are imported and the others are left out, the same way a
+  disallowed format inside a release is left out.
+- **Every file is in a language the profile does not allow**: the release is
+  treated as the wrong release. Nothing is placed, the Queue row is blocked
+  with a message naming both languages ("file declares Swedish (swe), but the
+  metadata profile "Standard" allows only English (eng)"), the release is
+  added to the Blocklist so the next search picks a different one, and the
+  book stays Wanted. The failure is in History and is sent to your webhooks
+  like any other failed import.
+- **The profile allows any language** (and the preferred search language is
+  not English): nothing is rejected. When the file's language differs from
+  the book's, the book is relabelled to the file's language and History
+  records a "language corrected" row, because the file on disk is the edition
+  you actually have.
+
+To keep a rejected file anyway, use **Match to book** on the Queue row, or
+import it through **Import → From a folder**. A manual import is your own
+choice and is never refused for its language. If you locked a book's language
+by editing it, a file in that language is accepted for that book even when the
+profile does not allow it. Only downloads are checked: a library scan,
+adopting files already in your library, and books imported before this check
+existed are left alone. With the import mode set to **External**, Bindery
+hands the download to your other tool without opening its files, so nothing
+is checked there either. Audiobooks are not checked yet.
+
 If the library app downstream reads sidecar metadata, turn on **Write a
 metadata.opf sidecar** in Settings → General (off by default). Bindery then
 writes a Calibre style `metadata.opf` next to each imported ebook and
@@ -504,7 +547,16 @@ to the records. Things worth knowing before you judge the results:
   The modal warns you and shows the exact destination path before you confirm,
   and nothing happens until you do; the move itself then runs in the background
   and Bindery cannot undo it for you. Reassigning the metadata link *without*
-  relocating the file is not available yet (#2055).
+  relocating the file is not available yet (#2055). History records the move
+  as **File Moved**, naming the book the file came from.
+- **An import never takes a file another book already tracks.** If a download
+  or a manual import lands on a path that a different book already has, the
+  import stops with **Import Blocked** and the Queue row names that book and
+  its id. Nothing is recorded or overwritten, and the book you imported for
+  stays Wanted. If the file really belongs to the book you imported it for,
+  open the book it is attached to and use **Fix match** to move it (#2937).
+  When the book holding the path has since been deleted, a download or manual
+  import takes it over automatically; adoption still refuses it.
 - A folder holding both an ebook and an audiobook for the same book attaches
   both in a single scan — one file per format, so a second scan is not needed.
 - A PDF, TXT, RTF, CBZ or CBR sitting in a folder that also holds audio is treated as
@@ -621,6 +673,22 @@ Things worth knowing:
 
 - Only regular files inside your library folders are listed. A symlink is not
   adopted, including one inside the library that points elsewhere.
+- **Too small to be a book**: an ebook format file under 4 KiB (a notes,
+  readme or link file, about two pages of plain text at most) is never
+  attached to a book automatically: the library scan does not match it to a
+  book, and adding an author does not treat it as a book you already own. It
+  is listed here on a row of its own with that label and no suggestion, and
+  cannot be adopted. Ignore it, or delete it from the folder. A notes file
+  beside the book file that matched is still counted quietly as that book's
+  companion and not listed. Audiobook tracks are not judged by size, and
+  files already tracked are not affected (#2944). If a file that small really
+  is the book, **Manual Import** is the override: it imports whatever file
+  you pick, whatever its size.
+- **In your audiobooks folder** / **In your ebooks folder**: when
+  `BINDERY_AUDIOBOOK_DIR` is its own folder, a row found in the other
+  format's folder (say an `.epub` under the audiobooks root) says so, and its
+  suggestion is never a one click Confirm. You can still adopt it after
+  checking. With one combined folder for both there is nothing to label.
 - A scan that finds no files at all (an unmounted volume, say) changes
   nothing on this list, so your ignores and adoptions survive it.
 - An adopted row stays, with Undo, for as long as its book exists. An ignored
@@ -733,6 +801,13 @@ and ASIN values before searching and retains provider series links during ingest
 This refresh also runs when the edition fetch is empty, unchanged, or fails.
 If a book is rebound while editions are being fetched, later edition writes for
 the old book identity are skipped.
+
+Audnex enrichment follows the same rule. When an Audiobookshelf import or a
+Hardcover list sync enriches a book you edited while the Audnex lookup was in
+flight, your edit is kept and that enrichment is skipped. The **Enrich** button
+on the book page retries once on top of your edit; if the book keeps changing
+it asks you to try again. **Rebind** does the same when the book changes while
+the new record is being fetched.
 
 Which of those a given book actually came from is on the book page, under
 **Metadata source**. It names the provider, shows the identifier the book is
