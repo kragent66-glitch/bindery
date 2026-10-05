@@ -607,10 +607,12 @@
     "excludeEmptyTitle": "Exclude {{count}} empty row(s)?",
     "excludeEmptyBody": "Keep \"{{keep}}\", which has files, and exclude:\n{{rows}}\n\nExcluded rows leave Wanted and are no longer searched. You can include them again later.",
     "excludeEmptyPartial": "{{count}} row(s) could not be excluded",
+    "excludeEmptySkipped": "{{count}} row(s) were skipped because they have files now. Review the group again.",
     "excludeWithFilesTitle": "Exclude a row that has files?",
     "excludeWithFilesBody": "\"{{title}}\" has files in your library. Excluding it hides it from Wanted and stops searches for it; the files stay on disk.",
     "noSuggestionConflict": "The rows disagree, so nothing is suggested. Check the evidence before excluding a row.",
-    "noSuggestionFiles": "More than one row has files, so nothing is suggested."
+    "noSuggestionFiles": "More than one row has files, so nothing is suggested.",
+    "noSuggestionEvidence": "Nothing ties every empty row to the row with files (no shared ISBN, ASIN, series position or matching title), so nothing is suggested."
   },
   "books": {
     "title": "Books",

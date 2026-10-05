@@ -19,7 +19,7 @@ vi.mock('../api/client', () => ({
   api: {
     listAuthorDuplicateCandidates: vi.fn(),
     toggleExcluded: vi.fn(),
-    bulkActionBooks: vi.fn(),
+    excludeEmptyBooks: vi.fn(),
   },
 }))
 
@@ -188,7 +188,7 @@ describe('DuplicateCandidatesModal', () => {
       vi.mocked(api.listAuthorDuplicateCandidates)
         .mockResolvedValueOnce(withKeeper)
         .mockResolvedValueOnce({ authorId: 7, count: 0, groups: [] })
-      vi.mocked(api.bulkActionBooks).mockResolvedValue({ results: { '21': { ok: true } } })
+      vi.mocked(api.excludeEmptyBooks).mockResolvedValue({ results: { '21': { ok: true } } })
       const onChanged = vi.fn()
       render(<DuplicateCandidatesModal authorId={7} authorName="Kristin Hannah" onClose={() => {}} onChanged={onChanged} />)
 
@@ -196,11 +196,11 @@ describe('DuplicateCandidatesModal', () => {
       const dialog = await screen.findByTestId('confirm-dialog')
       expect(dialog).toHaveTextContent('Keep "The Nightingale", which has files')
       expect(dialog).toHaveTextContent('• Nightingale')
-      expect(api.bulkActionBooks).not.toHaveBeenCalled()
+      expect(api.excludeEmptyBooks).not.toHaveBeenCalled()
       fireEvent.click(within(dialog).getByRole('button', { name: 'Exclude' }))
 
       await waitFor(() => {
-        expect(api.bulkActionBooks).toHaveBeenCalledWith([21], 'exclude')
+        expect(api.excludeEmptyBooks).toHaveBeenCalledWith([21])
         expect(onChanged).toHaveBeenCalledTimes(1)
       })
       // The re-fetch dropped the group.
@@ -216,7 +216,7 @@ describe('DuplicateCandidatesModal', () => {
       const dialog = await screen.findByTestId('confirm-dialog')
       fireEvent.click(within(dialog).getByRole('button', { name: 'common.cancel' }))
       await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument())
-      expect(api.bulkActionBooks).not.toHaveBeenCalled()
+      expect(api.excludeEmptyBooks).not.toHaveBeenCalled()
     })
 
     it('asks before excluding the row that has files', async () => {
@@ -230,6 +230,36 @@ describe('DuplicateCandidatesModal', () => {
       expect(api.toggleExcluded).not.toHaveBeenCalled()
       fireEvent.click(within(dialog).getByRole('button', { name: 'Exclude' }))
       await waitFor(() => expect(api.toggleExcluded).toHaveBeenCalledWith(22))
+    })
+
+    it('never sends a row with files, even when the payload suggests it', async () => {
+      // A malformed or stale payload that lists the keeper among the rows to
+      // exclude: the action filters it out before anything is posted.
+      vi.mocked(api.listAuthorDuplicateCandidates).mockResolvedValue({
+        ...withKeeper,
+        groups: [{ ...withKeeper.groups[0], suggestedExcludeIds: [21, 22] }],
+      })
+      vi.mocked(api.excludeEmptyBooks).mockResolvedValue({ results: { '21': { ok: true } } })
+      render(<DuplicateCandidatesModal authorId={7} authorName="Kristin Hannah" onClose={() => {}} />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Exclude the 1 empty row(s) in this group' }))
+      const dialog = await screen.findByTestId('confirm-dialog')
+      expect(dialog).not.toHaveTextContent('• The Nightingale')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Exclude' }))
+      await waitFor(() => expect(api.excludeEmptyBooks).toHaveBeenCalledTimes(1))
+      expect(api.excludeEmptyBooks).toHaveBeenCalledWith([21])
+    })
+
+    it('says which rows the server skipped because they gained files', async () => {
+      vi.mocked(api.listAuthorDuplicateCandidates).mockResolvedValue(withKeeper)
+      vi.mocked(api.excludeEmptyBooks).mockResolvedValue({
+        results: { '21': { ok: false, error: 'book has files; not excluded', code: 'has_files' } },
+      })
+      render(<DuplicateCandidatesModal authorId={7} authorName="Kristin Hannah" onClose={() => {}} />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Exclude the 1 empty row(s) in this group' }))
+      fireEvent.click(within(await screen.findByTestId('confirm-dialog')).getByRole('button', { name: 'Exclude' }))
+      expect(await screen.findByText('1 row(s) were skipped because they have files now. Review the group again.')).toBeInTheDocument()
     })
   })
 })

@@ -20,7 +20,7 @@ vi.mock('../api/client', () => ({
   api: {
     listLibraryDuplicateCandidates: vi.fn(),
     toggleExcluded: vi.fn(),
-    bulkActionBooks: vi.fn(),
+    excludeEmptyBooks: vi.fn(),
   },
 }))
 
@@ -104,20 +104,20 @@ describe('DuplicatesPage', () => {
     vi.mocked(api.listLibraryDuplicateCandidates)
       .mockResolvedValueOnce(pageOne)
       .mockResolvedValueOnce({ ...pageOne, total: 29, count: 1, groups: [pageOne.groups[1]] })
-    vi.mocked(api.bulkActionBooks).mockResolvedValue({ results: { '31': { ok: true } } })
+    vi.mocked(api.excludeEmptyBooks).mockResolvedValue({ results: { '31': { ok: true } } })
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Exclude the 1 empty row(s) in this group' }))
     const dialog = await screen.findByTestId('confirm-dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Exclude' }))
 
-    await waitFor(() => expect(api.bulkActionBooks).toHaveBeenCalledWith([31], 'exclude'))
+    await waitFor(() => expect(api.excludeEmptyBooks).toHaveBeenCalledWith([31]))
     await waitFor(() => expect(screen.queryByRole('link', { name: 'Andy Weir' })).not.toBeInTheDocument())
     expect(screen.getByText('29 group(s)')).toBeInTheDocument()
   })
 
   it('reports a partial failure from the bulk exclude', async () => {
-    vi.mocked(api.bulkActionBooks).mockResolvedValue({ results: { '31': { ok: false, error: 'book not owned' } } })
+    vi.mocked(api.excludeEmptyBooks).mockResolvedValue({ results: { '31': { ok: false, error: 'book not owned' } } })
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Exclude the 1 empty row(s) in this group' }))

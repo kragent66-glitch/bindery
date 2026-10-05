@@ -89,6 +89,7 @@ type evMember struct {
 	id       int64
 	excluded bool
 	lang     string
+	title    string // "Dune" when empty
 	ev       Evidence
 }
 
@@ -96,7 +97,11 @@ func annotated(members ...evMember) Group {
 	g := Group{}
 	evidence := map[int64]Evidence{}
 	for _, m := range members {
-		g.Members = append(g.Members, Member{Book: models.Book{ID: m.id, Excluded: m.excluded, Language: m.lang}})
+		title := m.title
+		if title == "" {
+			title = "Dune"
+		}
+		g.Members = append(g.Members, Member{Book: models.Book{ID: m.id, Excluded: m.excluded, Language: m.lang, Title: title}})
 		evidence[m.id] = m.ev
 	}
 	Annotate(&g, evidence)
@@ -298,6 +303,107 @@ func TestAnnotateNeverSuggestsARowWithFiles(t *testing.T) {
 		}
 		if len(g.SuggestedExcludeIDs) > 0 && g.Conflict {
 			t.Fatalf("mask %b: suggestion offered on a conflicted group", mask)
+		}
+	}
+}
+
+// TestAnnotateSuggestionNeedsPositiveEvidence is the #3004 review case: no
+// conflict is not agreement. A series opener with files next to an empty
+// sequel row that matched only by substring must not be offered for
+// exclusion; an exact title pair, or a substring pair that shares an ISBN or
+// a series position, still is.
+func TestAnnotateSuggestionNeedsPositiveEvidence(t *testing.T) {
+	t.Run("substring only: withheld", func(t *testing.T) {
+		g := annotated(
+			evMember{id: 1, title: "Mistborn", ev: withFiles("ebook")},
+			evMember{id: 2, title: "Mistborn: The Hero of Ages"},
+		)
+		if g.KeeperID != 1 {
+			t.Errorf("keeper = %d, want 1", g.KeeperID)
+		}
+		if len(g.SuggestedExcludeIDs) != 0 || g.SuggestionWithheld != WithheldNoEvidence {
+			t.Errorf("suggested = %v withheld = %q; want none, no-evidence", g.SuggestedExcludeIDs, g.SuggestionWithheld)
+		}
+	})
+	t.Run("exact title: offered", func(t *testing.T) {
+		g := annotated(
+			evMember{id: 1, title: "Dune", ev: withFiles("ebook")},
+			evMember{id: 2, title: "Dune"},
+		)
+		if !reflect.DeepEqual(g.SuggestedExcludeIDs, []int64{2}) || g.SuggestionWithheld != "" {
+			t.Errorf("suggested = %v withheld = %q; want [2]", g.SuggestedExcludeIDs, g.SuggestionWithheld)
+		}
+	})
+	t.Run("article and edition rules count", func(t *testing.T) {
+		g := annotated(
+			evMember{id: 1, title: "The Nightingale (Unabridged)", ev: withFiles("audiobook")},
+			evMember{id: 2, title: "Nightingale"},
+		)
+		if !reflect.DeepEqual(g.SuggestedExcludeIDs, []int64{2}) {
+			t.Errorf("suggested = %v, want [2]", g.SuggestedExcludeIDs)
+		}
+	})
+	t.Run("substring plus shared ISBN: offered", func(t *testing.T) {
+		keeper := NewEvidence(models.Book{}, []FileRef{{Kind: "ebook", Path: "/x.epub"}}, []string{"9780553418026"}, nil, nil)
+		g := annotated(
+			evMember{id: 1, title: "Mistborn", ev: keeper},
+			evMember{id: 2, title: "Mistborn: The Final Empire", ev: NewEvidence(models.Book{}, nil, []string{"0553418025"}, nil, nil)},
+		)
+		if !reflect.DeepEqual(g.SuggestedExcludeIDs, []int64{2}) {
+			t.Errorf("suggested = %v, want [2]", g.SuggestedExcludeIDs)
+		}
+	})
+	t.Run("substring plus same series position: offered", func(t *testing.T) {
+		series := []SeriesEvidence{{SeriesID: 3, Title: "Mistborn", Position: "1"}}
+		g := annotated(
+			evMember{id: 1, title: "Mistborn", ev: NewEvidence(models.Book{}, []FileRef{{Kind: "ebook", Path: "/x.epub"}}, nil, nil, series)},
+			evMember{id: 2, title: "Mistborn: The Final Empire", ev: NewEvidence(models.Book{}, nil, nil, nil, []SeriesEvidence{{SeriesID: 3, Title: "Mistborn", Position: "1.0"}})},
+		)
+		if !reflect.DeepEqual(g.SuggestedExcludeIDs, []int64{2}) {
+			t.Errorf("suggested = %v, want [2]", g.SuggestedExcludeIDs)
+		}
+	})
+	t.Run("one unlinked empty row withholds the whole suggestion", func(t *testing.T) {
+		g := annotated(
+			evMember{id: 1, title: "Mistborn", ev: withFiles("ebook")},
+			evMember{id: 2, title: "Mistborn"},
+			evMember{id: 3, title: "Mistborn: The Hero of Ages"},
+		)
+		if len(g.SuggestedExcludeIDs) != 0 || g.SuggestionWithheld != WithheldNoEvidence {
+			t.Errorf("suggested = %v withheld = %q", g.SuggestedExcludeIDs, g.SuggestionWithheld)
+		}
+	})
+	t.Run("withheld reasons", func(t *testing.T) {
+		if g := annotated(evMember{id: 1}, evMember{id: 2}); g.SuggestionWithheld != WithheldNoFiles {
+			t.Errorf("no files: %q", g.SuggestionWithheld)
+		}
+		if g := annotated(evMember{id: 1, ev: withFiles("ebook")}, evMember{id: 2, ev: withFiles("ebook")}); g.SuggestionWithheld != WithheldSeveralWithFiles {
+			t.Errorf("several: %q", g.SuggestionWithheld)
+		}
+		if g := annotated(evMember{id: 1, lang: "en", ev: withFiles("ebook")}, evMember{id: 2, lang: "fr"}); g.SuggestionWithheld != WithheldConflict {
+			t.Errorf("conflict: %q", g.SuggestionWithheld)
+		}
+	})
+}
+
+func TestAnnotateSeriesPositionsCompareNumerically(t *testing.T) {
+	g := annotated(
+		evMember{id: 1, ev: NewEvidence(models.Book{}, nil, nil, nil, []SeriesEvidence{{SeriesID: 4, Title: "Saga", Position: "1"}})},
+		evMember{id: 2, ev: NewEvidence(models.Book{}, nil, nil, nil, []SeriesEvidence{{SeriesID: 4, Title: "Saga", Position: "1.0"}})},
+	)
+	if g.Conflict {
+		t.Fatalf("1 and 1.0 reported as a conflict: %+v", g.Signals)
+	}
+	if kinds := signalKinds(g); len(kinds) != 1 || kinds[0] != SignalSameSeriesPosition {
+		t.Errorf("signals = %v, want same-series-position", kinds)
+	}
+}
+
+func TestAnnotateUndeterminedLanguageIsUnknown(t *testing.T) {
+	for _, code := range []string{"und", "mul", "zxx", "UND"} {
+		g := annotated(evMember{id: 1, lang: "en"}, evMember{id: 2, lang: code})
+		if g.Conflict {
+			t.Errorf("%q vs en reported as a language conflict", code)
 		}
 	}
 }

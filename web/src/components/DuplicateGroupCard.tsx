@@ -54,6 +54,10 @@ export default function DuplicateGroupCard({ group, busyBooks, onToggle, onExclu
     return b && !b.hasFiles && !b.excluded
   })
   const activeWithFiles = group.books.filter(b => !b.excluded && b.hasFiles).length
+  // The server says why it withheld a suggestion; an older server does not,
+  // so fall back to what the rows themselves show.
+  const withheld = group.suggestionWithheld
+    ?? (group.conflict && group.keeperId ? 'conflict' : activeWithFiles > 1 ? 'several-with-files' : undefined)
 
   const chip = (text: string, tone: 'neutral' | 'good' | 'warn' | 'keep' = 'neutral', key?: string) => {
     const tones = {
@@ -227,13 +231,17 @@ export default function DuplicateGroupCard({ group, busyBooks, onToggle, onExclu
             {t('duplicateReview.excludeEmpty', { count: suggested.length, defaultValue: 'Exclude the {{count}} empty row(s) in this group' })}
           </button>
         </div>
-      ) : group.conflict && group.keeperId ? (
+      ) : withheld === 'conflict' ? (
         <p className="mt-2 text-[11px] text-slate-500 dark:text-zinc-400">
           {t('duplicateReview.noSuggestionConflict', 'The rows disagree, so nothing is suggested. Check the evidence before excluding a row.')}
         </p>
-      ) : activeWithFiles > 1 ? (
+      ) : withheld === 'several-with-files' ? (
         <p className="mt-2 text-[11px] text-slate-500 dark:text-zinc-400">
           {t('duplicateReview.noSuggestionFiles', 'More than one row has files, so nothing is suggested.')}
+        </p>
+      ) : withheld === 'no-evidence' ? (
+        <p className="mt-2 text-[11px] text-slate-500 dark:text-zinc-400">
+          {t('duplicateReview.noSuggestionEvidence', 'Nothing ties every empty row to the row with files (no shared ISBN, ASIN, series position or matching title), so nothing is suggested.')}
         </p>
       ) : null}
     </section>

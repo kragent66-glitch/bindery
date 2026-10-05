@@ -66,14 +66,24 @@ export function useDuplicateReviewActions(reload: () => void, onChanged?: () => 
     markBusy(ids, true)
     setError(null)
     try {
-      const res = await api.bulkActionBooks(ids, 'exclude')
-      const failed = Object.values(res.results ?? {}).filter(r => !r.ok)
-      if (failed.length > 0) {
-        setError(t('duplicateReview.excludeEmptyPartial', {
-          count: failed.length,
+      const res = await api.excludeEmptyBooks(ids)
+      const results = Object.values(res.results ?? {})
+      const skipped = results.filter(r => !r.ok && r.code === 'has_files').length
+      const failed = results.filter(r => !r.ok && r.code !== 'has_files').length
+      const messages: string[] = []
+      if (skipped > 0) {
+        messages.push(t('duplicateReview.excludeEmptySkipped', {
+          count: skipped,
+          defaultValue: '{{count}} row(s) were skipped because they have files now. Review the group again.',
+        }))
+      }
+      if (failed > 0) {
+        messages.push(t('duplicateReview.excludeEmptyPartial', {
+          count: failed,
           defaultValue: '{{count}} row(s) could not be excluded',
         }))
       }
+      if (messages.length > 0) setError(messages.join(' '))
       reload()
       onChanged?.()
     } catch (err) {

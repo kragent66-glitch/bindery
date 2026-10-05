@@ -274,4 +274,79 @@ func TestLibraryDuplicates_Scale(t *testing.T) {
 	if elapsed > 5*time.Second {
 		t.Errorf("library page over %d books took %s", n, elapsed)
 	}
+
+	// The next page comes from the cached scan.
+	start = time.Now()
+	next := f.list(t, "?limit=100&offset=100", 0, "")
+	t.Logf("cached next page: %s", time.Since(start))
+	if next.Count != 30 || f.lib.scans != 1 {
+		t.Errorf("next page count = %d scans = %d, want 30 and 1", next.Count, f.lib.scans)
+	}
+}
+
+// TestLibraryDuplicates_CachesScanUntilTheLibraryChanges: turning pages
+// reuses one scan; an exclusion, a series position change and the TTL each
+// force a rescan, and serving a page never mutates the cached list.
+func TestLibraryDuplicates_CachesScanUntilTheLibraryChanges(t *testing.T) {
+	f := newLibDupFixture(t)
+	a := f.author(t, "Frank Herbert", 0)
+	d1 := f.addBook(t, a.ID, "Dune", "OLC1W", false)
+	f.addBook(t, a.ID, "Dune", "OLC2W", false)
+	f.addBook(t, a.ID, "Dune", "OLC3W", false)
+	m1 := f.addBook(t, a.ID, "Mistborn", "OLC4W", false)
+	m2 := f.addBook(t, a.ID, "Mistborn: The Final Empire", "OLC5W", false)
+	f.linkSeries(t, "OLSC", "Mistborn", m1.ID, "1")
+	f.linkSeries(t, "OLSC", "Mistborn", m2.ID, "1")
+
+	clock := time.Now()
+	f.lib.now = func() time.Time { return clock }
+	scans := func() int {
+		f.lib.mu.Lock()
+		defer f.lib.mu.Unlock()
+		return f.lib.scans
+	}
+
+	first := f.list(t, "?limit=1", 0, "")
+	second := f.list(t, "?limit=1&offset=1", 0, "")
+	again := f.list(t, "?limit=1", 0, "")
+	if first.Total != 2 || second.Total != 2 {
+		t.Fatalf("totals = %d, %d; want 2", first.Total, second.Total)
+	}
+	if scans() != 1 {
+		t.Errorf("three page loads ran %d scans, want 1", scans())
+	}
+	fb, _ := json.Marshal(first)
+	ab, _ := json.Marshal(again)
+	if string(fb) != string(ab) {
+		t.Errorf("a cached page changed between requests:\n%s\n%s", fb, ab)
+	}
+
+	// Excluding a row changes the stamp: the next load rescans.
+	if err := f.books.SetExcluded(f.ctx, d1.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	f.list(t, "?limit=1", 0, "")
+	if scans() != 2 {
+		t.Errorf("after an exclusion: %d scans, want 2", scans())
+	}
+
+	// A series position change (no books row touched) changes the stamp too:
+	// moving the second Mistborn row to #2 splits the group.
+	if _, err := f.database.ExecContext(f.ctx, `UPDATE series_books SET position_in_series = '2' WHERE book_id = ?`, m2.ID); err != nil {
+		t.Fatal(err)
+	}
+	resp := f.list(t, "", 0, "")
+	if scans() != 3 {
+		t.Errorf("after a series change: %d scans, want 3", scans())
+	}
+	if resp.Total != 1 {
+		t.Errorf("total = %d after Mistborn #2 split off, want 1 (Dune only)", resp.Total)
+	}
+
+	// And the timer bounds what a fingerprint might miss.
+	clock = clock.Add(duplicateScanTTL + time.Second)
+	f.list(t, "", 0, "")
+	if scans() != 4 {
+		t.Errorf("after the TTL: %d scans, want 4", scans())
+	}
 }

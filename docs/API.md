@@ -243,15 +243,20 @@ already stores; no provider is called:
 | `signals` | group | agreements and conflicts between the non-excluded rows: `{kind, conflict, bookIds, values}` |
 | `conflict` | group | true when any signal is a conflict |
 | `keeperId` | group | the one non-excluded row with files; omitted when no row or several rows have files |
-| `suggestedExcludeIds` | group | the non-excluded rows without files, offered as one confirmed exclusion; empty unless there is a `keeperId` and no conflict, and never contains a row with files |
+| `suggestedExcludeIds` | group | the non-excluded rows without files, offered as one confirmed exclusion; empty unless there is a `keeperId`, no conflict, and positive evidence tying every empty row to the keeper (a shared ISBN or ASIN, the same series position, or titles that match by a rule stronger than `substring`); never contains a row with files |
+| `suggestionWithheld` | group | why there is no suggestion: `no-files`, `several-with-files`, `conflict` or `no-evidence`; omitted when there is one |
 
 Signal kinds are `shared-isbn`, `shared-asin` and `same-series-position`
 (agreements: evidence the rows are one book) and `series-position-conflict`,
 `year-conflict` (release years more than one year apart) and
 `language-conflict` (languages that differ after normalising codes, so `en`,
-`eng` and `English` agree). Nothing is acted on automatically: the review UI
-excludes rows only through `PUT /book/{id}/exclude` or `POST /book/bulk` with
-`"action": "exclude"`, after a person confirms.
+`eng` and `English` agree; `und`, `mul`, `mis` and `zxx` count as unknown).
+Series positions compare numerically, so `1` and `1.0` are one position.
+Nothing is acted on automatically: the review UI excludes rows only through
+`PUT /book/{id}/exclude` or `POST /book/bulk` with `"action": "exclude"`, after
+a person confirms. For the empty rows it sends `"expectNoFiles": true`, which
+makes the bulk exclude skip any book that has a file by the time the request
+runs, reporting it with `"code": "has_files"` instead of excluding it.
 
 `GET /api/v1/library/duplicate-candidates?limit=25&offset=0` returns the same
 groups for every author in one paginated list (#2999), ordered by author name
@@ -269,13 +274,17 @@ with `description` left empty. It is not admin only, matching the per-author
 route; with `BINDERY_ENFORCE_TENANCY` on, a non-admin sees groups for the
 authors they own and unowned authors only, the same authors the per-author
 route would open for them. The scan reads one thin row per book and loads full
-rows and evidence only for the page it returns, in batched queries.
+rows and evidence only for the page it returns, in batched queries. The sorted
+group list is cached per owner scope under a fingerprint of the books, series
+links and authors tables, for at most two minutes, so turning pages does not
+rescan; any exclusion, import, new book or series change produces a new
+fingerprint and the next request rescans.
 
 ### Books
 
 ```
 GET    /api/v1/book?status=wanted                 filter by status (wanted, imported, skipped)
-POST   /api/v1/book/bulk                          bulk monitor / status flip
+POST   /api/v1/book/bulk                          bulk monitor / status flip / exclude (`"expectNoFiles": true` skips books that have files)
 GET    /api/v1/book/{id}                          book detail (with editions, history, formats)
 PUT    /api/v1/book/{id}                          update monitor / status / metadata
 DELETE /api/v1/book/{id}                          remove from library

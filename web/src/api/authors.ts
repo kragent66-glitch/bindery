@@ -263,6 +263,8 @@ export interface DuplicateCandidateGroup {
   // The empty rows the server suggests excluding together. Non-empty only
   // with a keeper and no conflict; never contains a row with files.
   suggestedExcludeIds?: number[]
+  // Why there is no suggestion, when there is none.
+  suggestionWithheld?: 'no-files' | 'several-with-files' | 'conflict' | 'no-evidence'
 }
 
 export interface DuplicateCandidates {

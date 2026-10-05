@@ -8,6 +8,7 @@ import (
 
 	"github.com/vavallee/bindery/internal/isbnutil"
 	"github.com/vavallee/bindery/internal/models"
+	"github.com/vavallee/bindery/internal/seriesmatch"
 )
 
 // This file is the evidence layer of the duplicate review (#2999). Detection
@@ -222,9 +223,12 @@ type Signal struct {
 // The keeper rule is deliberately narrow. Exactly one non-excluded member
 // with files makes it the keeper; with none or several there is no keeper,
 // because then the files themselves do not say which row is the book. The
-// empty rows are suggested for exclusion only when there is a keeper and no
-// conflict, so the suggestion can never include a row that has files and is
-// never made for a group whose evidence says the rows may be different books.
+// empty rows are suggested for exclusion only when there is a keeper, no
+// conflict, and positive evidence tying every empty row to the keeper (see
+// linkedToKeeper). The suggestion can never include a row that has files and
+// is never made for a group whose evidence says the rows may be different
+// books, or where nothing says they are the same one. SuggestionWithheld says
+// why when there is no suggestion.
 func Annotate(g *Group, evidence map[int64]Evidence) {
 	for i := range g.Members {
 		m := &g.Members[i]
@@ -254,24 +258,93 @@ func Annotate(g *Group, evidence map[int64]Evidence) {
 
 	g.KeeperID = 0
 	g.SuggestedExcludeIDs = []int64{}
+	g.SuggestionWithheld = ""
 	var withFiles []*Member
 	for _, m := range active {
 		if m.HasFiles {
 			withFiles = append(withFiles, m)
 		}
 	}
-	if len(withFiles) != 1 {
+	switch len(withFiles) {
+	case 0:
+		g.SuggestionWithheld = WithheldNoFiles
+		return
+	case 1:
+	default:
+		g.SuggestionWithheld = WithheldSeveralWithFiles
 		return
 	}
-	g.KeeperID = withFiles[0].ID
+	keeper := withFiles[0]
+	g.KeeperID = keeper.ID
 	if g.Conflict {
+		g.SuggestionWithheld = WithheldConflict
 		return
 	}
+	var empty []int64
 	for _, m := range active {
-		if !m.HasFiles {
-			g.SuggestedExcludeIDs = append(g.SuggestedExcludeIDs, m.ID)
+		if m.HasFiles {
+			continue
+		}
+		// Every empty row needs its own positive link to the keeper. No
+		// conflict is not the same as agreement: "Mistborn" (files) and
+		// "Mistborn: The Hero of Ages" (no year, no series, no ISBN) disagree
+		// on nothing only because the empty row knows nothing.
+		if !linkedToKeeper(keeper, m) {
+			g.SuggestionWithheld = WithheldNoEvidence
+			return
+		}
+		empty = append(empty, m.ID)
+	}
+	g.SuggestedExcludeIDs = empty
+}
+
+// Reasons Annotate gives for not suggesting an exclusion. Stable identifiers
+// the UI translates.
+const (
+	WithheldNoFiles          = "no-files"
+	WithheldSeveralWithFiles = "several-with-files"
+	WithheldConflict         = "conflict"
+	WithheldNoEvidence       = "no-evidence"
+)
+
+// linkedToKeeper reports whether there is positive evidence that row is the
+// same book as keeper: a shared ISBN or ASIN, the same position in the same
+// series, or titles that match by a rule stronger than substring (identical
+// once folded, or identical after dropping a leading article or an edition
+// marker). A substring match alone is the weakest rule, the one that pairs a
+// series opener with its sequels, so it never counts as evidence here.
+func linkedToKeeper(keeper, row *Member) bool {
+	if intersects(keeper.Evidence.allISBNs, row.Evidence.allISBNs) ||
+		intersects(keeper.Evidence.ASINs, row.Evidence.ASINs) {
+		return true
+	}
+	for _, a := range keeper.Evidence.Series {
+		for _, b := range row.Evidence.Series {
+			if a.SeriesID == b.SeriesID && seriesmatch.SamePosition(a.Position, b.Position) {
+				return true
+			}
 		}
 	}
+	if AggressiveTitleKey(keeper.Title) == "" || AggressiveTitleKey(row.Title) == "" {
+		return false
+	}
+	return len(pairRules(bookKeyFor(keeper.Title), bookKeyFor(row.Title), false)) > 0
+}
+
+// intersects reports whether two sorted string slices share a value.
+func intersects(a, b []string) bool {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] == b[j]:
+			return true
+		case a[i] < b[j]:
+			i++
+		default:
+			j++
+		}
+	}
+	return false
 }
 
 // signalsFor computes every agreement and conflict among members. Each kind
@@ -337,26 +410,43 @@ func sharedValueSignals(members []*Member, kind SignalKind, values func(*Member)
 // seriesSignals reports, per series, a shared position (two or more members
 // at the same known position) and a conflict (two or more distinct known
 // positions). Both can hold for one series: two rows at #1 agree, a third at
-// #2 is a different book of the series.
+// #2 is a different book of the series. Positions are compared with
+// seriesmatch.SamePosition, so "1" and "1.0" are one position; each position
+// is shown as the first spelling seen.
 func seriesSignals(members []*Member) []Signal {
+	type cluster struct {
+		pos string
+		ids []int64
+	}
 	type slot struct {
-		title     string
-		positions map[string][]int64
+		title    string
+		clusters []*cluster
 	}
 	bySeries := map[int64]*slot{}
 	var seriesOrder []int64
 	for _, m := range members {
 		for _, s := range m.Evidence.Series {
-			if s.Position == "" {
+			if strings.TrimSpace(s.Position) == "" {
 				continue
 			}
 			sl, ok := bySeries[s.SeriesID]
 			if !ok {
-				sl = &slot{title: s.Title, positions: map[string][]int64{}}
+				sl = &slot{title: s.Title}
 				bySeries[s.SeriesID] = sl
 				seriesOrder = append(seriesOrder, s.SeriesID)
 			}
-			sl.positions[s.Position] = append(sl.positions[s.Position], m.ID)
+			var c *cluster
+			for _, existing := range sl.clusters {
+				if seriesmatch.SamePosition(existing.pos, s.Position) {
+					c = existing
+					break
+				}
+			}
+			if c == nil {
+				c = &cluster{pos: strings.TrimSpace(s.Position)}
+				sl.clusters = append(sl.clusters, c)
+			}
+			c.ids = append(c.ids, m.ID)
 		}
 	}
 	sort.Slice(seriesOrder, func(i, j int) bool { return seriesOrder[i] < seriesOrder[j] })
@@ -364,20 +454,22 @@ func seriesSignals(members []*Member) []Signal {
 	var out []Signal
 	for _, id := range seriesOrder {
 		sl := bySeries[id]
-		positions := sortedHolderKeys(sl.positions)
-		for _, pos := range positions {
-			if ids := sl.positions[pos]; len(ids) >= 2 {
+		sort.Slice(sl.clusters, func(i, j int) bool { return sl.clusters[i].pos < sl.clusters[j].pos })
+		for _, c := range sl.clusters {
+			if ids := sortedIDs(c.ids); len(ids) >= 2 {
 				out = append(out, Signal{
 					Kind:    SignalSameSeriesPosition,
-					BookIDs: sortedIDs(ids),
-					Values:  []string{sl.title, pos},
+					BookIDs: ids,
+					Values:  []string{sl.title, c.pos},
 				})
 			}
 		}
-		if len(positions) >= 2 {
+		if len(sl.clusters) >= 2 {
 			var ids []int64
-			for _, pos := range positions {
-				ids = append(ids, sl.positions[pos]...)
+			positions := make([]string, 0, len(sl.clusters))
+			for _, c := range sl.clusters {
+				ids = append(ids, c.ids...)
+				positions = append(positions, c.pos)
 			}
 			out = append(out, Signal{
 				Kind:     SignalSeriesPositionConflict,
@@ -433,7 +525,7 @@ func languageConflict(members []*Member) (Signal, bool) {
 	var ids []int64
 	for _, m := range members {
 		norm := models.NormalizeLanguageCode(m.Language)
-		if norm == "" {
+		if _, unknown := unknownLanguages[norm]; unknown || norm == "" {
 			continue
 		}
 		ids = append(ids, m.ID)
@@ -455,6 +547,11 @@ func languageConflict(members []*Member) (Signal, bool) {
 		Values:   values,
 	}, true
 }
+
+// unknownLanguages are the ISO 639-2 codes that say nothing about which
+// language a book is in: undetermined, multiple, uncoded and no linguistic
+// content. A row tagged with one of them is treated as having no language.
+var unknownLanguages = map[string]struct{}{"und": {}, "mul": {}, "mis": {}, "zxx": {}}
 
 func sortedHolderKeys[V any](m map[string]V) []string {
 	out := make([]string, 0, len(m))

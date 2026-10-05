@@ -156,6 +156,12 @@ describe('DuplicateGroupCard', () => {
     expect(screen.getByText('More than one row has files, so nothing is suggested.')).toBeInTheDocument()
   })
 
+  it('explains a suggestion withheld for lack of evidence', () => {
+    renderCard({ ...agreeing, signals: [], suggestedExcludeIds: [], suggestionWithheld: 'no-evidence' })
+    expect(screen.queryByRole('button', { name: /empty row/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/Nothing ties every empty row to the row with files/)).toBeInTheDocument()
+  })
+
   it('passes the whole row to the per row toggle', () => {
     const { onToggle } = renderCard(agreeing)
     const [first] = screen.getAllByRole('button', { name: 'Exclude' })

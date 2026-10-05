@@ -376,9 +376,13 @@ type Group struct {
 	KeeperID int64 `json:"keeperId,omitempty"`
 	// SuggestedExcludeIDs are the non-excluded members without files, offered
 	// as one confirmed "exclude the empty rows" action. It is non-empty only
-	// when there is a KeeperID and no conflict, and it never contains a member
-	// that has files.
+	// when there is a KeeperID, no conflict, and positive evidence linking
+	// every empty member to the keeper; it never contains a member that has
+	// files.
 	SuggestedExcludeIDs []int64 `json:"suggestedExcludeIds"`
+	// SuggestionWithheld says why SuggestedExcludeIDs is empty: one of the
+	// Withheld* values, or empty when there is a suggestion.
+	SuggestionWithheld string `json:"suggestionWithheld,omitempty"`
 }
 
 type bookKeys struct {

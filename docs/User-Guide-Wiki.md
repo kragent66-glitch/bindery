@@ -986,17 +986,24 @@ lists what the rows agree or disagree on:
 | Release years more than a year apart | possibly a different book, or an old and a new edition |
 | Different languages | possibly a translation rather than a duplicate |
 
-Languages are compared by meaning, so "en", "eng" and "English" agree, and an
-unknown year, language or position never counts as a disagreement.
+Languages are compared by meaning, so "en", "eng" and "English" agree, and
+series positions by number, so "1" and "1.0" agree. An unknown year, language
+(including "und" and "mul") or position never counts as a disagreement.
 
 **Which row to keep.** When exactly one row in a group has files, it is marked
-**Keep: has files**. If the rows also have no disagreement, the group offers
-**Exclude the empty rows in this group**, which shows you the rows it will
-exclude and asks you to confirm before it does anything. It is never offered
-when the rows disagree, or when more than one row has files, because then the
-files alone do not tell you which row is the real book. A row with files is
-never part of that suggestion; you can still exclude it with its own
-**Exclude** button, and Bindery asks first. Excluding never deletes a file.
+**Keep: has files**. If the rows also have no disagreement, and something
+positively ties each empty row to that one (a shared ISBN or ASIN, the same
+series position, or a title that is the same apart from punctuation, a leading
+article or an edition marker), the group offers **Exclude the empty rows in
+this group**, which shows you the rows it will exclude and asks you to confirm
+before it does anything. A title that only contains the other one, such as
+"Mistborn" and "Mistborn: The Hero of Ages", is not enough on its own. It is
+never offered when the rows disagree, or when more than one row has files,
+because then the files alone do not tell you which row is the real book. A row
+with files is never part of that suggestion, and if one of the empty rows is
+imported after you opened the page, Bindery skips it and tells you. You can
+still exclude a row with files with its own **Exclude** button, and Bindery
+asks first. Excluding never deletes a file.
 
 **Across the whole library.** On the **Books** page, **Review duplicates**
 opens a page listing the duplicate groups for every author, a page at a time,

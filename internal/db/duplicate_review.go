@@ -56,6 +56,38 @@ func (r *BookRepo) ListForDuplicateScan(ctx context.Context, ownerUserID int64) 
 	return books, names, rows.Err()
 }
 
+// DuplicateScanStamp is a cheap fingerprint of everything the library-wide
+// duplicate scan reads: the books (count, highest id, which are excluded,
+// which author each belongs to, title lengths, latest update), the series
+// links and their positions, and the authors (count, owners, latest update).
+// The library-wide view caches its group list under this stamp, so paging
+// does not rescan the library while an exclusion, an import, a new book, a
+// series relink or an ownership change all produce a new stamp. It is one
+// aggregate query over three tables, with no row data returned.
+//
+// It is a fingerprint, not a hash: an edit that keeps every aggregate equal
+// (renaming a title to another of the same length without touching
+// updated_at) is not seen, which is why the cache also expires on a short
+// timer.
+func (r *BookRepo) DuplicateScanStamp(ctx context.Context) (string, error) {
+	var stamp string
+	err := r.db.QueryRowContext(ctx, `SELECT
+		(SELECT COUNT(*) || ':' || COALESCE(MAX(id), 0) || ':' || TOTAL(excluded * id) || ':' ||
+		        TOTAL(author_id * 7 + id) || ':' || TOTAL(LENGTH(title) * id) || ':' || COALESCE(MAX(updated_at), '')
+		   FROM books)
+		|| '|' ||
+		(SELECT COUNT(*) || ':' || TOTAL(series_id * 1000003 + book_id) || ':' ||
+		        TOTAL(LENGTH(position_in_series) * book_id) || ':' || TOTAL(CAST(position_in_series AS REAL) * book_id)
+		   FROM series_books)
+		|| '|' ||
+		(SELECT COUNT(*) || ':' || TOTAL(COALESCE(owner_user_id, 0) * id) || ':' || COALESCE(MAX(updated_at), '')
+		   FROM authors)`).Scan(&stamp)
+	if err != nil {
+		return "", fmt.Errorf("duplicate scan stamp: %w", err)
+	}
+	return stamp, nil
+}
+
 // DuplicateEvidence is what the duplicate review shows about one book beyond
 // its row: the files Bindery holds for it and the identifiers its editions
 // carry. Values are raw as stored; internal/duplicates normalizes them.
