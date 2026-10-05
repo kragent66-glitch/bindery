@@ -424,10 +424,14 @@ been.
   French and English is allowed under an English profile. Region tags are
   ignored, so `en-US` and `en_GB` count as English, Bokmål and Nynorsk (`nb`,
   `nob`, `nn`, `nno`) count as Norwegian, and `cmn` and `yue` count as
-  Chinese. Every two letter ISO 639-1 code is recognised.
+  Chinese. Every two letter ISO 639-1 code is recognised, including the
+  withdrawn `iw`, `in` and `ji`, which count as Hebrew, Indonesian and
+  Yiddish.
 - **The release holds EPUBs in both allowed and disallowed languages**: the
   allowed ones are imported and the others are left out, the same way a
-  disallowed format inside a release is left out.
+  disallowed format inside a release is left out. An EPUB that declares no
+  language, or `und` or `mul`, counts as allowed here, so it is imported and
+  the disallowed one left out.
 - **Every file is in a language the profile does not allow**: the release is
   treated as the wrong release. Nothing is placed, the Queue row is blocked
   with a message naming both languages ("file declares Swedish (swe), but the

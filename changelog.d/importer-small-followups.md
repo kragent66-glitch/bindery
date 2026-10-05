@@ -1,0 +1,2 @@
+### Fixed
+- **A release with an untagged EPUB beside one in a disallowed language now imports the untagged one** (#2998). An EPUB that declares no language, or `und`, imports on its own under a restricted profile, but next to a Swedish EPUB the whole release was rejected. Now the untagged file is imported and the Swedish one left out. EPUBs tagged with the old codes `iw`, `in` or `ji` are now read as Hebrew, Indonesian and Yiddish instead of slipping past the language check and relabelling the book to the raw code.

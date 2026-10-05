@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -506,6 +507,9 @@ func TestLanguageEnforcement_AllFilesDisallowedRejects(t *testing.T) {
 func TestLanguageEnforcement_TwoLetterCodesOutsideTheOldTable(t *testing.T) {
 	for _, c := range []struct{ code, name string }{
 		{"uk", "Ukrainian"}, {"he", "Hebrew"}, {"sk", "Slovak"}, {"fa-IR", "Persian"}, {"is", "Icelandic"},
+		// Withdrawn codes older EPUB tools still write. They passed through
+		// raw, read as no language, and relabelled the book "iw".
+		{"iw", "Hebrew"}, {"in", "Indonesian"}, {"ji", "Yiddish"},
 	} {
 		t.Run(c.code, func(t *testing.T) {
 			f := newLangEnforceFixture(t, langEnforceOpts{allowed: "eng", bookLang: "eng"})
@@ -520,6 +524,30 @@ func TestLanguageEnforcement_TwoLetterCodesOutsideTheOldTable(t *testing.T) {
 			}
 			if book.Language != "eng" {
 				t.Errorf("book language = %q, want eng (not relabelled)", book.Language)
+			}
+		})
+	}
+}
+
+// TestLanguageEnforcement_UndeclaredFileBesideDisallowedImports: a release
+// carrying an EPUB that declares no specific language and a Swedish one is not
+// the wrong release. A lone undeclared EPUB imports, so the undeclared one here
+// counts as acceptable too: it is imported and the Swedish one skipped, the way
+// the format gate keeps the files it can take. It used to be rejected whole.
+func TestLanguageEnforcement_UndeclaredFileBesideDisallowedImports(t *testing.T) {
+	for _, declared := range [][]string{nil, {"und"}, {"mul"}} {
+		t.Run("declared="+strings.Join(declared, ","), func(t *testing.T) {
+			f := newLangEnforceFixture(t, langEnforceOpts{allowed: "eng", bookLang: "eng"})
+			f.writeEpubDeclaring(t, "A.epub", "sv")
+			f.writeEpubDeclaring(t, "B.epub", declared...)
+			f.importDownload(t)
+			f.assertImported(t)
+			placed := f.placedLanguages(t)
+			if len(placed) != 1 {
+				t.Fatalf("placed %d files declaring %v, want only the undeclared one", len(placed), placed)
+			}
+			if slices.Contains(placed[0], "swe") {
+				t.Errorf("the Swedish file was placed: %v", placed)
 			}
 		})
 	}
