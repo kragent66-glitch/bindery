@@ -1,0 +1,2 @@
+### Security
+- **Per user libraries stay separate when adding books and authors.** With multi user tenancy turned on, adding a book another user already has is now refused straight away, without touching their copy. Adding a book under an author two users share no longer merges it into a book only the other user owns. Adding an author by a name that is an alias of another user's author no longer finds or changes that author. Adding a recommendation no longer files the book under another user's author, and refreshing an author no longer moves another user's book under it.

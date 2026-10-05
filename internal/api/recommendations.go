@@ -199,29 +199,38 @@ func (h *RecommendationHandler) Add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolve or create the author.
-	var authorID int64
+	// Resolve the author among the ones the caller can see. Under tenancy the
+	// recommendation's author id, or a name match, can point at another
+	// user's author, and filing the new wanted book under it would put it in
+	// that user's library and download into it.
+	var author *models.Author
 	if rec.AuthorID != nil {
-		authorID = *rec.AuthorID
-	} else if rec.AuthorName != "" {
+		if a, _ := h.authors.GetByID(r.Context(), *rec.AuthorID); a != nil && auth.CheckOwnership(r.Context(), a.OwnerUserID) {
+			author = a
+		}
+	}
+	if author == nil && rec.AuthorName != "" {
 		// Try to find an existing author by name.
-		authors, _ := h.authors.List(r.Context())
-		for _, a := range authors {
-			if a.Name == rec.AuthorName {
-				authorID = a.ID
+		authors, _ := h.authors.ListByUser(r.Context(), auth.ListScopeUserID(r.Context()))
+		for i := range authors {
+			if authors[i].Name == rec.AuthorName {
+				author = &authors[i]
 				break
 			}
 		}
 	}
 
-	if authorID == 0 {
+	if author == nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cannot resolve author for this recommendation"})
 		return
 	}
 
+	// Tenancy (#1457): a new book inherits its author's owner, as Add Book
+	// and the catalogue sync do.
 	book := &models.Book{
 		ForeignID:        rec.ForeignID,
-		AuthorID:         authorID,
+		AuthorID:         author.ID,
+		OwnerUserID:      author.OwnerUserID,
 		Title:            rec.Title,
 		Description:      rec.Description,
 		ImageURL:         rec.ImageURL,

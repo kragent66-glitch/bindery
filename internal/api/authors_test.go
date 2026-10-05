@@ -6231,6 +6231,85 @@ func TestFetchAuthorBooks_KeepsBookWithUnknownAuthorship(t *testing.T) {
 	}
 }
 
+// With tenancy on, one user's catalogue sync must not re-link a book another
+// user owns. books.foreign_id is unique across users, so bob's sync of an
+// author whose catalogue lists a work alice holds finds alice's row, and
+// before the fix moved it under bob's author. Tenancy off keeps the re-link.
+func TestFetchAuthorBooks_TenancyKeepsAnotherUsersBook(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		tenancy   bool
+		wantMoved bool
+	}{
+		{"tenancy on", true, false},
+		{"tenancy off", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth.SetEnforceTenancyForTests(t, tc.tenancy)
+			database, err := db.OpenMemory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { database.Close() })
+			ctx := context.Background()
+			users := db.NewUserRepo(database)
+			alice, err := users.Create(ctx, "alice", "h1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			bob, err := users.Create(ctx, "bob", "h2")
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorRepo := db.NewAuthorRepo(database)
+			bookRepo := db.NewBookRepo(database)
+
+			synced := &models.Author{
+				ForeignID: "OL500A", Name: "Real Author", SortName: "Author, Real",
+				MetadataProvider: "openlibrary", Monitored: true,
+			}
+			if err := authorRepo.CreateForUser(ctx, synced, bob.ID); err != nil {
+				t.Fatal(err)
+			}
+			aliceAuthor := &models.Author{
+				ForeignID: "OL777A", Name: "Other Author", SortName: "Author, Other",
+				MetadataProvider: "openlibrary",
+			}
+			if err := authorRepo.CreateForUser(ctx, aliceAuthor, alice.ID); err != nil {
+				t.Fatal(err)
+			}
+			book := &models.Book{
+				ForeignID: "OL501W", AuthorID: aliceAuthor.ID, Title: "Elantris", SortTitle: "elantris",
+				Language: "eng", Status: models.BookStatusWanted, Monitored: true,
+				Genres: []string{}, MetadataProvider: "openlibrary", OwnerUserID: alice.ID,
+			}
+			if err := bookRepo.Create(ctx, book); err != nil {
+				t.Fatal(err)
+			}
+			stub := &stubMetaProvider{works: []models.Book{{
+				ForeignID: "OL501W", Title: "Elantris", SortTitle: "elantris",
+				Language: "eng", Status: models.BookStatusWanted, Genres: []string{},
+				MetadataProvider: "openlibrary", CreditedAuthorForeignIDs: []string{"OL500A"},
+			}}}
+			h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(stub), nil,
+				db.NewMetadataProfileRepo(database), &searcherSpy{})
+			h.FetchAuthorBooks(synced, false, "")
+
+			got, err := bookRepo.GetByID(ctx, book.ID)
+			if err != nil || got == nil {
+				t.Fatalf("re-read alice's book: %+v err=%v", got, err)
+			}
+			if moved := got.AuthorID == synced.ID; moved != tc.wantMoved {
+				t.Fatalf("alice's book author = %d (bob's synced author %d, alice's %d), want moved=%v",
+					got.AuthorID, synced.ID, aliceAuthor.ID, tc.wantMoved)
+			}
+			if got.OwnerUserID != alice.ID {
+				t.Fatalf("alice's book owner = %d, want %d", got.OwnerUserID, alice.ID)
+			}
+		})
+	}
+}
+
 // --- MonitorNewItems: refresh discovery vs initial sync (#1348) ---
 
 // monitorNewItemsFixture runs a catalogue sync for an author with the given

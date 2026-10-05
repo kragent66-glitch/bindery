@@ -906,7 +906,11 @@ func (h *AuthorHandler) findAuthorByNameOrAliasExcluding(ctx context.Context, ex
 		if err != nil {
 			return nil, false, err
 		}
-		if author != nil && author.ID != excludeID {
+		// The alias table is not owner scoped, but an alias belongs to its
+		// author, and so to that author's owner. Under tenancy another user's
+		// author must not match: the caller would get that row back in a
+		// conflict, or relink it in place.
+		if author != nil && author.ID != excludeID && auth.CheckOwnership(ctx, author.OwnerUserID) {
 			exact[author.ID] = author
 		}
 	}
@@ -942,7 +946,7 @@ func (h *AuthorHandler) findAuthorByNameOrAliasExcluding(ctx context.Context, ex
 		if err != nil {
 			return nil, false, err
 		}
-		if author != nil && author.ID != excludeID {
+		if author != nil && author.ID != excludeID && auth.CheckOwnership(ctx, author.OwnerUserID) {
 			normalized[author.ID] = author
 		}
 	}
@@ -2830,6 +2834,14 @@ func keepWorkWithForeignID(books []models.Book, foreignID string) []models.Book 
 // Returns true when existing.AuthorID was changed; the caller persists it.
 func (h *AuthorHandler) reparentMisattachedBook(ctx context.Context, existing *models.Book, author *models.Author, creditedAuthorIDs []string) bool {
 	if existing.AuthorID == author.ID {
+		return false
+	}
+	// The row was found by a foreign id lookup that spans every user, so under
+	// tenancy it can be another user's book. Moving it would take it out of
+	// their author and into this one's owner's library. Unowned rows and
+	// shared (unowned) authors keep the pre tenancy behaviour.
+	if auth.EnforceTenancy() && existing.OwnerUserID != 0 && author.OwnerUserID != 0 &&
+		existing.OwnerUserID != author.OwnerUserID {
 		return false
 	}
 	owner, err := h.authors.GetByID(ctx, existing.AuthorID)
