@@ -1,6 +1,6 @@
 {
   "common": {
-    "loading": "Laster inn...",
+    "loading": "Laster inn…",
     "viewOnSource": "Vis på {{source}} ↗",
     "links": "Lenker",
     "gridView": "Rutenettvisning",
@@ -9,8 +9,8 @@
     "delete": "Slett",
     "edit": "Rediger",
     "save": "Lagre",
-    "saving": "Lagrer...",
-    "deleting": "Sletter...",
+    "saving": "Lagrer…",
+    "deleting": "Sletter…",
     "test": "Test",
     "testing": "Tester…",
     "refresh": "Oppdater",
@@ -112,7 +112,7 @@
     "title": "Manuell import",
     "description": "Skann en mappe med filer hvor som helst på disken, finn riktig bok i katalogen din for hver av dem, og importer dem til biblioteket. Treffene hentes bare fra katalogen, så legg til forfatteren først hvis vedkommende ikke finnes i Bindery ennå. En fil uten treff kan legges til fra et metadatasøk.",
     "pathLabel": "Mappe som skal skannes",
-    "pathPlaceholder": "/downloads/books",
+    "pathPlaceholder": "/nedlastinger/bøker",
     "scan": "Skann mappe",
     "scanning": "Skanner…",
     "empty": "Fant ingen bokfiler eller mapper her.",
@@ -181,7 +181,8 @@
       "author_not_in_library": "Forfatteren er ikke i biblioteket ditt",
       "no_candidate_books": "Ingen bok venter på en fil",
       "no_title_match": "Ingen lignende tittel",
-      "no_title_parsed": "Fant ingen tittel"
+      "no_title_parsed": "Fant ingen tittel",
+      "too_small": "For liten til å være en bok"
     },
     "confirm": "Bekreft",
     "choose": "Velg bok",
@@ -196,13 +197,16 @@
       "noTitle": "Ingen tittel kunne leses fra filnavnene eller taggene. Velg hvilken bok de hører til.",
       "noTitleMatch": "Ingen bok av {{author}} har en tittel som ligner på denne. Velg hvilken bok det er.",
       "noTitleMatchNoAuthor": "Ingen bok i biblioteket ditt har en tittel som ligner på denne. Velg hvilken bok det er.",
-      "strong": "Sterkt treff: {{title}} av {{author}}. Bekreft det, eller velg en annen bok.",
-      "possible": "Mulig treff: {{title}} av {{author}}, {{percent}} % tittellikhet. Kontroller treffet, og ta filene i bruk eller velg en annen bok."
+      "strong": "Godt treff: {{title}} av {{author}}. Bekreft det, eller velg en annen bok.",
+      "possible": "Mulig treff: {{title}} av {{author}}, {{percent}} % tittellikhet. Kontroller treffet, og ta filene i bruk eller velg en annen bok.",
+      "tooSmall": "Denne filen er for liten til å være en bok, så den kan ikke tas i bruk. Ignorer den, eller slett den fra mappen."
     },
     "row": {
       "files_one": "{{count}} fil",
       "files_other": "{{count}} filer",
-      "adoptedAs": "Tatt i bruk som"
+      "adoptedAs": "Tatt i bruk som",
+      "inAudiobookRoot": "I lydbokmappen din",
+      "inEbookRoot": "I e-bokmappen din"
     },
     "outcome": {
       "adopting": "Tar i bruk som {{title}}…",
@@ -296,7 +300,7 @@
     "more": "Mer",
     "moreFor": "Flere handlinger for {{name}}",
     "match": {
-      "strong": "Sterkt treff",
+      "strong": "Godt treff",
       "possible": "Mulig treff"
     },
     "short": {
@@ -306,6 +310,7 @@
       "noTitle": "Ingen tittel kunne leses",
       "noTitleMatch": "Ingen lignende tittel av {{author}}",
       "noTitleMatchNoAuthor": "Ingen lignende tittel i biblioteket ditt",
+      "tooSmall": "For liten til å være en bok",
       "authorConflict": "Filene sier {{files}}, mappen sier {{folder}}"
     },
     "group": {
@@ -380,7 +385,7 @@
     "refreshAllDoneWithFailures": "Forfattere oppdatert: {{done}} ({{failed}} mislyktes)",
     "refreshAllFailed": "Oppdatering av metadata mislyktes: {{message}}",
     "refreshAllError": "Ukjent feil",
-    "searchPlaceholder": "Søk etter forfattere...",
+    "searchPlaceholder": "Søk etter forfattere…",
     "sortAZ": "A–Å",
     "sortZA": "Å–A",
     "sortFirstNameAZ": "Fornavn A–Å",
@@ -579,7 +584,7 @@
     "title": "Bøker",
     "countLabel": "{{count}} bøker",
     "legendTitle": "Hva betyr statusmerkene?",
-    "searchPlaceholder": "Søk etter bøker eller forfattere...",
+    "searchPlaceholder": "Søk etter bøker eller forfattere…",
     "sortLabel": "Sorter:",
     "typeLabel": "Type:",
     "sortTitleAZ": "A–Å",
@@ -619,13 +624,13 @@
   },
   "wanted": {
     "title": "Ønsket",
-    "searchPlaceholder": "Søk etter tittel eller forfatter...",
+    "searchPlaceholder": "Søk etter tittel eller forfatter…",
     "countLabel": "{{filtered}} av {{total}}",
     "empty": "Ingen ønskede bøker. Legg til en forfatter for å komme i gang.",
     "noMatch": "Ingen bøker passer til søket.",
     "selectAllPage": "Velg alle på denne siden",
     "search": "Søk",
-    "searching": "Søker...",
+    "searching": "Søker…",
     "unmonitor": "Slutt å overvåke",
     "grab": "Hent",
     "grabbing": "Henter…",
@@ -662,6 +667,7 @@
       "bookFileDeleted": "Fil slettet",
       "bookRenamed": "Fil omdøpt",
       "bookRebound": "Koblet om",
+      "bookFileMoved": "Fil flyttet",
       "bookLanguageCorrected": "Språk korrigert"
     },
     "empty": "Fant ingen hendelser i historikken",
@@ -727,7 +733,7 @@
     }
   },
   "series": {
-    "searchPlaceholder": "Søk i serier...",
+    "searchPlaceholder": "Søk i serier…",
     "noMatch": "Ingen serier samsvarer med «{{query}}»",
     "deleteConfirm": "Slette «{{title}}» fra Serier? Tilknyttede bøker blir værende i biblioteket.",
     "deleteTitle": "Fjern serie",
@@ -756,7 +762,7 @@
     "empty": "Blokkeringslisten er tom",
     "emptyHint": "Mislykkede nedlastinger legges automatisk til her, slik at de ikke hentes på nytt",
     "deleteSelected": "Slett valgte ({{count}})",
-    "deleting": "Sletter...",
+    "deleting": "Sletter…",
     "colTitle": "Tittel",
     "colReason": "Årsak",
     "colDate": "Dato",
@@ -1001,7 +1007,7 @@
       "unknownError": "Ukjent feil",
       "diagnose": {
         "button": "Diagnostiser",
-        "running": "Diagnostiserer...",
+        "running": "Diagnostiserer…",
         "failed": "Diagnosen kunne ikke kjøres: {{error}}",
         "heading": "Diagnose",
         "copyReport": "Kopier rapport",
@@ -1281,7 +1287,7 @@
       "backupHint": "Omfatter forfattere, bøker, indekserere og innstillinger",
       "backupSecretsNote": "En sikkerhetskopi er en full kopi av databasen, så den inneholder også alle påloggingsdetaljer Bindery har lagret i klartekst: API-nøkler for indekserere og Prowlarr, passord til nedlastingsklienter, OIDC-klienthemmeligheter, hemmeligheter for signering av økter, Binderys API-nøkkel og eventuelle tokener for eksterne tjenester. Behandle en sikkerhetskopi som et passord. Ikke legg den ved en feilrapport, og ikke synkroniser den til et sted der du ikke ville lagt disse påloggingsdetaljene.",
       "backupButton": "Lag sikkerhetskopi",
-      "backupCreating": "Lager...",
+      "backupCreating": "Lager…",
       "backupLabelPlaceholder": "Etikett (valgfritt)",
       "existingBackups": "Eksisterende sikkerhetskopier:",
       "security": "Sikkerhet",
@@ -1375,7 +1381,7 @@
       "hardcoverClearOverride": "Fjern egen token",
       "hardcoverList": "Liste",
       "hardcoverListPlaceholder": "Skriv inn token for å laste inn lister",
-      "hardcoverListLoading": "Laster inn lister...",
+      "hardcoverListLoading": "Laster inn lister…",
       "hardcoverNoLists": "Fant ingen lister",
       "hardcoverEmpty": "Ingen importlister fra Hardcover er satt opp.",
       "hardcoverLastSync": "Sist synkronisert: {{date}}",
@@ -1490,7 +1496,7 @@
     "booksDivider": "Bøker",
     "partialError": "Noen resultater kunne ikke lastes inn: {{error}}",
     "selectAuthor": "Velg {{name}}",
-    "searching": "Søker...",
+    "searching": "Søker…",
     "select": "Velg",
     "selectBook": "Velg {{title}}",
     "inLibrary": "I biblioteket ditt",
@@ -1508,8 +1514,8 @@
     "showHiddenResults_one": "Vis {{count}} skjult resultat",
     "showHiddenResults_other": "Vis {{count}} skjulte resultater",
     "backToResults": "Tilbake til resultatene",
-    "adding": "Legger til...",
-    "searchPlaceholderAuthor": "Søk etter forfatternavn...",
+    "adding": "Legger til…",
+    "searchPlaceholderAuthor": "Søk etter forfatternavn…",
     "searchPlaceholderBook": "Tittel, ISBN eller ASIN (for eksempel Dune, 9780441478125, B0DBJBFHGT)",
     "author": {
       "confirmAdd": "Legg til forfatter",
@@ -1535,7 +1541,7 @@
         "future": "Legger til hele katalogen og søker bare etter bøkene som ikke er utgitt ennå. Nye bøker kommer med på listen når du oppdaterer forfatteren, ikke av seg selv.",
         "latest": "Legger til hele katalogen og søker etter de {{latest}} nyeste."
       },
-      "loadingDefaults": "Laster inn standardinnstillingene for biblioteket...",
+      "loadingDefaults": "Laster inn standardinnstillingene for biblioteket…",
       "customizeMonitoring": "Overvåking",
       "autoGrabLabel": "Hent bøker automatisk når de legges til",
       "autoGrabHint": "Bindery henter alltid bokkatalogen. Slå på dette for også å legge nedlastinger i kø med en gang.",
@@ -1577,12 +1583,12 @@
     "actionFindBetter": "Finn bedre metadata",
     "verify": "Vis på {{source}}",
     "title": "Koble metadata",
-    "searchPlaceholder": "Søk etter forfatternavn...",
+    "searchPlaceholder": "Søk etter forfatternavn…",
     "search": "Søk",
-    "searching": "Søker...",
+    "searching": "Søker…",
     "searchFailed": "Søket mislyktes",
     "link": "Koble",
-    "linking": "Kobler...",
+    "linking": "Kobler…",
     "linkFailed": "Koblingen mislyktes",
     "openExisting": "Åpne eksisterende forfatter",
     "books": "{{count}} bøker",
@@ -1596,7 +1602,7 @@
     "keepLabel": "Behold",
     "removeLabel": "Fjern",
     "mergeButton": "Slå sammen",
-    "merging": "Slår sammen...",
+    "merging": "Slår sammen…",
     "cancel": "Avbryt",
     "confirmBody": "Slå sammen «{{source}}» med «{{target}}»?\n\n• {{count}} bok(er) flyttes til den nye forfatteren.\n• «{{source}}» beholdes som alias for «{{target}}».\n• Dette kan ikke angres.",
     "confirmAcknowledge": "Jeg forstår at dette ikke kan angres."
@@ -1616,7 +1622,7 @@
     "title": "Oppdag",
     "subtitle": "Basert på biblioteket ditt",
     "refresh": "Oppdater",
-    "refreshing": "Oppdaterer...",
+    "refreshing": "Oppdaterer…",
     "addToWanted": "Legg til i Ønsket",
     "dismiss": "Avvis",
     "dontSuggestAuthor": "Ikke foreslå {{author}}",
@@ -1734,7 +1740,7 @@
       "anyFormat": "Valgfritt format",
       "requestBook": "Be om bok",
       "requestAuthor": "Be om forfatter",
-      "sending": "Sender...",
+      "sending": "Sender…",
       "failed": "Kunne ikke sende forespørselen"
     },
     "mine": {
@@ -1789,7 +1795,7 @@
       "format": "Format",
       "searchOnAdd": "Søk i indekserere når den er lagt til",
       "confirmApprove": "Godkjenn og legg til",
-      "approving": "Legger til...",
+      "approving": "Legger til…",
       "approveFailed": "Kunne ikke godkjenne forespørselen"
     }
   },
@@ -1999,6 +2005,7 @@
     "hardcoverHint": "Skriv inn sluggen til en Hardcover-bok eller en numerisk ID med prefikset hc:.",
     "searchFailed": "Søket mislyktes. Prøv igjen, eller skriv inn en eksakt ID.",
     "conflict": "Denne metadataposten er i konflikt med en eksisterende bok.",
+    "changed": "Boken ble endret mens den ble koblet om. Prøv igjen.",
     "failed": "Omkoblingen mislyktes. Prøv igjen.",
     "authorMismatch": "Forfatterne stemmer ikke overens",
     "authorMismatchHint": "Denne posten tilhører {{upstream}}, men boken er oppført med {{current}} som forfatter. Koble om likevel, eller gå tilbake og velg en annen post.",

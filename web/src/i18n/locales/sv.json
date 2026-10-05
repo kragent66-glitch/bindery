@@ -1,6 +1,6 @@
 {
   "common": {
-    "loading": "Läser in...",
+    "loading": "Läser in…",
     "viewOnSource": "Visa på {{source}} ↗",
     "links": "Länkar",
     "gridView": "Rutnätsvy",
@@ -9,8 +9,8 @@
     "delete": "Radera",
     "edit": "Redigera",
     "save": "Spara",
-    "saving": "Sparar...",
-    "deleting": "Raderar...",
+    "saving": "Sparar…",
+    "deleting": "Raderar…",
     "test": "Testa",
     "testing": "Testar…",
     "refresh": "Uppdatera",
@@ -181,7 +181,8 @@
       "author_not_in_library": "Författaren finns inte i ditt bibliotek",
       "no_candidate_books": "Ingen bok väntar på en fil",
       "no_title_match": "Ingen liknande titel",
-      "no_title_parsed": "Ingen titel hittades"
+      "no_title_parsed": "Ingen titel hittades",
+      "too_small": "För liten för att vara en bok"
     },
     "confirm": "Bekräfta",
     "choose": "Välj bok",
@@ -197,12 +198,15 @@
       "noTitleMatch": "Ingen bok av {{author}} har en titel som liknar den här. Välj vilken bok det är.",
       "noTitleMatchNoAuthor": "Ingen bok i ditt bibliotek har en titel som liknar den här. Välj vilken bok det är.",
       "strong": "Stark träff: {{title}} av {{author}}. Bekräfta den eller välj en annan bok.",
-      "possible": "Möjlig träff: {{title}} av {{author}}, {{percent}} % titellikhet. Kontrollera träffen och koppla sedan filerna, eller välj en annan bok."
+      "possible": "Möjlig träff: {{title}} av {{author}}, {{percent}} % titellikhet. Kontrollera träffen och koppla sedan filerna, eller välj en annan bok.",
+      "tooSmall": "Filen är för liten för att vara en bok, så den kan inte kopplas. Ignorera den eller ta bort den från mappen."
     },
     "row": {
       "files_one": "{{count}} fil",
       "files_other": "{{count}} filer",
-      "adoptedAs": "Kopplad som"
+      "adoptedAs": "Kopplad som",
+      "inAudiobookRoot": "I din ljudboksmapp",
+      "inEbookRoot": "I din e-boksmapp"
     },
     "outcome": {
       "adopting": "Kopplar som {{title}}…",
@@ -306,6 +310,7 @@
       "noTitle": "Ingen titel kunde läsas",
       "noTitleMatch": "Ingen liknande titel av {{author}}",
       "noTitleMatchNoAuthor": "Ingen liknande titel i ditt bibliotek",
+      "tooSmall": "För liten för att vara en bok",
       "authorConflict": "Filerna säger {{files}}, mappen säger {{folder}}"
     },
     "group": {
@@ -380,7 +385,7 @@
     "refreshAllDoneWithFailures": "Uppdaterade författare: {{done}} ({{failed}} misslyckades)",
     "refreshAllFailed": "Uppdateringen av metadata misslyckades: {{message}}",
     "refreshAllError": "Okänt fel",
-    "searchPlaceholder": "Sök författare...",
+    "searchPlaceholder": "Sök författare…",
     "sortAZ": "A–Ö",
     "sortZA": "Ö–A",
     "sortFirstNameAZ": "Förnamn A–Ö",
@@ -579,7 +584,7 @@
     "title": "Böcker",
     "countLabel": "{{count}} böcker",
     "legendTitle": "Vad betyder statusetiketterna?",
-    "searchPlaceholder": "Sök böcker eller författare...",
+    "searchPlaceholder": "Sök böcker eller författare…",
     "sortLabel": "Sortera:",
     "typeLabel": "Typ:",
     "sortTitleAZ": "A–Ö",
@@ -619,13 +624,13 @@
   },
   "wanted": {
     "title": "Önskade",
-    "searchPlaceholder": "Sök på titel eller författare...",
+    "searchPlaceholder": "Sök på titel eller författare…",
     "countLabel": "{{filtered}} av {{total}}",
     "empty": "Inga önskade böcker. Lägg till en författare för att komma igång.",
     "noMatch": "Inga böcker matchar sökningen.",
     "selectAllPage": "Markera alla på den här sidan",
     "search": "Sök",
-    "searching": "Söker...",
+    "searching": "Söker…",
     "unmonitor": "Sluta bevaka",
     "grab": "Hämta",
     "grabbing": "Hämtar…",
@@ -662,6 +667,7 @@
       "bookFileDeleted": "Fil borttagen",
       "bookRenamed": "Fil omdöpt",
       "bookRebound": "Omlänkad",
+      "bookFileMoved": "Fil flyttad",
       "bookLanguageCorrected": "Språk korrigerat"
     },
     "empty": "Inga händelser hittades i historiken",
@@ -727,7 +733,7 @@
     }
   },
   "series": {
-    "searchPlaceholder": "Sök serier...",
+    "searchPlaceholder": "Sök serier…",
     "noMatch": "Inga serier matchar ”{{query}}”",
     "deleteConfirm": "Ta bort ”{{title}}” från Serier? Kopplade böcker finns kvar i biblioteket.",
     "deleteTitle": "Ta bort serie",
@@ -756,7 +762,7 @@
     "empty": "Blockeringslistan är tom",
     "emptyHint": "Misslyckade nedladdningar läggs automatiskt till här så att de inte hämtas igen",
     "deleteSelected": "Radera markerade ({{count}})",
-    "deleting": "Raderar...",
+    "deleting": "Raderar…",
     "colTitle": "Titel",
     "colReason": "Orsak",
     "colDate": "Datum",
@@ -1001,7 +1007,7 @@
       "unknownError": "Okänt fel",
       "diagnose": {
         "button": "Diagnostisera",
-        "running": "Diagnostiserar...",
+        "running": "Diagnostiserar…",
         "failed": "Diagnosen kunde inte köras: {{error}}",
         "heading": "Diagnos",
         "copyReport": "Kopiera rapport",
@@ -1281,7 +1287,7 @@
       "backupHint": "Omfattar författare, böcker, indexerare och inställningar",
       "backupSecretsNote": "En säkerhetskopia är en fullständig kopia av databasen, så den innehåller också alla inloggningsuppgifter som Bindery har i klartext: API-nycklar för indexerare och Prowlarr, lösenord till nedladdningsklienter, OIDC-klienthemligheter, hemligheter för signering av sessioner, Binderys API-nyckel och eventuella token för externa tjänster. Behandla en säkerhetskopia som ett lösenord. Bifoga den inte till en felrapport och synka den inte till ett ställe där du inte skulle lägga de uppgifterna.",
       "backupButton": "Skapa säkerhetskopia",
-      "backupCreating": "Skapar...",
+      "backupCreating": "Skapar…",
       "backupLabelPlaceholder": "Etikett (valfritt)",
       "existingBackups": "Befintliga säkerhetskopior:",
       "security": "Säkerhet",
@@ -1375,7 +1381,7 @@
       "hardcoverClearOverride": "Rensa egen token",
       "hardcoverList": "Lista",
       "hardcoverListPlaceholder": "Ange token för att läsa in listor",
-      "hardcoverListLoading": "Läser in listor...",
+      "hardcoverListLoading": "Läser in listor…",
       "hardcoverNoLists": "Inga listor hittades",
       "hardcoverEmpty": "Inga importlistor från Hardcover har konfigurerats.",
       "hardcoverLastSync": "Senast synkroniserad: {{date}}",
@@ -1490,7 +1496,7 @@
     "booksDivider": "Böcker",
     "partialError": "Vissa resultat kunde inte läsas in: {{error}}",
     "selectAuthor": "Välj {{name}}",
-    "searching": "Söker...",
+    "searching": "Söker…",
     "select": "Välj",
     "selectBook": "Välj {{title}}",
     "inLibrary": "I ditt bibliotek",
@@ -1508,8 +1514,8 @@
     "showHiddenResults_one": "Visa {{count}} dolt resultat",
     "showHiddenResults_other": "Visa {{count}} dolda resultat",
     "backToResults": "Tillbaka till resultaten",
-    "adding": "Lägger till...",
-    "searchPlaceholderAuthor": "Sök efter författarnamn...",
+    "adding": "Lägger till…",
+    "searchPlaceholderAuthor": "Sök efter författarnamn…",
     "searchPlaceholderBook": "Titel, ISBN eller ASIN (till exempel Dune, 9780441478125, B0DBJBFHGT)",
     "author": {
       "confirmAdd": "Lägg till författare",
@@ -1535,7 +1541,7 @@
         "future": "Lägger till hela katalogen och söker bara efter böckerna som inte har getts ut än. Nya böcker hamnar i listan när du uppdaterar författaren, inte av sig själva.",
         "latest": "Lägger till hela katalogen och söker efter de {{latest}} senaste."
       },
-      "loadingDefaults": "Läser in bibliotekets standardinställningar...",
+      "loadingDefaults": "Läser in bibliotekets standardinställningar…",
       "customizeMonitoring": "Bevakning",
       "autoGrabLabel": "Hämta böcker automatiskt när de läggs till",
       "autoGrabHint": "Bindery hämtar alltid bokkatalogen. Aktivera det här för att även köa nedladdningar direkt.",
@@ -1577,12 +1583,12 @@
     "actionFindBetter": "Hitta bättre metadata",
     "verify": "Visa på {{source}}",
     "title": "Länka metadata",
-    "searchPlaceholder": "Sök efter författarnamn...",
+    "searchPlaceholder": "Sök efter författarnamn…",
     "search": "Sök",
-    "searching": "Söker...",
+    "searching": "Söker…",
     "searchFailed": "Sökningen misslyckades",
     "link": "Länka",
-    "linking": "Länkar...",
+    "linking": "Länkar…",
     "linkFailed": "Länkningen misslyckades",
     "openExisting": "Öppna befintlig författare",
     "books": "{{count}} böcker",
@@ -1596,7 +1602,7 @@
     "keepLabel": "Behåll",
     "removeLabel": "Ta bort",
     "mergeButton": "Slå ihop",
-    "merging": "Slår ihop...",
+    "merging": "Slår ihop…",
     "cancel": "Avbryt",
     "confirmBody": "Slå ihop ”{{source}}” med ”{{target}}”?\n\n• {{count}} bok/böcker flyttas till den nya författaren.\n• ”{{source}}” behålls som alias för ”{{target}}”.\n• Det går inte att ångra.",
     "confirmAcknowledge": "Jag förstår att det inte går att ångra."
@@ -1616,7 +1622,7 @@
     "title": "Upptäck",
     "subtitle": "Baserat på ditt bibliotek",
     "refresh": "Uppdatera",
-    "refreshing": "Uppdaterar...",
+    "refreshing": "Uppdaterar…",
     "addToWanted": "Lägg till i Önskade",
     "dismiss": "Avfärda",
     "dontSuggestAuthor": "Föreslå inte {{author}}",
@@ -1734,7 +1740,7 @@
       "anyFormat": "Valfritt format",
       "requestBook": "Begär bok",
       "requestAuthor": "Begär författare",
-      "sending": "Skickar...",
+      "sending": "Skickar…",
       "failed": "Det gick inte att skicka förfrågan"
     },
     "mine": {
@@ -1789,7 +1795,7 @@
       "format": "Format",
       "searchOnAdd": "Sök i indexerare när den har lagts till",
       "confirmApprove": "Godkänn och lägg till",
-      "approving": "Lägger till...",
+      "approving": "Lägger till…",
       "approveFailed": "Det gick inte att godkänna förfrågan"
     }
   },
@@ -1999,6 +2005,7 @@
     "hardcoverHint": "Ange en slug för en Hardcover-bok eller ett numeriskt ID med prefixet hc:.",
     "searchFailed": "Sökningen misslyckades. Försök igen eller ange ett exakt ID.",
     "conflict": "Metadataposten krockar med en befintlig bok.",
+    "changed": "Boken ändrades medan den länkades om. Försök igen.",
     "failed": "Omlänkningen misslyckades. Försök igen.",
     "authorMismatch": "Författarna stämmer inte överens",
     "authorMismatchHint": "Posten tillhör {{upstream}}, men boken är tillskriven {{current}}. Länka om ändå eller gå tillbaka och välj en annan post.",
