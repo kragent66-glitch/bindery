@@ -229,6 +229,13 @@ export default function BooksPage() {
         <div className="ml-auto flex items-center gap-3 flex-wrap justify-end">
           <span className="text-sm text-fg-muted">{t('books.countLabel', { count: total, defaultValue: '{{count}} books' })}</span>
           <ViewToggle view={view} onChange={setView} />
+          <Link
+            to="/books/duplicates"
+            title={t('books.reviewDuplicatesHint', 'Find titles across the library that look like the same book; nothing changes until you exclude a row')}
+            className="px-3 py-2 rounded-md text-sm font-medium bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 text-slate-800 dark:text-zinc-200 transition-colors"
+          >
+            {t('books.reviewDuplicates', 'Review duplicates')}
+          </Link>
           <button
             ref={addBookButtonRef}
             type="button"

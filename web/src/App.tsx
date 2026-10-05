@@ -37,6 +37,7 @@ const AuthorsPage = lazy(() => import('./pages/AuthorsPage'))
 const AuthorDetailPage = lazy(() => import('./pages/AuthorDetailPage'))
 const BooksPage = lazy(() => import('./pages/BooksPage'))
 const BookDetailPage = lazy(() => import('./pages/BookDetailPage'))
+const DuplicatesPage = lazy(() => import('./pages/DuplicatesPage'))
 const WantedPage = lazy(() => import('./pages/WantedPage'))
 const QueuePage = lazy(() => import('./pages/QueuePage'))
 const ImportPage = lazy(() => import('./pages/import/ImportPage'))
@@ -373,6 +374,7 @@ function Shell() {
             <Route path="/authors" element={<Navigate to="/" replace />} />
             <Route path="/author/:id" element={<AuthorDetailPage />} />
             <Route path="/books" element={<BooksPage />} />
+            <Route path="/books/duplicates" element={<DuplicatesPage />} />
             <Route path="/book/:id" element={<BookDetailPage />} />
             <Route path="/wanted" element={<WantedPage />} />
             <Route path="/queue" element={<QueuePage />} />

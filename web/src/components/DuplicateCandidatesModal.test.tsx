@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { api, DuplicateCandidateMember, DuplicateCandidates, DuplicateRule } from '../api/client'
 import DuplicateCandidatesModal from './DuplicateCandidatesModal'
@@ -19,6 +19,7 @@ vi.mock('../api/client', () => ({
   api: {
     listAuthorDuplicateCandidates: vi.fn(),
     toggleExcluded: vi.fn(),
+    bulkActionBooks: vi.fn(),
   },
 }))
 
@@ -155,5 +156,80 @@ describe('DuplicateCandidatesModal', () => {
     render(<DuplicateCandidatesModal authorId={7} authorName="Andy Weir" onClose={() => {}} />)
 
     expect(await screen.findByText('boom')).toBeInTheDocument()
+  })
+
+  describe('evidence and the empty row suggestion (#2999)', () => {
+    const owned: DuplicateCandidateMember = {
+      ...book(22, 'The Nightingale', false, ['article-strip']),
+      status: 'imported',
+      hasFiles: true,
+      evidence: { files: [{ kind: 'ebook', format: 'epub' }], isbns: [], isbnCount: 0, asins: [], series: [], year: 2015 },
+    }
+    const emptyRow: DuplicateCandidateMember = {
+      ...book(21, 'Nightingale', false, ['article-strip']),
+      hasFiles: false,
+      evidence: { files: [], isbns: [], isbnCount: 0, asins: [], series: [], year: 2015 },
+    }
+    const withKeeper: DuplicateCandidates = {
+      authorId: 7,
+      count: 1,
+      groups: [{
+        key: 'nightingale',
+        rules: ['article-strip'],
+        books: [emptyRow, owned],
+        signals: [],
+        conflict: false,
+        keeperId: 22,
+        suggestedExcludeIds: [21],
+      }],
+    }
+
+    it('excludes the empty rows through the bulk exclude action after a confirm', async () => {
+      vi.mocked(api.listAuthorDuplicateCandidates)
+        .mockResolvedValueOnce(withKeeper)
+        .mockResolvedValueOnce({ authorId: 7, count: 0, groups: [] })
+      vi.mocked(api.bulkActionBooks).mockResolvedValue({ results: { '21': { ok: true } } })
+      const onChanged = vi.fn()
+      render(<DuplicateCandidatesModal authorId={7} authorName="Kristin Hannah" onClose={() => {}} onChanged={onChanged} />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Exclude the 1 empty row(s) in this group' }))
+      const dialog = await screen.findByTestId('confirm-dialog')
+      expect(dialog).toHaveTextContent('Keep "The Nightingale", which has files')
+      expect(dialog).toHaveTextContent('• Nightingale')
+      expect(api.bulkActionBooks).not.toHaveBeenCalled()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Exclude' }))
+
+      await waitFor(() => {
+        expect(api.bulkActionBooks).toHaveBeenCalledWith([21], 'exclude')
+        expect(onChanged).toHaveBeenCalledTimes(1)
+      })
+      // The re-fetch dropped the group.
+      expect(await screen.findByText('No duplicate titles found.')).toBeInTheDocument()
+      expect(api.toggleExcluded).not.toHaveBeenCalled()
+    })
+
+    it('does nothing when the confirm is cancelled', async () => {
+      vi.mocked(api.listAuthorDuplicateCandidates).mockResolvedValue(withKeeper)
+      render(<DuplicateCandidatesModal authorId={7} authorName="Kristin Hannah" onClose={() => {}} />)
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Exclude the 1 empty row(s) in this group' }))
+      const dialog = await screen.findByTestId('confirm-dialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'common.cancel' }))
+      await waitFor(() => expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument())
+      expect(api.bulkActionBooks).not.toHaveBeenCalled()
+    })
+
+    it('asks before excluding the row that has files', async () => {
+      vi.mocked(api.listAuthorDuplicateCandidates).mockResolvedValue(withKeeper)
+      render(<DuplicateCandidatesModal authorId={7} authorName="Kristin Hannah" onClose={() => {}} />)
+
+      const ownedRow = await screen.findByTestId('duplicate-row-22')
+      fireEvent.click(within(ownedRow).getByRole('button', { name: 'Exclude' }))
+      const dialog = await screen.findByTestId('confirm-dialog')
+      expect(dialog).toHaveTextContent('Exclude a row that has files?')
+      expect(api.toggleExcluded).not.toHaveBeenCalled()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Exclude' }))
+      await waitFor(() => expect(api.toggleExcluded).toHaveBeenCalledWith(22))
+    })
   })
 })

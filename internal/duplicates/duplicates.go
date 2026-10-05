@@ -341,20 +341,44 @@ func MatchRules(a, b string) []RuleID {
 }
 
 // Member is one book in a candidate group, annotated with the rules that
-// fired for it against the other members.
+// fired for it against the other members. Evidence and HasFiles are filled by
+// Annotate (#2999); Scan and Detect leave them zero.
 type Member struct {
 	models.Book
-	Rules []RuleID `json:"rules"`
+	Rules    []RuleID `json:"rules"`
+	Evidence Evidence `json:"evidence"`
+	HasFiles bool     `json:"hasFiles"`
 }
 
 // Group is a set of books the detector believes may be the same work. A group
 // with a single member is never returned. Rules is the union of every rule
 // that fired on any pair within the group, so the UI can explain the group as
 // a whole.
+//
+// AuthorID is set by Detect. AuthorName, Signals, Conflict, KeeperID and
+// SuggestedExcludeIDs are review annotations (#2999): the caller fills the
+// name, Annotate fills the rest. None of them changes which books group.
 type Group struct {
-	Key     string   `json:"key"`
-	Rules   []RuleID `json:"rules"`
-	Members []Member `json:"books"`
+	Key        string   `json:"key"`
+	AuthorID   int64    `json:"authorId"`
+	AuthorName string   `json:"authorName,omitempty"`
+	Rules      []RuleID `json:"rules"`
+	Members    []Member `json:"books"`
+	// Signals are the agreements and conflicts Annotate found between the
+	// group's non-excluded members, in a stable order.
+	Signals []Signal `json:"signals"`
+	// Conflict is true when any signal is a conflict: the evidence says at
+	// least two members may be different books.
+	Conflict bool `json:"conflict"`
+	// KeeperID is the one non-excluded member that has files, or 0 when no
+	// member or more than one member has files. The UI marks it as the row to
+	// keep; it is never a suggestion to exclude anything.
+	KeeperID int64 `json:"keeperId,omitempty"`
+	// SuggestedExcludeIDs are the non-excluded members without files, offered
+	// as one confirmed "exclude the empty rows" action. It is non-empty only
+	// when there is a KeeperID and no conflict, and it never contains a member
+	// that has files.
+	SuggestedExcludeIDs []int64 `json:"suggestedExcludeIds"`
 }
 
 type bookKeys struct {

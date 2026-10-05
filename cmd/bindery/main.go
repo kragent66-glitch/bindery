@@ -662,6 +662,7 @@ func main() {
 		WithLocalAuthEnabled(cfg.LocalAuthEnabled)
 	searchHandler := api.NewSearchHandler(metaAgg, bookRepo, authorRepo)
 	librarySearchHandler := api.NewLibrarySearchHandler(authorRepo, bookRepo, seriesRepo)
+	duplicateReviewHandler := api.NewDuplicateReviewHandler(bookRepo, seriesRepo)
 	// Library-root containment checker (Wave 1 / Bundle B): used by the book
 	// and author delete handlers to refuse on-disk removal of any path that
 	// isn't inside a configured root. Defaults to the legacy single-root env
@@ -1007,6 +1008,10 @@ func main() {
 		r.Get("/author/{id}/relink-upstream/candidates", authorHandler.RelinkCandidates)
 		r.Post("/author/{id}/relink-upstream", authorHandler.RelinkUpstream)
 		r.Get("/author/{id}/duplicate-candidates", authorHandler.DuplicateCandidates)
+		// Library-wide duplicate review (#2999): the same detection as the
+		// per-author window, across every author the caller may see. Not admin
+		// only, matching the per-author route; owner scoped inside the handler.
+		r.Get("/library/duplicate-candidates", duplicateReviewHandler.List)
 		r.Get("/author/{id}/series", authorHandler.ListSeries)
 		r.Get("/author/{id}/aliases", authorAliasHandler.List)
 		r.Delete("/author/{id}/aliases/{aliasID}", authorAliasHandler.Delete)

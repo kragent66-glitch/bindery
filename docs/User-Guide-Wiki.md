@@ -953,6 +953,8 @@ indeterminate row separately with its provider and the incomplete-evidence
 reason so it can be reviewed manually; these informational rows have no
 selection control and cannot be sent for removal.
 
+### Reviewing duplicate titles
+
 **Duplicate titles.** The same book often reaches the catalogue twice under
 slightly different titles — "The Martian" and "Martian", "Dune" and "Dune
 (Unabridged)". Open the author and choose **More → Review duplicates…** to see
@@ -968,6 +970,41 @@ The Well of Ascension"). Nothing is changed automatically: the only action is
 without deleting anything. An excluded row stays in its group, struck through,
 with an **Include** button to undo it; a group leaves the report once fewer
 than two of its rows are still included.
+
+**The evidence on each row.** Under every title the review shows what Bindery
+already knows about that row, so you can decide without opening each book:
+whether it has files (ebook, audiobook, and the format, such as epub or m4b),
+its status (Wanted, In Library, Skipped), release year, language, ISBN, ASIN,
+and series with position. The rows are numbered, and above them the group
+lists what the rows agree or disagree on:
+
+| Marker | What it means |
+|--------|---------------|
+| Rows share an ISBN or ASIN | strong evidence they are one book |
+| Rows hold the same series position | strong evidence they are one book |
+| Rows hold different positions in one series | probably different books of that series |
+| Release years more than a year apart | possibly a different book, or an old and a new edition |
+| Different languages | possibly a translation rather than a duplicate |
+
+Languages are compared by meaning, so "en", "eng" and "English" agree, and an
+unknown year, language or position never counts as a disagreement.
+
+**Which row to keep.** When exactly one row in a group has files, it is marked
+**Keep: has files**. If the rows also have no disagreement, the group offers
+**Exclude the empty rows in this group**, which shows you the rows it will
+exclude and asks you to confirm before it does anything. It is never offered
+when the rows disagree, or when more than one row has files, because then the
+files alone do not tell you which row is the real book. A row with files is
+never part of that suggestion; you can still exclude it with its own
+**Exclude** button, and Bindery asks first. Excluding never deletes a file.
+
+**Across the whole library.** On the **Books** page, **Review duplicates**
+opens a page listing the duplicate groups for every author, a page at a time,
+with the same evidence and the same buttons. It finds exactly the groups each
+author's own window would: titles are only compared with other titles by the
+same author. After you exclude rows, a group that no longer has two included
+rows drops off the list. On a shared install with per user libraries, each
+person sees only the authors they could open themselves.
 
 ## How author names are filed
 
