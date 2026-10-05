@@ -2928,7 +2928,8 @@ func handleNewWantedBook(ctx context.Context, books *db.BookRepo, series *db.Ser
 // and file carry no number at all, which Libation's default naming produces.
 // Declining the bind leaves the book wanted and lets auto-search run, which
 // is the right outcome for a different book and a visible one for a
-// duplicate row. A lookup error keeps the old behaviour and binds.
+// duplicate row. A lookup error keeps the old behaviour and binds. A row left
+// by a deleted book does not count: SetFilePath takes it over (#2937).
 func existingFileOwnedByOtherBook(ctx context.Context, books *db.BookRepo, path string, bookID int64) bool {
 	if books == nil {
 		return false
@@ -2938,7 +2939,7 @@ func existingFileOwnedByOtherBook(ctx context.Context, books *db.BookRepo, path 
 		candidates = append(candidates, filepath.Dir(path))
 	}
 	for _, p := range candidates {
-		owned, err := books.PathOwnedByOtherBook(ctx, p, bookID)
+		owned, err := books.PathOwnedByLiveOtherBook(ctx, p, bookID)
 		if err != nil {
 			slog.Warn("library: book_files owner lookup failed", "path", p, "error", err)
 			continue

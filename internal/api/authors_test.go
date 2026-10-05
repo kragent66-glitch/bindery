@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1242,6 +1243,70 @@ func TestHandleNewWantedBook_DoesNotBindAnotherBooksFile(t *testing.T) {
 		if bound := len(files) > 0; bound != tc.wantBound {
 			t.Errorf("%s: book_files rows = %v, want bound=%v", tc.name, files, tc.wantBound)
 		}
+	}
+}
+
+// TestHandleNewWantedBook_BindsAFileLeftByADeletedBook is the other half: a
+// book_files row whose book no longer exists (foreign keys lost, #1727) does
+// not belong to anyone. The write takes such a row over since #2937, so the
+// pre-check must not decline the bind on its account and send the book off to
+// search for a file it already has.
+func TestHandleNewWantedBook_BindsAFileLeftByADeletedBook(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	ctx := context.Background()
+
+	author := &models.Author{ForeignID: "hc:leckie", Name: "Ann Leckie", SortName: "Leckie, Ann"}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	gone := &models.Book{ForeignID: "hc:gone", AuthorID: author.ID, Title: "Gone",
+		Status: models.BookStatusImported, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/books/Ann Leckie/Provenance/Provenance.epub"
+	if err := bookRepo.AddBookFile(ctx, gone.ID, models.MediaTypeEbook, path); err != nil {
+		t.Fatal(err)
+	}
+	orphanBook(t, database, gone.ID)
+
+	book := &models.Book{ForeignID: "hc:provenance", AuthorID: author.ID, Title: "Provenance",
+		Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	finder := &stubLibraryFinder{ownedTitle: book.Title, ownedPath: path}
+	if !handleNewWantedBook(ctx, bookRepo, nil, finder, *book, author.Name) {
+		t.Fatal("handleNewWantedBook declined a file only a deleted book's row held")
+	}
+	files, err := bookRepo.ListFiles(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Path != path {
+		t.Fatalf("book_files = %+v, want the row taken over", files)
+	}
+}
+
+// orphanBook deletes a book row with foreign keys off, leaving its book_files
+// rows pointing at a book that no longer exists (#1727).
+func orphanBook(t *testing.T, database *sql.DB, bookID int64) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, "DELETE FROM books WHERE id = ?", bookID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
 	}
 }
 
