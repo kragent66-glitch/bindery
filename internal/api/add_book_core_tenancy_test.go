@@ -137,8 +137,10 @@ func TestAddBook_TenancyDoesNotAdoptAnotherUsersTitleMatch(t *testing.T) {
 	if res.Book == nil || res.Book.ID == before.ID {
 		t.Fatalf("bob's add resolved to alice's row: %+v", res.Book)
 	}
-	if res.Book.OwnerUserID == f.alice {
-		t.Fatalf("bob's new row is owned by alice")
+	// The author is shared, but the book bob asked for is his: a row with no
+	// owner would show up in alice's library beside her own copy.
+	if res.Book.OwnerUserID != f.bob {
+		t.Fatalf("bob's new row owner = %d, want bob (%d)", res.Book.OwnerUserID, f.bob)
 	}
 }
 

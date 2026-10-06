@@ -417,6 +417,13 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 			// this request (#1612) — the scoped lookup above is what makes it
 			// the correct owner either way.
 			primary.OwnerUserID = author.OwnerUserID
+			// Under tenancy a shared (unowned) author does not make the book
+			// shared: the caller asked for it, so it is theirs. With no owner it
+			// would appear in every user's library as a book they never added.
+			// Same rule the Hardcover list syncer applies for the list owner.
+			if auth.EnforceTenancy() && primary.OwnerUserID == 0 {
+				primary.OwnerUserID = userID
+			}
 			primary.Monitored = author.Monitored
 			if primary.Status == "" {
 				primary.Status = models.BookStatusWanted

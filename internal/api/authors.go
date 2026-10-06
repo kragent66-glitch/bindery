@@ -2838,10 +2838,11 @@ func (h *AuthorHandler) reparentMisattachedBook(ctx context.Context, existing *m
 	}
 	// The row was found by a foreign id lookup that spans every user, so under
 	// tenancy it can be another user's book. Moving it would take it out of
-	// their author and into this one's owner's library. Unowned rows and
-	// shared (unowned) authors keep the pre tenancy behaviour.
-	if auth.EnforceTenancy() && existing.OwnerUserID != 0 && author.OwnerUserID != 0 &&
-		existing.OwnerUserID != author.OwnerUserID {
+	// their author and into a different library. No owner counts as an owner
+	// of its own: a shared author's sync must not take a user's book out from
+	// under that user's author, and a shared book must not move under one
+	// user's private author. Only a move within one owner goes ahead.
+	if auth.EnforceTenancy() && existing.OwnerUserID != author.OwnerUserID {
 		return false
 	}
 	owner, err := h.authors.GetByID(ctx, existing.AuthorID)

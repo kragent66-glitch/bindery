@@ -236,10 +236,11 @@ func TestRecommendationAddWidensUnpinnedMediaType(t *testing.T) {
 	}
 }
 
-// recommendationAuthorFixture seeds an author owned by alice and one
-// recommendation for bob that names that author, by id when byID is set and
-// by name otherwise, and returns the handler plus the ids a test needs.
-func recommendationAuthorFixture(t *testing.T, tenancy, byID bool) (h *RecommendationHandler, books *db.BookRepo, recID, aliceAuthorID, alice, bob int64) {
+// recommendationAuthorFixture seeds an author owned by alice (or by nobody
+// when shared is set) and one recommendation for bob that names that author,
+// by id when byID is set and by name otherwise, and returns the handler plus
+// the ids a test needs.
+func recommendationAuthorFixture(t *testing.T, tenancy, byID, shared bool) (h *RecommendationHandler, books *db.BookRepo, recID, aliceAuthorID, alice, bob int64) {
 	t.Helper()
 	auth.SetEnforceTenancyForTests(t, tenancy)
 	database, err := db.OpenMemory()
@@ -265,7 +266,11 @@ func recommendationAuthorFixture(t *testing.T, tenancy, byID bool) (h *Recommend
 		ForeignID: "hc:alice-author", Name: "Alice Writer", SortName: "Writer, Alice",
 		MetadataProvider: "hardcover", Monitored: true,
 	}
-	if err := authorRepo.CreateForUser(ctx, author, a.ID); err != nil {
+	owner := a.ID
+	if shared {
+		owner = 0
+	}
+	if err := authorRepo.CreateForUser(ctx, author, owner); err != nil {
 		t.Fatal(err)
 	}
 	cand := models.RecommendationCandidate{
@@ -301,7 +306,7 @@ func addRecommendationAs(h *RecommendationHandler, ctx context.Context, recID in
 func TestRecommendationAdd_TenancyDoesNotUseAnotherUsersAuthor(t *testing.T) {
 	for _, byID := range []bool{false, true} {
 		t.Run(map[bool]string{false: "by name", true: "by id"}[byID], func(t *testing.T) {
-			h, books, recID, aliceAuthorID, _, bob := recommendationAuthorFixture(t, true, byID)
+			h, books, recID, aliceAuthorID, _, bob := recommendationAuthorFixture(t, true, byID, false)
 			rec := addRecommendationAs(h, auth.WithUserID(context.Background(), bob), recID)
 			if rec.Code != http.StatusBadRequest {
 				t.Fatalf("want 400, got %d: %s", rec.Code, rec.Body.String())
@@ -321,8 +326,8 @@ func TestRecommendationAdd_TenancyDoesNotUseAnotherUsersAuthor(t *testing.T) {
 }
 
 // The admin manages every library, and tenancy off is one shared library, so
-// both still resolve the author as before. The new book takes the author's
-// owner, as Add Book does (#1457).
+// both still resolve the author and create the book exactly as before, with
+// no owner stamped on it.
 func TestRecommendationAdd_AdminAndTenancyOffStillResolveAuthor(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -332,7 +337,7 @@ func TestRecommendationAdd_AdminAndTenancyOffStillResolveAuthor(t *testing.T) {
 		{"tenancy off", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, books, recID, aliceAuthorID, alice, bob := recommendationAuthorFixture(t, tc.tenancy, false)
+			h, books, recID, aliceAuthorID, _, bob := recommendationAuthorFixture(t, tc.tenancy, false, false)
 			ctx := auth.WithUserID(context.Background(), bob)
 			if tc.tenancy {
 				ctx = auth.WithUserRole(ctx, "admin")
@@ -345,9 +350,27 @@ func TestRecommendationAdd_AdminAndTenancyOffStillResolveAuthor(t *testing.T) {
 			if err != nil || book == nil {
 				t.Fatalf("book = %+v err=%v", book, err)
 			}
-			if book.AuthorID != aliceAuthorID || book.OwnerUserID != alice {
-				t.Fatalf("book author=%d owner=%d, want author %d owner %d", book.AuthorID, book.OwnerUserID, aliceAuthorID, alice)
+			if book.AuthorID != aliceAuthorID || book.OwnerUserID != 0 {
+				t.Fatalf("book author=%d owner=%d, want author %d and no owner", book.AuthorID, book.OwnerUserID, aliceAuthorID)
 			}
 		})
+	}
+}
+
+// Under tenancy, a recommendation filed under a shared (unowned) author is
+// still the caller's book. With no owner it would appear in every user's
+// library, alice's included, as a wanted book she never asked for.
+func TestRecommendationAdd_TenancySharedAuthorBookIsCallers(t *testing.T) {
+	h, books, recID, sharedAuthorID, _, bob := recommendationAuthorFixture(t, true, false, true)
+	rec := addRecommendationAs(h, auth.WithUserID(context.Background(), bob), recID)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("want 201, got %d: %s", rec.Code, rec.Body.String())
+	}
+	book, err := books.GetByForeignID(context.Background(), "hc:rec-cross")
+	if err != nil || book == nil {
+		t.Fatalf("book = %+v err=%v", book, err)
+	}
+	if book.AuthorID != sharedAuthorID || book.OwnerUserID != bob {
+		t.Fatalf("book author=%d owner=%d, want author %d owner bob (%d)", book.AuthorID, book.OwnerUserID, sharedAuthorID, bob)
 	}
 }

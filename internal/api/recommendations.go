@@ -225,12 +225,15 @@ func (h *RecommendationHandler) Add(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Tenancy (#1457): a new book inherits its author's owner, as Add Book
-	// and the catalogue sync do.
+	// Under tenancy a user who is not an admin owns what they add. The author
+	// resolved above is theirs or shared, and a shared author does not make
+	// the book shared: with no owner it would appear in every user's library.
+	// ListScopeUserID is 0 for an admin and with tenancy off, which keep the
+	// book unowned as before.
 	book := &models.Book{
 		ForeignID:        rec.ForeignID,
 		AuthorID:         author.ID,
-		OwnerUserID:      author.OwnerUserID,
+		OwnerUserID:      auth.ListScopeUserID(r.Context()),
 		Title:            rec.Title,
 		Description:      rec.Description,
 		ImageURL:         rec.ImageURL,

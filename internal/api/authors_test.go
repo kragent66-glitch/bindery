@@ -6231,18 +6231,28 @@ func TestFetchAuthorBooks_KeepsBookWithUnknownAuthorship(t *testing.T) {
 	}
 }
 
-// With tenancy on, one user's catalogue sync must not re-link a book another
-// user owns. books.foreign_id is unique across users, so bob's sync of an
-// author whose catalogue lists a work alice holds finds alice's row, and
-// before the fix moved it under bob's author. Tenancy off keeps the re-link.
+// With tenancy on, a catalogue sync must not re-link a book into a different
+// owner's library. books.foreign_id is unique across users, so bob's sync of
+// an author whose catalogue lists a work alice holds finds alice's row, and
+// before the fix moved it under bob's author. No owner counts as an owner of
+// its own here: a shared author's sync must not take alice's book out from
+// under her author, and a shared book must not move under bob's private
+// author. Only a shared book under a shared author still moves, and tenancy
+// off keeps the re-link everywhere.
 func TestFetchAuthorBooks_TenancyKeepsAnotherUsersBook(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		tenancy   bool
-		wantMoved bool
+		name         string
+		tenancy      bool
+		syncedShared bool
+		bookShared   bool
+		wantMoved    bool
 	}{
-		{"tenancy on", true, false},
-		{"tenancy off", false, true},
+		{"tenancy on", true, false, false, false},
+		{"tenancy off", false, false, false, true},
+		{"tenancy on, shared author syncs alice's book", true, true, false, false},
+		{"tenancy on, bob's author syncs a shared book", true, false, true, false},
+		{"tenancy on, shared author syncs a shared book", true, true, true, true},
+		{"tenancy off, shared author syncs alice's book", false, true, false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			auth.SetEnforceTenancyForTests(t, tc.tenancy)
@@ -6268,20 +6278,27 @@ func TestFetchAuthorBooks_TenancyKeepsAnotherUsersBook(t *testing.T) {
 				ForeignID: "OL500A", Name: "Real Author", SortName: "Author, Real",
 				MetadataProvider: "openlibrary", Monitored: true,
 			}
-			if err := authorRepo.CreateForUser(ctx, synced, bob.ID); err != nil {
+			syncedOwner, bookOwner := bob.ID, alice.ID
+			if tc.syncedShared {
+				syncedOwner = 0
+			}
+			if tc.bookShared {
+				bookOwner = 0
+			}
+			if err := authorRepo.CreateForUser(ctx, synced, syncedOwner); err != nil {
 				t.Fatal(err)
 			}
 			aliceAuthor := &models.Author{
 				ForeignID: "OL777A", Name: "Other Author", SortName: "Author, Other",
 				MetadataProvider: "openlibrary",
 			}
-			if err := authorRepo.CreateForUser(ctx, aliceAuthor, alice.ID); err != nil {
+			if err := authorRepo.CreateForUser(ctx, aliceAuthor, bookOwner); err != nil {
 				t.Fatal(err)
 			}
 			book := &models.Book{
 				ForeignID: "OL501W", AuthorID: aliceAuthor.ID, Title: "Elantris", SortTitle: "elantris",
 				Language: "eng", Status: models.BookStatusWanted, Monitored: true,
-				Genres: []string{}, MetadataProvider: "openlibrary", OwnerUserID: alice.ID,
+				Genres: []string{}, MetadataProvider: "openlibrary", OwnerUserID: bookOwner,
 			}
 			if err := bookRepo.Create(ctx, book); err != nil {
 				t.Fatal(err)
@@ -6303,8 +6320,8 @@ func TestFetchAuthorBooks_TenancyKeepsAnotherUsersBook(t *testing.T) {
 				t.Fatalf("alice's book author = %d (bob's synced author %d, alice's %d), want moved=%v",
 					got.AuthorID, synced.ID, aliceAuthor.ID, tc.wantMoved)
 			}
-			if got.OwnerUserID != alice.ID {
-				t.Fatalf("alice's book owner = %d, want %d", got.OwnerUserID, alice.ID)
+			if got.OwnerUserID != bookOwner {
+				t.Fatalf("book owner = %d, want %d", got.OwnerUserID, bookOwner)
 			}
 		})
 	}
