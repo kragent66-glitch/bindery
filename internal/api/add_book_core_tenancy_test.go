@@ -158,6 +158,59 @@ func TestAddBook_TenancyAdminDoesNotAdoptAnotherUsersTitleMatch(t *testing.T) {
 	if res.Book == nil || res.Book.ID == before.ID {
 		t.Fatalf("admin's add resolved to alice's row: %+v", res.Book)
 	}
+	// An admin's add under a shared author stays shared, as before.
+	if res.Book.OwnerUserID != 0 {
+		t.Fatalf("admin's new row owner = %d, want none", res.Book.OwnerUserID)
+	}
+}
+
+// When the provider's book endpoint fails, Add Book falls back to a single
+// work catalogue sync. Under a shared (unowned) author that sync must give the
+// book to the caller, exactly as the direct insert does, and leave an admin's
+// book unowned as before.
+func TestAddBook_TenancyFallbackSyncUnderSharedAuthorOwnsBook(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		admin     bool
+		wantOwner func(f tenancyFixture) int64
+	}{
+		{"user", false, func(f tenancyFixture) int64 { return f.bob }},
+		{"admin", true, func(tenancyFixture) int64 { return 0 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			provider := &stubMetaProvider{
+				getBookErrByID: map[string]error{"OL-SOLO-W": errors.New("provider 502")},
+				works: []models.Book{{
+					ForeignID: "OL-SOLO-W", Title: "Solo Work", SortTitle: "Solo Work", Language: "eng",
+					MediaType: models.MediaTypeEbook, Genres: []string{}, MetadataProvider: "openlibrary",
+				}},
+			}
+			f := newTenancyFixture(t, true, provider)
+			shared := &models.Author{
+				ForeignID: "OL-SHARED-A", Name: "Shared Writer", SortName: "Writer, Shared",
+				MetadataProvider: "openlibrary",
+			}
+			if err := f.authors.Create(context.Background(), shared); err != nil {
+				t.Fatal(err)
+			}
+			ctx := f.userCtx(f.bob)
+			if tc.admin {
+				ctx = f.adminCtx()
+			}
+			res, err := f.h.addBookCore(ctx, addBookParams{
+				ForeignBookID: "OL-SOLO-W", ForeignAuthorID: "OL-SHARED-A", AuthorName: "Shared Writer",
+			})
+			if err != nil {
+				t.Fatalf("add: %v", err)
+			}
+			if res.Book == nil || res.Book.AuthorID != shared.ID {
+				t.Fatalf("add = %+v, want a book under the shared author", res.Book)
+			}
+			if want := tc.wantOwner(f); res.Book.OwnerUserID != want {
+				t.Fatalf("fallback sync's book owner = %d, want %d", res.Book.OwnerUserID, want)
+			}
+		})
+	}
 }
 
 // Tenancy off keeps the shared library: the title match is adopted exactly as

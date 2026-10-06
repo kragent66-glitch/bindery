@@ -377,6 +377,14 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 		return addBookResult{}, errAddBookAuthorUnresolved
 	}
 
+	// Under tenancy a shared (unowned) author does not make the book shared:
+	// a user who is not an admin asked for it, so it is theirs. With no owner
+	// it would appear in every user's library as a book they never added.
+	// Same rule the Hardcover list syncer applies for the list owner. Both the
+	// direct insert and the single work fallback use it. ListScopeUserID is 0
+	// for an admin and with tenancy off, which keep the book unowned as before.
+	ownerForUnownedAuthor := scopeID
+
 	// 1b. Direct insert for the requested book.
 	//
 	// Originally added (#667) for DNB synthetic IDs, whose async sync returns
@@ -417,12 +425,8 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 			// this request (#1612) — the scoped lookup above is what makes it
 			// the correct owner either way.
 			primary.OwnerUserID = author.OwnerUserID
-			// Under tenancy a shared (unowned) author does not make the book
-			// shared: the caller asked for it, so it is theirs. With no owner it
-			// would appear in every user's library as a book they never added.
-			// Same rule the Hardcover list syncer applies for the list owner.
-			if auth.EnforceTenancy() && primary.OwnerUserID == 0 {
-				primary.OwnerUserID = userID
+			if primary.OwnerUserID == 0 {
+				primary.OwnerUserID = ownerForUnownedAuthor
 			}
 			primary.Monitored = author.Monitored
 			if primary.Status == "" {
@@ -509,8 +513,9 @@ func (h *AuthorHandler) addBookCore(ctx context.Context, req addBookParams) (add
 		// exempt from the strict media-type clamp (#1612).
 		fallbackSynced = true
 		h.fetchAuthorBooksAsync(author, catalogueSyncOptions{
-			mediaType:     h.resolveDefaultMediaType(ctx),
-			onlyForeignID: req.ForeignBookID,
+			mediaType:             h.resolveDefaultMediaType(ctx),
+			onlyForeignID:         req.ForeignBookID,
+			ownerForUnownedAuthor: ownerForUnownedAuthor,
 		})
 	}
 
