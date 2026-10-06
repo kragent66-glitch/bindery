@@ -1,4 +1,0 @@
-### Fixed
-- **Search interval hint gave the wrong advice.** It told you to reduce the wanted search interval when indexers rate limit you, which makes Bindery search more often. It now says to pick a longer interval. Translations that carried the old English text now show the corrected English until they are translated.
-- **Series, Calendar and Push all to Calibre can now be translated.** The Series page heading, buttons and card labels, the Calendar month and weekday names, and the Push all to Calibre button and progress window were always shown in English. Calendar dates now follow your chosen language.
-- **Consistent ellipses.** Loading and busy labels use the same ellipsis character everywhere in English and in the German, Spanish, French, Dutch, Tagalog, Indonesian and Korean translations.

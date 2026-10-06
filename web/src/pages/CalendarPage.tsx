@@ -116,7 +116,7 @@ export default function CalendarPage() {
           >
             ‹
           </button>
-          <span className="text-sm font-medium w-28 sm:w-36 text-center">
+          <span className="text-sm font-medium min-w-28 sm:min-w-36 whitespace-nowrap text-center">
             {monthLabel(lang, viewYear, viewMonth, { month: 'long', year: 'numeric' })}
           </span>
           <button
