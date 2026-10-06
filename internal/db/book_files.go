@@ -362,7 +362,9 @@ func (r *BookFileRepo) DeleteByPath(ctx context.Context, path string) (int64, er
 // UNIQUE, so there is at most one owner. Pass excludeBookID=0 to treat ANY
 // registered owner as "another book" (e.g. when the current book's rows have
 // already been cascade-deleted). The delete and reassign-cleanup paths use this
-// to avoid os.Remove-ing a file another book still owns (#1368).
+// to avoid os.Remove-ing a file another book still owns (#1368). A row left by
+// a deleted book counts as owned here on purpose; PathOwnedByLiveOtherBook is
+// the variant that does not.
 func (r *BookFileRepo) PathOwnedByOtherBook(ctx context.Context, path string, excludeBookID int64) (bool, error) {
 	var owner int64
 	err := r.db.QueryRowContext(ctx, `SELECT book_id FROM book_files WHERE path = ? LIMIT 1`, path).Scan(&owner)
@@ -371,6 +373,28 @@ func (r *BookFileRepo) PathOwnedByOtherBook(ctx context.Context, path string, ex
 	}
 	if err != nil {
 		return false, fmt.Errorf("book_files owner lookup: %w", err)
+	}
+	return owner != excludeBookID, nil
+}
+
+// PathOwnedByLiveOtherBook is PathOwnedByOtherBook counting only an owner that
+// still exists. A row left by a deleted book (foreign keys lost, #1727) is
+// owned by nobody here, because Track takes such a row over (#2937).
+//
+// Only a check that guards a write through Track may use this: adoption's
+// ownership check and the existing file bind when an author is added. A
+// delete must keep using PathOwnedByOtherBook, where an orphan row counts as
+// owned: refusing to unlink is the safe answer when ownership is unclear.
+func (r *BookFileRepo) PathOwnedByLiveOtherBook(ctx context.Context, path string, excludeBookID int64) (bool, error) {
+	var owner int64
+	err := r.db.QueryRowContext(ctx,
+		`SELECT bf.book_id FROM book_files bf JOIN books b ON b.id = bf.book_id
+		 WHERE bf.path = ? LIMIT 1`, path).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("book_files live owner lookup: %w", err)
 	}
 	return owner != excludeBookID, nil
 }
