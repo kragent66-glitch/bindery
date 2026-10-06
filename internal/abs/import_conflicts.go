@@ -18,9 +18,35 @@ func (i *Importer) applyConflictField(
 	apply func(string) error,
 	currentValue func() string,
 ) (metadataMergeResult, bool, error) {
+	result, changed, conflict, err := i.planConflictField(ctx, cfg, item, entityType, localID, fieldName, absValue, upstreamValue, apply, currentValue)
+	if err != nil {
+		return metadataMergeResult{}, false, err
+	}
+	if conflict != nil {
+		if err := i.conflicts.Upsert(ctx, conflict); err != nil {
+			return metadataMergeResult{}, false, err
+		}
+	}
+	return result, changed, nil
+}
+
+// planConflictField is applyConflictField without the write to the conflicts
+// table: it applies the chosen value through apply and returns the conflict
+// row to record, if any, so a caller whose entity write can lose a guard
+// records it only once that write lands (#2926).
+func (i *Importer) planConflictField(
+	ctx context.Context,
+	cfg ImportConfig,
+	item NormalizedLibraryItem,
+	entityType string,
+	localID int64,
+	fieldName, absValue, upstreamValue string,
+	apply func(string) error,
+	currentValue func() string,
+) (metadataMergeResult, bool, *models.ABSMetadataConflict, error) {
 	result := metadataMergeResult{}
 	if apply == nil || currentValue == nil {
-		return result, false, nil
+		return result, false, nil, nil
 	}
 	normABS := normalizeConflictValue(fieldName, absValue)
 	normUpstream := normalizeConflictValue(fieldName, upstreamValue)
@@ -28,7 +54,7 @@ func (i *Importer) applyConflictField(
 	if i.conflicts != nil {
 		conflict, err := i.conflicts.GetByEntityField(ctx, entityType, localID, fieldName)
 		if err != nil {
-			return result, false, err
+			return result, false, nil, err
 		}
 		existing = conflict
 	}
@@ -44,7 +70,7 @@ func (i *Importer) applyConflictField(
 
 	switch {
 	case normABS == "" && normUpstream == "":
-		return result, false, nil
+		return result, false, nil, nil
 	case normABS == "":
 		chosenSource = MetadataSourceUpstream
 		chosenValue = upstreamValue
@@ -84,11 +110,11 @@ func (i *Importer) applyConflictField(
 	changed := normalizeConflictValue(fieldName, currentValue()) != normalizeConflictValue(fieldName, chosenValue)
 	if changed {
 		if err := apply(chosenValue); err != nil {
-			return metadataMergeResult{}, false, err
+			return metadataMergeResult{}, false, nil, err
 		}
 	}
 	if !shouldPersist || i.conflicts == nil {
-		return result, changed, nil
+		return result, changed, nil, nil
 	}
 	conflict := &models.ABSMetadataConflict{
 		SourceID:         cfg.SourceID,
@@ -103,10 +129,7 @@ func (i *Importer) applyConflictField(
 		PreferredSource:  preferredSource,
 		ResolutionStatus: resolutionStatus,
 	}
-	if err := i.conflicts.Upsert(ctx, conflict); err != nil {
-		return metadataMergeResult{}, false, err
-	}
-	return result, changed, nil
+	return result, changed, conflict, nil
 }
 
 func bookABSCandidateValue(book *models.Book, item NormalizedLibraryItem, field string) string {

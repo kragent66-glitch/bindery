@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1756,6 +1757,37 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 // author's works, that error, so scheduled discovery can tell a rate limit
 // from an ordinary run (#2236). Every other early exit returns a nil error:
 // those are decisions, not failures.
+// refreshTitleMatch re-reads a row the catalogue sync matched by title. The
+// title index holds rows as the sync first read them, and the cover, edition
+// and hydration calls since then are long enough for a user to save an edit
+// that writing the old copy back would undo (#2926). It reports false, and
+// the sync leaves the row alone, when the row is gone or now excluded.
+func (h *AuthorHandler) refreshTitleMatch(ctx context.Context, existing *models.Book) bool {
+	if err := h.books.ReloadHydratedBook(ctx, existing); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			slog.Warn("catalogue sync: could not re-read a matched book", "book_id", existing.ID, "error", err)
+		}
+		return false
+	}
+	return !existing.Excluded
+}
+
+// writeTitleMatch writes a row refreshTitleMatch re-read, guarded on that
+// read. On a lost guard nothing is written and existing is reloaded so the
+// steps after it see the edit; the next sync makes the change again.
+func (h *AuthorHandler) writeTitleMatch(ctx context.Context, existing *models.Book, expectedUpdatedAt string) (bool, error) {
+	written, err := h.books.UpdateIfUnchanged(ctx, existing, expectedUpdatedAt)
+	if err != nil || written {
+		return written, err
+	}
+	slog.Info("catalogue sync: book changed while it was being updated, leaving it for the next sync",
+		"title", existing.Title, "book_id", existing.ID)
+	if err := h.books.ReloadHydratedBook(ctx, existing); err != nil {
+		slog.Warn("catalogue sync: could not re-read a book after a concurrent edit", "book_id", existing.ID, "error", err)
+	}
+	return false, nil
+}
+
 func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Author, opts catalogueSyncOptions) (int, error) {
 	autoSearch, mediaType, discovery := opts.autoSearch, opts.mediaType, opts.discovery
 	// singleWork: the caller picked one specific book and the direct insert
@@ -2514,6 +2546,13 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		//   • A duplicate that carries the same media_type as the existing row is
 		//     truly redundant and is silently skipped (no format gain).
 		if existing, seen := seenTitles.Lookup(b.Title); seen && existing != nil {
+			// existing is the row as this sync first saw it, and the
+			// provider calls since then leave plenty of time for an edit.
+			// Work from a fresh read and guard each write on it (#2926).
+			if !h.refreshTitleMatch(ctx, existing) {
+				continue
+			}
+			expectedUpdatedAt := existing.UpdatedAtRaw
 			hydrateExistingFromMatchedHardcover := false
 			switch {
 			case strings.HasPrefix(existing.ForeignID, "calibre:"):
@@ -2526,9 +2565,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 					existing.RatingsCount = b.RatingsCount
 					existing.AverageRating = b.AverageRating
 				}
-				if err := h.books.Update(ctx, existing); err != nil {
+				if written, err := h.writeTitleMatch(ctx, existing, expectedUpdatedAt); err != nil {
 					slog.Warn("authors: update during dedup", "error", err, "book_id", existing.ID)
-				} else if existing.WantsAudiobook() {
+				} else if written && existing.WantsAudiobook() {
 					hydrateExistingFromMatchedHardcover = true
 				}
 			case canUpgradeToBoth(existing.MediaType, b.MediaType) && existing.HasFileForCurrentFormat():
@@ -2554,9 +2593,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 					existing.RatingsCount = b.RatingsCount
 					existing.AverageRating = b.AverageRating
 				}
-				if err := h.books.Update(ctx, existing); err != nil {
+				if written, err := h.writeTitleMatch(ctx, existing, expectedUpdatedAt); err != nil {
 					slog.Warn("failed to upgrade book to dual-format", "title", existing.Title, "error", err)
-				} else {
+				} else if written {
 					slog.Debug("upgraded book to dual-format", "title", existing.Title, "foreignId", b.ForeignID)
 					hydrateExistingFromMatchedHardcover = true
 				}
@@ -2565,7 +2604,7 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 				if b.RatingsCount > 0 && (existing.RatingsCount == 0 || b.RatingsCount > existing.RatingsCount) {
 					existing.RatingsCount = b.RatingsCount
 					existing.AverageRating = b.AverageRating
-					if err := h.books.Update(ctx, existing); err != nil {
+					if _, err := h.writeTitleMatch(ctx, existing, expectedUpdatedAt); err != nil {
 						slog.Warn("authors: update during dedup", "error", err, "book_id", existing.ID)
 					}
 				}

@@ -506,74 +506,146 @@ func (i *Importer) enrichBook(ctx context.Context, cfg ImportConfig, item Normal
 	return i.mergeUpstreamBook(ctx, cfg, item, book, full, matchedBy)
 }
 
+// mergeUpstreamBook merges an upstream record onto book and writes it.
+//
+// full was fetched after book was read, so the write is guarded on book's
+// updated_at: an edit saved during the lookup must not be undone by writing
+// back the older row (#2926). On a lost guard the same upstream record is
+// merged once more onto a fresh read, since it is already in hand. If that
+// loses too the merge is dropped for this import and the next one retries it.
+// The conflict rows and the relinked row's old identifier are recorded only
+// for a merge that was written, so they always describe the stored row.
+// Either way book ends up holding the stored row, which the rest of the
+// import works from.
 func (i *Importer) mergeUpstreamBook(ctx context.Context, cfg ImportConfig, item NormalizedLibraryItem, book *models.Book, full *models.Book, matchedBy string) (metadataMergeResult, error) {
 	if book == nil || full == nil {
 		return metadataMergeResult{}, nil
 	}
-	result := metadataMergeResult{Matched: 1}
+	if book.UpdatedAtRaw == "" {
+		if err := i.books.ReloadHydratedBook(ctx, book); err != nil {
+			return metadataMergeResult{}, err
+		}
+	}
+	for attempt := 1; ; attempt++ {
+		merged := *book
+		plan, err := i.planUpstreamBookMerge(ctx, cfg, item, &merged, full, matchedBy)
+		if err != nil {
+			return metadataMergeResult{}, err
+		}
+		if plan.write {
+			now := time.Now().UTC()
+			merged.LastMetadataRefreshAt = &now
+			written, err := i.books.UpdateIfUnchanged(ctx, &merged, book.UpdatedAtRaw)
+			if err != nil {
+				return metadataMergeResult{}, err
+			}
+			if !written {
+				if err := i.books.ReloadHydratedBook(ctx, book); err != nil {
+					return metadataMergeResult{}, err
+				}
+				if attempt < 2 {
+					continue
+				}
+				slog.Info("abs import: upstream metadata merge skipped, the book kept changing during the import; the next import retries it",
+					"bookId", book.ID, "title", item.Title, "upstreamForeignId", full.ForeignID)
+				return metadataMergeResult{Messages: []string{
+					"book metadata merge skipped: the book changed while this import was running, the next import retries it",
+				}}, nil
+			}
+			*book = merged
+		}
+		if err := i.recordBookMergeBookkeeping(ctx, book.ID, plan); err != nil {
+			return metadataMergeResult{}, err
+		}
+		return plan.result, nil
+	}
+}
+
+// bookMergePlan is one attempt of mergeUpstreamBook: what the merge did to
+// its copy of the row, and what to record once that copy is written.
+type bookMergePlan struct {
+	result metadataMergeResult
+	// write is false when the merge changed nothing worth a write.
+	write bool
+	// previousForeignID is the id a relink replaces, kept as an identifier.
+	previousForeignID string
+	conflicts         []*models.ABSMetadataConflict
+}
+
+// planUpstreamBookMerge applies full onto book in memory. It reads the
+// database but writes nothing, so a merge whose write loses the guard leaves
+// no trace.
+func (i *Importer) planUpstreamBookMerge(ctx context.Context, cfg ImportConfig, item NormalizedLibraryItem, book *models.Book, full *models.Book, matchedBy string) (bookMergePlan, error) {
+	plan := bookMergePlan{result: metadataMergeResult{Matched: 1}}
 	changed := false
 	if full.ForeignID != "" && book.ForeignID != full.ForeignID {
 		existing, err := i.books.GetByForeignID(ctx, full.ForeignID)
 		if err != nil {
-			return metadataMergeResult{}, err
+			return bookMergePlan{}, err
 		}
 		if existing != nil && existing.ID != book.ID {
-			result.Messages = append(result.Messages, "book relink skipped: upstream book already exists locally")
-			full = nil
-		} else {
-			// Keep the ABS id this row was created with before overwriting it
-			// (#1691, on top of #1705's identity table). Once ForeignID becomes
-			// the upstream id, the abs: key that step 2 of the match ladder
-			// looks for is gone, so a provenance miss drops straight to the
-			// title path, and a title path that has just been invalidated by a
-			// rename in ABS mints a duplicate. Recording the old id keeps that
-			// second lookup able to find the row.
-			if previous := strings.TrimSpace(book.ForeignID); previous != "" {
-				if ierr := i.books.UpsertBookIdentifier(ctx, book.ID, previous); ierr != nil {
-					slog.Warn("could not preserve the ABS book identifier across a relink",
-						"bookId", book.ID, "foreignId", previous, "error", ierr)
-				}
-			}
-			book.ForeignID = full.ForeignID
-			if full.MetadataProvider != "" {
-				book.MetadataProvider = full.MetadataProvider
-			}
-			result.Relinked++
-			changed = true
+			plan.result.Messages = append(plan.result.Messages, "book relink skipped: upstream book already exists locally")
+			return plan, nil
 		}
-	}
-	if full == nil {
-		return result, nil
+		// Keep the ABS id this row was created with before overwriting it
+		// (#1691, on top of #1705's identity table). Once ForeignID becomes
+		// the upstream id, the abs: key that step 2 of the match ladder looks
+		// for is gone, so a provenance miss drops straight to the title path,
+		// and a title path that has just been invalidated by a rename in ABS
+		// mints a duplicate. Recording the old id keeps that second lookup
+		// able to find the row.
+		plan.previousForeignID = strings.TrimSpace(book.ForeignID)
+		book.ForeignID = full.ForeignID
+		if full.MetadataProvider != "" {
+			book.MetadataProvider = full.MetadataProvider
+		}
+		plan.result.Relinked++
+		changed = true
 	}
 	for _, field := range bookConflictFields {
-		fieldResult, fieldChanged, err := i.applyConflictField(ctx, cfg, item, entityTypeBook, book.ID, field,
+		fieldResult, fieldChanged, conflict, err := i.planConflictField(ctx, cfg, item, entityTypeBook, book.ID, field,
 			bookABSCandidateValue(book, item, field),
 			SerializeBookConflictValue(full, field),
 			func(value string) error { return ApplyBookConflictValue(book, field, value) },
 			func() string { return SerializeBookConflictValue(book, field) },
 		)
 		if err != nil {
-			return metadataMergeResult{}, err
+			return bookMergePlan{}, err
 		}
-		result.Matched += fieldResult.Matched
-		result.Relinked += fieldResult.Relinked
-		result.Conflicts += fieldResult.Conflicts
-		result.AutoResolved += fieldResult.AutoResolved
-		result.Messages = append(result.Messages, fieldResult.Messages...)
+		plan.result.Matched += fieldResult.Matched
+		plan.result.Relinked += fieldResult.Relinked
+		plan.result.Conflicts += fieldResult.Conflicts
+		plan.result.AutoResolved += fieldResult.AutoResolved
+		plan.result.Messages = append(plan.result.Messages, fieldResult.Messages...)
+		if conflict != nil {
+			plan.conflicts = append(plan.conflicts, conflict)
+		}
 		changed = changed || fieldChanged
 	}
-	if matchedBy != "" && result.Relinked > 0 {
-		result.Messages = append(result.Messages, fmt.Sprintf("book relinked by %s metadata match", matchedBy))
+	if matchedBy != "" && plan.result.Relinked > 0 {
+		plan.result.Messages = append(plan.result.Messages, fmt.Sprintf("book relinked by %s metadata match", matchedBy))
 	}
-	if !changed && result.Conflicts == 0 && result.AutoResolved == 0 && result.Relinked == 0 {
-		return result, nil
+	r := plan.result
+	plan.write = changed || r.Conflicts != 0 || r.AutoResolved != 0 || r.Relinked != 0
+	return plan, nil
+}
+
+// recordBookMergeBookkeeping writes what a merge records beside the book row,
+// once that row is written. A failed identifier write is only logged, as it
+// always was; a failed conflict write fails the merge, as it always did.
+func (i *Importer) recordBookMergeBookkeeping(ctx context.Context, bookID int64, plan bookMergePlan) error {
+	if plan.previousForeignID != "" {
+		if err := i.books.UpsertBookIdentifier(ctx, bookID, plan.previousForeignID); err != nil {
+			slog.Warn("could not preserve the ABS book identifier across a relink",
+				"bookId", bookID, "foreignId", plan.previousForeignID, "error", err)
+		}
 	}
-	now := time.Now().UTC()
-	book.LastMetadataRefreshAt = &now
-	if err := i.books.Update(ctx, book); err != nil {
-		return metadataMergeResult{}, err
+	for _, conflict := range plan.conflicts {
+		if err := i.conflicts.Upsert(ctx, conflict); err != nil {
+			return err
+		}
 	}
-	return result, nil
+	return nil
 }
 
 func (i *Importer) lookupUpstreamBook(ctx context.Context, author *models.Author, item NormalizedLibraryItem) (*models.Book, string, bool, error) {

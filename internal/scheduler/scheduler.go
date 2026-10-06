@@ -1597,16 +1597,30 @@ func (s *Scheduler) refreshMetadata() {
 		return
 	}
 
-	for _, author := range authors {
-		if !author.Monitored {
+	for _, listed := range authors {
+		if !listed.Monitored {
 			continue
 		}
 
 		// Calibre-imported authors have synthetic "calibre:author:N" IDs with
 		// no counterpart in OL/Hardcover; skip to avoid noisy 404 errors.
-		if strings.HasPrefix(author.ForeignID, "calibre:") {
+		if strings.HasPrefix(listed.ForeignID, "calibre:") {
 			continue
 		}
+
+		// Re-read the row rather than writing back the snapshot listed at
+		// the start of the run: earlier authors' lookups take a while, and an
+		// edit saved meanwhile must neither be overwritten nor cost this
+		// author its refresh (#2926).
+		current, err := s.authors.GetByID(ctx, listed.ID)
+		if err != nil {
+			slog.Warn("failed to reload author for refresh", "author", listed.Name, "error", err)
+			continue
+		}
+		if current == nil || !current.Monitored || strings.HasPrefix(current.ForeignID, "calibre:") {
+			continue
+		}
+		author := *current
 
 		updated, err := s.meta.GetAuthor(ctx, author.ForeignID)
 		if err != nil {
@@ -1640,8 +1654,17 @@ func (s *Scheduler) refreshMetadata() {
 		if updated.RatingsCount != 0 {
 			author.RatingsCount = updated.RatingsCount
 		}
-		if err := s.authors.Update(ctx, &author); err != nil {
+		// Guarded on the row as read before the provider call, so an edit
+		// saved during the call wins. The refresh is dropped, not retried:
+		// this job runs again on schedule.
+		written, err := s.authors.UpdateIfUnchanged(ctx, &author, current.UpdatedAtRaw)
+		if err != nil {
 			slog.Warn("failed to persist refreshed author", "author", author.Name, "error", err)
+			continue
+		}
+		if !written {
+			slog.Info("author refresh skipped: the author changed while its metadata was being fetched; the next refresh retries it",
+				"author", author.Name, "authorId", author.ID)
 			continue
 		}
 

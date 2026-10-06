@@ -9316,3 +9316,107 @@ func TestAuthorRefresh_RefusesSecondRefreshWhileSyncRuns(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// editingEditionsMetaProvider runs edit once, while it handles the first
+// edition lookup for editForeignID: a user change committed after the
+// catalogue sync read the author's books and before it writes one (#2926).
+type editingEditionsMetaProvider struct {
+	stubMetaProvider
+	editForeignID string
+	once          sync.Once
+	edit          func()
+}
+
+func (p *editingEditionsMetaProvider) GetEditions(ctx context.Context, fid string) ([]models.Edition, error) {
+	if fid == p.editForeignID && p.edit != nil {
+		p.once.Do(p.edit)
+	}
+	return p.stubMetaProvider.GetEditions(ctx, fid)
+}
+
+// TestRefreshAuthorBooks_TitleMatchKeepsEditMadeDuringSync covers #2926 for
+// the catalogue sync's title match branch. The rows it updates are read when
+// the sync starts, and provider calls (here the MinPages edition prefetch)
+// run before the write, so writing that snapshot back undid an edit saved in
+// between. The calibre stub upgrade must land on top of the edit instead.
+func TestRefreshAuthorBooks_TitleMatchKeepsEditMadeDuringSync(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+	ctx := context.Background()
+
+	profile, err := profileRepo.GetByID(ctx, models.DefaultMetadataProfileID)
+	if err != nil || profile == nil {
+		t.Fatalf("GetByID(default profile) failed: %v", err)
+	}
+	profile.MinPages = 50
+	if err := profileRepo.Update(ctx, profile); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{
+		ForeignID: "OL-RACE-AUTHOR", Name: "Race Author", SortName: "Author, Race",
+		MetadataProvider: "openlibrary", Monitored: true,
+		MonitorMode: models.AuthorMonitorModeAll, MonitorNewItems: models.AuthorMonitorNewItemsAll,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	stub := &models.Book{
+		ForeignID: "calibre:book:41", AuthorID: author.ID, Title: "Race Title",
+		SortTitle: "race title", Status: models.BookStatusWanted, Monitored: true,
+		Genres: []string{}, MetadataProvider: "calibre",
+	}
+	if err := bookRepo.Create(ctx, stub); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &editingEditionsMetaProvider{
+		stubMetaProvider: stubMetaProvider{name: "openlibrary", works: []models.Book{{
+			ForeignID: "OL-RACE-W", Title: "Race Title", SortTitle: "race title", Language: "eng",
+			RatingsCount: 50, AverageRating: 4.2, Status: models.BookStatusWanted,
+			Genres: []string{}, MetadataProvider: "openlibrary",
+		}}},
+		editForeignID: "OL-RACE-W",
+	}
+	provider.edit = func() {
+		current, err := bookRepo.GetByID(ctx, stub.ID)
+		if err != nil || current == nil {
+			t.Errorf("load book for concurrent edit: %v", err)
+			return
+		}
+		current.Monitored = false
+		current.ImageURL = "/covers/user-choice.jpg"
+		if err := bookRepo.Update(ctx, current); err != nil {
+			t.Errorf("concurrent edit: %v", err)
+		}
+	}
+
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil,
+		metadata.NewAggregator(provider), nil, profileRepo, &searcherSpy{})
+	h.RefreshAuthorBooks(author, false, "")
+
+	provider.editionCallsMu.Lock()
+	calls := len(provider.editionCalls)
+	provider.editionCallsMu.Unlock()
+	if calls == 0 {
+		t.Fatal("the edition prefetch never ran, so nothing raced the write")
+	}
+	stored, err := bookRepo.GetByID(ctx, stub.ID)
+	if err != nil || stored == nil {
+		t.Fatalf("reload book: %v", err)
+	}
+	if stored.Monitored || stored.ImageURL != "/covers/user-choice.jpg" {
+		t.Fatalf("edit made during the sync was overwritten: monitored=%v image=%q", stored.Monitored, stored.ImageURL)
+	}
+	if stored.ForeignID != "OL-RACE-W" || stored.RatingsCount != 50 || stored.Language != "eng" {
+		t.Fatalf("calibre stub upgrade not applied on top of the edit: foreignID=%q ratings=%d language=%q",
+			stored.ForeignID, stored.RatingsCount, stored.Language)
+	}
+}

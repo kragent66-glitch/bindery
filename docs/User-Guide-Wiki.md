@@ -809,6 +809,15 @@ on the book page retries once on top of your edit; if the book keeps changing
 it asks you to try again. **Rebind** does the same when the book changes while
 the new record is being fetched.
 
+The same goes for the other writes that follow a provider lookup. When an
+Audiobookshelf import merges a book with its upstream record, an edit you saved
+during the lookup is kept and the merge is applied on top of it; if the book
+keeps changing, the merge waits for the next import. A **Refresh Metadata** on
+an author re-reads each book it matched by title just before updating it, so
+edits made while the refresh runs are kept. The scheduled author metadata
+refresh skips an author you edited while its profile was being fetched and
+picks it up on the next run.
+
 Which of those a given book actually came from is on the book page, under
 **Metadata source**. It names the provider, shows the identifier the book is
 bound to with a copy button, and lists any other provider ids the same book is
