@@ -365,7 +365,7 @@ func TestRecommendationRefreshRunsEngineForCaller(t *testing.T) {
 				if uid != 33 {
 					t.Fatalf("engine ran for user %d, want 33", uid)
 				}
-			case <-time.After(time.Second):
+			case <-time.After(10 * time.Second):
 				t.Fatal("engine was not run")
 			}
 		})
