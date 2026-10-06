@@ -19,6 +19,10 @@ import "strings"
 // SABnzbd translates fail_message into its interface language, so a non
 // English install matches none of these and keeps the plain failed download
 // behaviour. That is the safe direction: an unknown message never blocklists.
+//
+// SABnzbd separates its own disk faults from archive faults better than NZBGet
+// does, but a broken unrar can still look like a CRC error, so the importer
+// applies the same per client breaker (contentFailureBreaker) to both.
 var contentFailurePrefixes = []string{
 	// Missing articles: not on the user's servers, out of retention, or a
 	// precheck that found too little available.
@@ -44,14 +48,21 @@ var contentFailurePrefixes = []string{
 // IsContentFailure reports whether a SABnzbd history fail_message says the
 // release itself is broken rather than the client or the transport.
 func IsContentFailure(failMessage string) bool {
+	return ContentFailureKind(failMessage) != ""
+}
+
+// ContentFailureKind is the matched prefix for a content failure, or "" for
+// anything else. Unlike the full message it carries no file name or block
+// count, so two releases that failed the same way share one kind.
+func ContentFailureKind(failMessage string) string {
 	msg := strings.ToLower(strings.TrimSpace(failMessage))
 	if msg == "" {
-		return false
+		return ""
 	}
 	for _, p := range contentFailurePrefixes {
 		if strings.HasPrefix(msg, p) {
-			return true
+			return p
 		}
 	}
-	return false
+	return ""
 }

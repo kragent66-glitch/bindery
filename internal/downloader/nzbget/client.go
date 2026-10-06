@@ -464,9 +464,9 @@ func IsFailure(status string) bool {
 		(len(status) >= 6 && status[:6] == "SCRIPT")
 }
 
-// IsContentFailure reports whether a NZBGet history status says the release
-// itself is broken, so sending the same NZB again would fail the same way
-// (#3024). The strings are the ones NzbInfo::MakeTextStatus produces.
+// IsContentFailure reports whether a NZBGet history status usually means the
+// release itself is broken, so sending the same NZB again would fail the same
+// way (#3024). The strings are the ones NzbInfo::MakeTextStatus produces.
 //
 //   - FAILURE/PAR: the par set could not repair the download.
 //   - FAILURE/UNPACK: the archive would not extract (corrupt, missing volumes).
@@ -475,11 +475,21 @@ func IsFailure(status string) bool {
 //     reports a health check delete this way; it has no DELETED/HEALTH.
 //   - FAILURE/SCAN: NZBGet could not parse the NZB. Bindery only ever uploads
 //     a body that nzbfetch.ValidateNZB accepted as an NZB, so an indexer error
-//     page never reaches NZBGet and this is the file itself.
+//     page never reaches NZBGet and this is normally the file itself.
 //   - FAILURE/BAD: someone marked the job bad, the user through "Mark as bad"
 //     or a queue or post processing script such as a fake detector. Either is
 //     an explicit verdict on this release, and mark as bad exists precisely
 //     to tell an automation to move on to another one.
+//
+// "Usually" is load bearing. NZBGet folds some faults of its own host into
+// the same statuses: an unrar or 7z that is missing, misconfigured, out of
+// memory or denied permission, a full disk while extracting, and a failed
+// move out of the _unpack folder all report FAILURE/UNPACK; a par2 file or
+// memory error during repair reports FAILURE/PAR; and a failed rename of the
+// NZB in NzbDir (permissions) reports FAILURE/SCAN. Those fail every job, not
+// one release, so a caller that blocklists on this answer must also stop when
+// many different releases fail the same way from one client (the importer's
+// contentFailureBreaker does).
 //
 // Everything else is left to the #2710 cooldown: FAILURE/MOVE is the disk or
 // permissions on the client, FAILURE/FETCH a URL fetch, DELETED/MANUAL a

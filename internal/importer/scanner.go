@@ -23,6 +23,7 @@ import (
 	"github.com/vavallee/bindery/internal/calibre"
 	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/decision"
+	"github.com/vavallee/bindery/internal/downloader"
 	"github.com/vavallee/bindery/internal/importer/formatsniff"
 	"github.com/vavallee/bindery/internal/indexer"
 	"github.com/vavallee/bindery/internal/jobs"
@@ -141,6 +142,12 @@ type Scanner struct {
 	// either created its folder, and split one audiobook's tracks across
 	// "Title" and "Title (2)".
 	manualBookLocks sync.Map
+
+	// contentBreaker stops blocklisting on a download client's content
+	// verdict when the client itself looks broken (#3024), and clientHealth,
+	// when set, is where that is reported. Nil clientHealth reports nothing.
+	contentBreaker contentFailureBreaker
+	clientHealth   *downloader.HealthStore
 }
 
 // NewScanner creates an import scanner. downloadPathRemap is an optional
@@ -418,13 +425,15 @@ func (s *Scanner) allowedFormat(ctx context.Context, author *models.Author, form
 // disallowed, or on a client status that is about the release's content, never
 // on a transient import or transport failure.
 //
-// A release already on the blocklist is not added twice: a manual grab can
-// send a blocklisted release again, and its second failure says nothing new.
+// A release already on the blocklist for the same book is not added twice: a
+// manual grab can send a blocklisted release again, and its second failure
+// says nothing new. A row under another book does not count, because deleting
+// that book deletes its rows.
 func (s *Scanner) blocklistRejectedRelease(ctx context.Context, dl *models.Download, reason string) {
 	if s.blocklist == nil || dl == nil || strings.TrimSpace(dl.GUID) == "" {
 		return
 	}
-	if blocked, err := s.blocklist.IsBlocked(ctx, dl.GUID); err == nil && blocked {
+	if blocked, err := s.blocklist.IsBlockedForBook(ctx, dl.GUID, dl.BookID); err == nil && blocked {
 		return
 	}
 	entry := &models.BlocklistEntry{

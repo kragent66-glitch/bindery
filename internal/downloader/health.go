@@ -43,13 +43,54 @@ const notifierEventHealth = "health"
 
 // HealthStore keeps non-persistent download-client health diagnostics.
 type HealthStore struct {
-	mu    sync.RWMutex
-	byID  map[int64]models.DownloadClientHealth
-	notif eventNotifier
+	mu   sync.RWMutex
+	byID map[int64]models.DownloadClientHealth
+	// advisory holds a problem found while polling the client rather than by
+	// the path probe, such as the importer pausing automatic blocklisting
+	// (#3024). It lives apart from byID because the 15 minute probe rewrites
+	// byID wholesale and would otherwise erase it.
+	advisory map[int64]models.DownloadClientHealth
+	notif    eventNotifier
 }
 
 func NewHealthStore() *HealthStore {
-	return &HealthStore{byID: make(map[int64]models.DownloadClientHealth)}
+	return &HealthStore{
+		byID:     make(map[int64]models.DownloadClientHealth),
+		advisory: make(map[int64]models.DownloadClientHealth),
+	}
+}
+
+// SetAdvisory records a polling problem for the client. It is shown in place
+// of a passing path check, or after a failing one, until ClearAdvisory. The
+// first advisory for a client publishes the health event, like an entry into
+// HealthError does in Set.
+func (s *HealthStore) SetAdvisory(id int64, health models.DownloadClientHealth) {
+	if s == nil || id == 0 {
+		return
+	}
+	s.mu.Lock()
+	_, had := s.advisory[id]
+	s.advisory[id] = health
+	notif := s.notif
+	s.mu.Unlock()
+	if had || notif == nil {
+		return
+	}
+	notif.Send(context.Background(), notifierEventHealth, map[string]interface{}{
+		"clientId": id,
+		"status":   health.Status,
+		"message":  health.Message,
+	})
+}
+
+// ClearAdvisory removes the polling problem SetAdvisory recorded, if any.
+func (s *HealthStore) ClearAdvisory(id int64) {
+	if s == nil || id == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.advisory, id)
 }
 
 // WithNotifier attaches a webhook event notifier so transitions into
@@ -116,7 +157,14 @@ func (s *HealthStore) Get(id int64) *models.DownloadClientHealth {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	health, ok := s.byID[id]
-	if !ok {
+	adv, hasAdv := s.advisory[id]
+	switch {
+	case hasAdv && ok && health.Status == HealthError:
+		health.Message = strings.TrimRight(health.Message, ". ") + ". " + adv.Message
+		return &health
+	case hasAdv:
+		return &adv
+	case !ok:
 		return nil
 	}
 	return &health

@@ -2,6 +2,7 @@ package importer
 
 import (
 	"context"
+	"fmt"
 	"net/http/httptest"
 	"testing"
 
@@ -13,12 +14,14 @@ import (
 )
 
 // contentFailureFixture is a scanner with a blocklist wired the way main.go
-// wires it, plus one in flight usenet download owned by the given client.
+// wires it, plus the repos to give its downloads books and clients.
 type contentFailureFixture struct {
 	scanner   *Scanner
 	downloads *db.DownloadRepo
 	blocklist *db.BlocklistRepo
 	clients   *db.DownloadClientRepo
+	books     *db.BookRepo
+	authors   *db.AuthorRepo
 }
 
 func newContentFailureFixture(t *testing.T) contentFailureFixture {
@@ -32,13 +35,29 @@ func newContentFailureFixture(t *testing.T) contentFailureFixture {
 	dlRepo := db.NewDownloadRepo(database)
 	clientRepo := db.NewDownloadClientRepo(database)
 	blocklist := db.NewBlocklistRepo(database)
-	s := NewScanner(dlRepo, clientRepo, db.NewBookRepo(database), db.NewAuthorRepo(database),
+	books := db.NewBookRepo(database)
+	authors := db.NewAuthorRepo(database)
+	s := NewScanner(dlRepo, clientRepo, books, authors,
 		db.NewHistoryRepo(database), t.TempDir(), "", "", "", "")
 	s.WithFormatEnforcement(db.NewQualityProfileRepo(database), blocklist)
-	return contentFailureFixture{scanner: s, downloads: dlRepo, blocklist: blocklist, clients: clientRepo}
+	return contentFailureFixture{scanner: s, downloads: dlRepo, blocklist: blocklist, clients: clientRepo, books: books, authors: authors}
 }
 
-func (f contentFailureFixture) addDownload(t *testing.T, ctx context.Context, client *models.DownloadClient, guid, sourceID string) {
+// addBook creates a wanted book and returns its id.
+func (f contentFailureFixture) addBook(t *testing.T, ctx context.Context, foreignID string) int64 {
+	t.Helper()
+	author := &models.Author{Name: "Author " + foreignID, ForeignID: "a-" + foreignID, SortName: "Author"}
+	if err := f.authors.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	book := &models.Book{AuthorID: author.ID, Title: "Book " + foreignID, ForeignID: "b-" + foreignID, Status: "wanted", MediaType: models.MediaTypeEbook}
+	if err := f.books.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	return book.ID
+}
+
+func (f contentFailureFixture) addDownload(t *testing.T, ctx context.Context, client *models.DownloadClient, guid, sourceID string, bookID *int64) {
 	t.Helper()
 	id := sourceID
 	dl := &models.Download{
@@ -47,11 +66,21 @@ func (f contentFailureFixture) addDownload(t *testing.T, ctx context.Context, cl
 		Status:           models.StateDownloading,
 		Protocol:         "usenet",
 		SABnzbdNzoID:     &id,
+		BookID:           bookID,
 		DownloadClientID: &client.ID,
 	}
 	if err := f.downloads.Create(ctx, dl); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func (f contentFailureFixture) entries(t *testing.T, ctx context.Context) []models.BlocklistEntry {
+	t.Helper()
+	entries, err := f.blocklist.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
 }
 
 // assertBlocklisted checks the row is failed, whether it is on the blocklist
@@ -66,10 +95,7 @@ func (f contentFailureFixture) assertBlocklisted(t *testing.T, ctx context.Conte
 	if got.Status != models.StateFailed {
 		t.Errorf("status = %q, want %q", got.Status, models.StateFailed)
 	}
-	entries, err := f.blocklist.List(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := f.entries(t, ctx)
 	if !want {
 		if len(entries) != 0 {
 			t.Fatalf("blocklist = %+v, want empty: a client side failure must keep the #2710 cooldown", entries)
@@ -113,12 +139,8 @@ func TestCheckNZBGetDownloads_ContentFailureBlocklists(t *testing.T) {
 
 			f := newContentFailureFixture(t)
 			client := nzbgetClient(t, ctx, f.clients, srv.URL)
-			f.addDownload(t, ctx, client, "guid-ng-3024", "77")
+			f.addDownload(t, ctx, client, "guid-ng-3024", "77", nil)
 
-			f.scanner.checkNZBGetDownloads(ctx, client)
-			f.assertBlocklisted(t, ctx, "guid-ng-3024", tc.want, "downloadFailed: "+tc.status)
-
-			// A second poll of the same history must not add a second row.
 			f.scanner.checkNZBGetDownloads(ctx, client)
 			f.assertBlocklisted(t, ctx, "guid-ng-3024", tc.want, "downloadFailed: "+tc.status)
 		})
@@ -149,7 +171,7 @@ func TestCheckSABnzbdDownloads_ContentFailureBlocklists(t *testing.T) {
 
 			f := newContentFailureFixture(t)
 			client := sabClient(t, ctx, f.clients, srv.URL)
-			f.addDownload(t, ctx, client, "guid-sab-3024", "SABnzbd_nzo_3024")
+			f.addDownload(t, ctx, client, "guid-sab-3024", "SABnzbd_nzo_3024", nil)
 
 			f.scanner.checkSABnzbdDownloads(ctx, client)
 			f.assertBlocklisted(t, ctx, "guid-sab-3024", tc.want, "downloadFailed: "+tc.message)
@@ -157,20 +179,90 @@ func TestCheckSABnzbdDownloads_ContentFailureBlocklists(t *testing.T) {
 	}
 }
 
-// TestBlocklistRejectedRelease_SkipsAlreadyBlocked pins the dedupe: a manual
-// grab can send a blocklisted release again, and its second failure must not
-// stack another row on the blocklist.
-func TestBlocklistRejectedRelease_SkipsAlreadyBlocked(t *testing.T) {
+// TestCheckNZBGetDownloads_ContentFailureDedupe drives the dedupe through the
+// poll path: a release that is already blocklisted for the same book (a
+// manual grab re-sent it) is not added again.
+func TestCheckNZBGetDownloads_ContentFailureDedupe(t *testing.T) {
 	ctx := context.Background()
+	srv := httptest.NewServer(nzbgetHandler(t, []nzbget.HistoryItem{{
+		NZBID: 78, NZBName: "Broken Book", Status: "FAILURE/PAR",
+	}}, nil))
+	defer srv.Close()
+
 	f := newContentFailureFixture(t)
-	dl := &models.Download{GUID: "guid-dupe", Title: "Broken Book"}
-	f.scanner.blocklistRejectedRelease(ctx, dl, "downloadFailed: FAILURE/PAR")
-	f.scanner.blocklistRejectedRelease(ctx, dl, "downloadFailed: FAILURE/PAR")
-	entries, err := f.blocklist.List(ctx)
-	if err != nil {
+	bookID := f.addBook(t, ctx, "dedupe")
+	if err := f.blocklist.Create(ctx, &models.BlocklistEntry{BookID: &bookID, GUID: "guid-dupe", Title: "Broken Book", Reason: "downloadFailed: FAILURE/PAR"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("blocklist has %d entries, want 1", len(entries))
+	client := nzbgetClient(t, ctx, f.clients, srv.URL)
+	f.addDownload(t, ctx, client, "guid-dupe", "78", &bookID)
+
+	f.scanner.checkNZBGetDownloads(ctx, client)
+
+	if got := f.entries(t, ctx); len(got) != 1 {
+		t.Fatalf("blocklist has %d entries, want 1: a repeat failure stacked a duplicate", len(got))
+	}
+}
+
+// TestCheckNZBGetDownloads_ContentFailureOtherBookRow pins that the dedupe is
+// per book. A row for the same GUID under another book does not stand in for
+// this one, because deleting that book deletes its rows and would silently
+// unblock the release for this book too.
+func TestCheckNZBGetDownloads_ContentFailureOtherBookRow(t *testing.T) {
+	ctx := context.Background()
+	srv := httptest.NewServer(nzbgetHandler(t, []nzbget.HistoryItem{{
+		NZBID: 79, NZBName: "Broken Book", Status: "FAILURE/PAR",
+	}}, nil))
+	defer srv.Close()
+
+	f := newContentFailureFixture(t)
+	bookA := f.addBook(t, ctx, "a")
+	bookB := f.addBook(t, ctx, "b")
+	if err := f.blocklist.Create(ctx, &models.BlocklistEntry{BookID: &bookA, GUID: "guid-shared", Title: "Broken Book", Reason: "manual"}); err != nil {
+		t.Fatal(err)
+	}
+	client := nzbgetClient(t, ctx, f.clients, srv.URL)
+	f.addDownload(t, ctx, client, "guid-shared", "79", &bookB)
+
+	f.scanner.checkNZBGetDownloads(ctx, client)
+	if err := f.blocklist.DeleteByBookID(ctx, bookA); err != nil {
+		t.Fatal(err)
+	}
+
+	got := f.entries(t, ctx)
+	if len(got) != 1 || got[0].BookID == nil || *got[0].BookID != bookB {
+		t.Fatalf("blocklist after deleting book A's rows = %+v, want one row for book B", got)
+	}
+}
+
+// TestCheckNZBGetDownloads_ContentFailureStorm is the broken client case: an
+// unrar NZBGet cannot run fails every RAR job with FAILURE/UNPACK. Four
+// different releases failing that way with nothing completing must not
+// blocklist all four; the breaker stops at contentBreakerDistinct-1.
+func TestCheckNZBGetDownloads_ContentFailureStorm(t *testing.T) {
+	ctx := context.Background()
+	var items []nzbget.HistoryItem
+	for i := 1; i <= 4; i++ {
+		items = append(items, nzbget.HistoryItem{NZBID: 100 + i, NZBName: fmt.Sprintf("Book %d", i), Status: "FAILURE/UNPACK"})
+	}
+	srv := httptest.NewServer(nzbgetHandler(t, items, nil))
+	defer srv.Close()
+
+	f := newContentFailureFixture(t)
+	client := nzbgetClient(t, ctx, f.clients, srv.URL)
+	for i := 1; i <= 4; i++ {
+		f.addDownload(t, ctx, client, fmt.Sprintf("guid-storm-%d", i), fmt.Sprint(100+i), nil)
+	}
+
+	f.scanner.checkNZBGetDownloads(ctx, client)
+
+	if got := f.entries(t, ctx); len(got) != 2 {
+		t.Fatalf("blocklist has %d entries after 4 releases failed the same way, want 2 (the breaker must stop the rest)", len(got))
+	}
+	for i := 1; i <= 4; i++ {
+		dl, err := f.downloads.GetByGUID(ctx, fmt.Sprintf("guid-storm-%d", i))
+		if err != nil || dl == nil || dl.Status != models.StateFailed {
+			t.Errorf("download %d not failed: %+v %v", i, dl, err)
+		}
 	}
 }

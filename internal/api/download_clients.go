@@ -368,6 +368,7 @@ func (h *DownloadClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	downloader.Evict(id)
 	if h.health != nil {
 		h.health.Delete(id)
+		h.health.ClearAdvisory(id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

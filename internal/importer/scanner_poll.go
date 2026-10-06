@@ -57,6 +57,7 @@ func (s *Scanner) checkSABnzbdDownloads(ctx context.Context, client *models.Down
 					slog.Debug("remapped download path", "sab", slot.Path, "local", localPath)
 				}
 				slog.Info("download completed", "title", dl.Title, "path", localPath)
+				s.noteClientSuccess(client)
 				s.updateDownloadStatus(ctx, dl.ID, models.StateCompleted)
 				s.tryImportSABnzbd(ctx, sab, dl, slot.NzoID, localPath)
 			} else if dl.Status == models.StateImportFailed && dl.ImportRetryCount < importRetryLimit {
@@ -80,8 +81,8 @@ func (s *Scanner) checkSABnzbdDownloads(ctx context.Context, client *models.Down
 				s.createHistoryEvent(ctx, models.HistoryEventDownloadFailed, dl.Title, dl.BookID, map[string]string{"guid": dl.GUID, "message": slot.FailMessage})
 				// A content failure fails again on every re-send, so the
 				// #2710 cooldown alone would re-grab it each sweep (#3024).
-				if sabnzbd.IsContentFailure(slot.FailMessage) {
-					s.blocklistRejectedRelease(ctx, dl, "downloadFailed: "+slot.FailMessage)
+				if kind := sabnzbd.ContentFailureKind(slot.FailMessage); kind != "" {
+					s.blocklistContentFailure(ctx, client, dl, kind, "downloadFailed: "+slot.FailMessage)
 				}
 				s.notify(ctx, notifierEventDownloadFailed, map[string]interface{}{
 					"title":   dl.Title,
@@ -132,6 +133,7 @@ func (s *Scanner) checkNZBGetDownloads(ctx context.Context, client *models.Downl
 					slog.Debug("remapped download path", "nzbget", item.DestDir, "local", localPath)
 				}
 				slog.Info("download completed", "title", dl.Title, "path", localPath)
+				s.noteClientSuccess(client)
 				s.updateDownloadStatus(ctx, dl.ID, models.StateCompleted)
 				s.tryImportNZBGet(ctx, ng, dl, item.NZBID, localPath)
 			} else if dl.Status == models.StateImportFailed && dl.ImportRetryCount < importRetryLimit {
@@ -157,7 +159,7 @@ func (s *Scanner) checkNZBGetDownloads(ctx context.Context, client *models.Downl
 				// See the SABnzbd branch: a broken release is blocklisted so
 				// the next sweep moves on to another one (#3024).
 				if nzbget.IsContentFailure(item.Status) {
-					s.blocklistRejectedRelease(ctx, dl, "downloadFailed: "+item.Status)
+					s.blocklistContentFailure(ctx, client, dl, item.Status, "downloadFailed: "+item.Status)
 				}
 				s.notify(ctx, notifierEventDownloadFailed, map[string]interface{}{
 					"title":   dl.Title,

@@ -410,6 +410,7 @@ func main() {
 	// profile: a downloaded EPUB in a language the profile does not allow is
 	// rejected and blocklisted instead of relabelling the book (#2998).
 	importScanner.WithLanguageEnforcement(metadataProfileRepo, blocklistRepo)
+	importScanner.WithClientHealth(downloadHealth)
 	importScanner.WithJobs(bgJobs) // drain manual scans on shutdown (#1458)
 
 	// Grimmory push pipeline (#826). Config is loaded live per push, so the
