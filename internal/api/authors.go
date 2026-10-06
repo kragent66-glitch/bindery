@@ -629,6 +629,13 @@ type catalogueSyncOptions struct {
 	// whole library.
 	refreshFromProvider bool
 
+	// ownerForUnownedAuthor owns the books this run creates when the author
+	// has no owner. Add Book's single work fallback sets it to the caller
+	// under tenancy, so a book picked under a shared author belongs to the
+	// user who picked it, as the direct insert's does. Zero keeps the
+	// author's owner, which for a shared author is none.
+	ownerForUnownedAuthor int64
+
 	// syncClaimed marks a run its caller already counted in runningSyncs.
 	// The manual Refresh claims the author before it answers, so a second
 	// click sees the first; fetchAuthorBooks counts every other run itself.
@@ -906,7 +913,11 @@ func (h *AuthorHandler) findAuthorByNameOrAliasExcluding(ctx context.Context, ex
 		if err != nil {
 			return nil, false, err
 		}
-		if author != nil && author.ID != excludeID {
+		// The alias table is not owner scoped, but an alias belongs to its
+		// author, and so to that author's owner. Under tenancy another user's
+		// author must not match: the caller would get that row back in a
+		// conflict, or relink it in place.
+		if author != nil && author.ID != excludeID && auth.CheckOwnership(ctx, author.OwnerUserID) {
 			exact[author.ID] = author
 		}
 	}
@@ -942,7 +953,7 @@ func (h *AuthorHandler) findAuthorByNameOrAliasExcluding(ctx context.Context, ex
 		if err != nil {
 			return nil, false, err
 		}
-		if author != nil && author.ID != excludeID {
+		if author != nil && author.ID != excludeID && auth.CheckOwnership(ctx, author.OwnerUserID) {
 			normalized[author.ID] = author
 		}
 	}
@@ -2624,8 +2635,12 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 		seenTitles.Add(b.Title, &b)
 
 		// Tenancy (#1457): a new book inherits its author's owner so per-user
-		// scoping sees the sync's output. NULL-owned authors stay NULL-owned.
+		// scoping sees the sync's output. NULL-owned authors stay NULL-owned,
+		// except for Add Book's fallback (see ownerForUnownedAuthor).
 		b.OwnerUserID = author.OwnerUserID
+		if b.OwnerUserID == 0 {
+			b.OwnerUserID = opts.ownerForUnownedAuthor
+		}
 		if err := h.books.Create(ctx, &b); err != nil {
 			// A UNIQUE constraint on foreign_id means the book was already
 			// created by a concurrent or earlier sync — treat as a benign
@@ -2832,6 +2847,15 @@ func (h *AuthorHandler) reparentMisattachedBook(ctx context.Context, existing *m
 	if existing.AuthorID == author.ID {
 		return false
 	}
+	// The row was found by a foreign id lookup that spans every user, so under
+	// tenancy it can be another user's book. Moving it would take it out of
+	// their author and into a different library. No owner counts as an owner
+	// of its own: a shared author's sync must not take a user's book out from
+	// under that user's author, and a shared book must not move under one
+	// user's private author. Only a move within one owner goes ahead.
+	if auth.EnforceTenancy() && existing.OwnerUserID != author.OwnerUserID {
+		return false
+	}
 	owner, err := h.authors.GetByID(ctx, existing.AuthorID)
 	if err != nil {
 		// Can't verify ownership — leave the row alone rather than moving it
@@ -2928,7 +2952,8 @@ func handleNewWantedBook(ctx context.Context, books *db.BookRepo, series *db.Ser
 // and file carry no number at all, which Libation's default naming produces.
 // Declining the bind leaves the book wanted and lets auto-search run, which
 // is the right outcome for a different book and a visible one for a
-// duplicate row. A lookup error keeps the old behaviour and binds.
+// duplicate row. A lookup error keeps the old behaviour and binds. A row left
+// by a deleted book does not count: SetFilePath takes it over (#2937).
 func existingFileOwnedByOtherBook(ctx context.Context, books *db.BookRepo, path string, bookID int64) bool {
 	if books == nil {
 		return false
@@ -2938,7 +2963,7 @@ func existingFileOwnedByOtherBook(ctx context.Context, books *db.BookRepo, path 
 		candidates = append(candidates, filepath.Dir(path))
 	}
 	for _, p := range candidates {
-		owned, err := books.PathOwnedByOtherBook(ctx, p, bookID)
+		owned, err := books.PathOwnedByLiveOtherBook(ctx, p, bookID)
 		if err != nil {
 			slog.Warn("library: book_files owner lookup failed", "path", p, "error", err)
 			continue

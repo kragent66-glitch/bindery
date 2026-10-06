@@ -5,6 +5,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -88,9 +89,13 @@ func TestWithRawConn_ClosedDB(t *testing.T) {
 	}
 }
 
+// registerPlainDriver keeps sql.Register to one call per process, so
+// the test also passes under -count greater than 1.
+var registerPlainDriver sync.Once
+
 // A driver connection that cannot serialize is an error, not a panic.
 func TestWithRawConn_DriverWithoutSerialize(t *testing.T) {
-	sql.Register("openmemory-plain", plainDriver{})
+	registerPlainDriver.Do(func() { sql.Register("openmemory-plain", plainDriver{}) })
 	db, err := sql.Open("openmemory-plain", "")
 	if err != nil {
 		t.Fatal(err)

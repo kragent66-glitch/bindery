@@ -1019,6 +1019,13 @@ func (r *BookRepo) PathOwnedByOtherBook(ctx context.Context, path string, exclud
 	return r.files.PathOwnedByOtherBook(ctx, path, excludeBookID)
 }
 
+// PathOwnedByLiveOtherBook is PathOwnedByOtherBook ignoring a row left by a
+// deleted book. For pre-checks of a write that takes such a row over, never
+// for a delete guard. See BookFileRepo.PathOwnedByLiveOtherBook.
+func (r *BookRepo) PathOwnedByLiveOtherBook(ctx context.Context, path string, excludeBookID int64) (bool, error) {
+	return r.files.PathOwnedByLiveOtherBook(ctx, path, excludeBookID)
+}
+
 // ListAllBookFilePaths returns every path in book_files.
 // Used by ScanLibrary to build the set of already-tracked files efficiently.
 func (r *BookRepo) ListAllBookFilePaths(ctx context.Context) ([]string, error) {
