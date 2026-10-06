@@ -3,6 +3,7 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -66,8 +68,63 @@ func Open(dbPath string) (*sql.DB, error) {
 	return db, nil
 }
 
-// OpenMemory creates an in-memory database for testing.
+// OpenMemory creates an in-memory database for testing. Each call returns an
+// independent database holding the fully migrated schema.
+//
+// Running all migrations through modernc's transpiled SQLite costs ~2.5s per
+// call under -race, which is paid by hundreds of tests. So the first call
+// migrates a template once per process and every call after deserializes a
+// copy of it, which is byte-for-byte the state migrate would have produced.
 func OpenMemory() (*sql.DB, error) {
+	tmplOnce.Do(func() { tmpl, tmplErr = memoryTemplate() })
+	if tmplErr != nil {
+		return nil, tmplErr
+	}
+	db, err := openMemoryConn()
+	if err != nil {
+		return nil, err
+	}
+	if err := withRawConn(db, func(c memConn) error { return c.Deserialize(tmpl) }); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("load memory template: %w", err)
+	}
+	return db, nil
+}
+
+var (
+	tmplOnce sync.Once
+	tmpl     []byte
+	tmplErr  error
+)
+
+// memConn is the part of modernc.org/sqlite's driver connection OpenMemory
+// uses to copy the template.
+type memConn interface {
+	Serialize() ([]byte, error)
+	Deserialize([]byte) error
+}
+
+func memoryTemplate() ([]byte, error) {
+	db, err := openMemoryConn()
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	if err := migrate(db); err != nil {
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
+	var buf []byte
+	err = withRawConn(db, func(c memConn) (err error) {
+		buf, err = c.Serialize()
+		return err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("serialize memory template: %w", err)
+	}
+	return buf, nil
+}
+
+func openMemoryConn() (*sql.DB, error) {
 	db, err := sql.Open("sqlite", ":memory:"+connectionPragmaDSN)
 	if err != nil {
 		return nil, fmt.Errorf("open memory database: %w", err)
@@ -83,13 +140,22 @@ func OpenMemory() (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
-
-	if err := migrate(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("run migrations: %w", err)
-	}
-
 	return db, nil
+}
+
+func withRawConn(db *sql.DB, fn func(memConn) error) error {
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return conn.Raw(func(dc any) error {
+		c, ok := dc.(memConn)
+		if !ok {
+			return fmt.Errorf("sqlite driver conn %T cannot serialize", dc)
+		}
+		return fn(c)
+	})
 }
 
 // preflight validates that the directory containing dbPath exists, is a
