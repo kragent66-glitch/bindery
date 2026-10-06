@@ -48,7 +48,7 @@ func TestDownloadClientTest_KeepsPausedBlocklistingAdvisory(t *testing.T) {
 	if err := clients.Create(context.Background(), client); err != nil {
 		t.Fatal(err)
 	}
-	store.SetAdvisory(client.ID, models.DownloadClientHealth{Status: downloader.HealthError, Message: "Automatic blocklisting is paused"})
+	store.SetAdvisory(client.ID, downloader.AdvisoryBlocklist, models.DownloadClientHealth{Status: downloader.HealthError, Message: "Automatic blocklisting is paused"})
 
 	rec := httptest.NewRecorder()
 	h.Test(rec, withURLParam(httptest.NewRequest(http.MethodPost, "/downloadclient/1/test", nil), "id", "1"))
@@ -79,7 +79,7 @@ func TestDownloadClientUpdate_ResetsPausedBlocklisting(t *testing.T) {
 	if err := clients.Create(ctx, client); err != nil {
 		t.Fatal(err)
 	}
-	store.SetAdvisory(client.ID, models.DownloadClientHealth{Status: downloader.HealthError, Message: "paused"})
+	store.SetAdvisory(client.ID, downloader.AdvisoryBlocklist, models.DownloadClientHealth{Status: downloader.HealthError, Message: "paused"})
 
 	body := `{"enabled":false}`
 	rec := httptest.NewRecorder()

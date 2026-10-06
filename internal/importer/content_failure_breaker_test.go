@@ -20,9 +20,23 @@ import (
 // fakeNZBGet answers history, loadlog and editqueue, with history and logs
 // that a test can change between polls.
 type fakeNZBGet struct {
-	mu    sync.Mutex
-	items []nzbget.HistoryItem
-	logs  map[int][]nzbget.LogEntry
+	mu      sync.Mutex
+	items   []nzbget.HistoryItem
+	logs    map[int][]nzbget.LogEntry
+	tools   []nzbget.Tool // nil answers sysinfo like NZBGet before 24
+	sysinfo int
+}
+
+func (f *fakeNZBGet) setTools(tools []nzbget.Tool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tools = tools
+}
+
+func (f *fakeNZBGet) sysinfoCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.sysinfo
 }
 
 func (f *fakeNZBGet) set(items []nzbget.HistoryItem, logs map[int][]nzbget.LogEntry) {
@@ -51,6 +65,13 @@ func (f *fakeNZBGet) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": f.logs[id]})
 	case "editqueue":
 		_ = json.NewEncoder(w).Encode(map[string]any{"result": true})
+	case "sysinfo":
+		f.sysinfo++
+		if f.tools == nil {
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": nil, "error": map[string]any{"code": 1, "message": "Invalid procedure"}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"Tools": f.tools}})
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -70,6 +91,9 @@ var (
 		"Unpacking Broken Book",
 		"Unrar: Could not start /usr/bin/unrar: No such file or directory",
 		"Unrar failed",
+		// A broken post processing script on the same job must not hide
+		// or change the verdict.
+		"Notify: Could not start /scripts/Notify.py: No such file or directory",
 	)
 	unrarCRCLog = logLines(
 		"Unpacking Broken Book",
@@ -78,6 +102,7 @@ var (
 		"Cancelling unrar due to errors",
 		"Unrar error code: 3",
 		"Unrar failed",
+		"Could not start /scripts/Notify.py: Permission denied",
 	)
 )
 
@@ -261,18 +286,63 @@ func TestNZBGetUnpackFailure_OnlyUnpackSuccessCloses(t *testing.T) {
 	}
 }
 
-// TestNZBGetUnpackFailure_MissingUnpackerHoldsBack: while the health probe
-// reports a missing unpacker (NZBGet sysinfo), an evidence free unpack
-// failure is not blocklisted.
-func TestNZBGetUnpackFailure_MissingUnpackerHoldsBack(t *testing.T) {
+// TestNZBGetUnpackFailure_MissingUnRARHoldsBack: when NZBGet's sysinfo says
+// UnRAR is missing, an evidence free unpack failure is not blocklisted, and a
+// missing 7-Zip alone holds nothing back. sysinfo is asked once, lazily, and
+// only for an evidence free unpack failure.
+func TestNZBGetUnpackFailure_MissingUnRARHoldsBack(t *testing.T) {
 	p := newPollFixture(t)
-	p.health.Set(p.client.ID, models.DownloadClientHealth{Status: downloader.HealthError, Message: "NZBGet cannot find UnRAR", MissingUnpackers: []string{"UnRAR"}})
+	p.nzb.setTools([]nzbget.Tool{{Name: "7-Zip", Path: "/usr/bin/7z"}, {Name: "UnRAR", Path: ""}})
 	p.fail(t, 331, "FAILURE/UNPACK", nil)
 	if p.blocked(t, 331) {
-		t.Fatal("an unpack failure was blocklisted while NZBGet reports UnRAR missing")
+		t.Fatal("an unpack failure was blocklisted while NZBGet cannot find UnRAR")
+	}
+	if !strings.Contains(p.advisory(), "cannot find UnRAR") {
+		t.Fatalf("client health = %q, want the missing UnRAR error", p.advisory())
 	}
 	p.fail(t, 332, "FAILURE/PAR", nil)
-	if !p.blocked(t, 332) {
-		t.Fatal("a missing unpacker stopped a PAR failure from blocklisting")
+	p.fail(t, 333, "FAILURE/HEALTH", nil)
+	p.fail(t, 334, "FAILURE/UNPACK", unrarCRCLog)
+	if !p.blocked(t, 332) || !p.blocked(t, 333) || !p.blocked(t, 334) {
+		t.Fatal("a missing UnRAR held back a PAR, HEALTH or CRC evidenced failure")
+	}
+	if n := p.nzb.sysinfoCalls(); n != 1 {
+		t.Fatalf("sysinfo calls = %d, want 1 (lazy, cached, only for evidence free unpack failures)", n)
+	}
+}
+
+func TestNZBGetUnpackFailure_Missing7ZipAloneStillBlocklists(t *testing.T) {
+	p := newPollFixture(t)
+	p.nzb.setTools([]nzbget.Tool{{Name: "7-Zip", Path: ""}, {Name: "UnRAR", Path: "/usr/bin/unrar"}})
+	p.fail(t, 341, "FAILURE/UNPACK", nil)
+	if !p.blocked(t, 341) {
+		t.Fatal("a missing 7-Zip alone stopped an unpack failure from blocklisting")
+	}
+	if a := p.advisory(); a != "" {
+		t.Fatalf("client health = %q, want nothing for a missing 7-Zip alone", a)
+	}
+}
+
+// TestNZBGetUnpackFailure_CRCStormAllBlocklisted is the reporter's real case
+// in #3024: a sweep's worth of genuinely broken RAR releases, each with CRC
+// errors in its log. Evidence beats the count, so all six are blocklisted.
+func TestNZBGetUnpackFailure_CRCStormAllBlocklisted(t *testing.T) {
+	p := newPollFixture(t)
+	var items []nzbget.HistoryItem
+	logs := map[int][]nzbget.LogEntry{}
+	for i := 351; i <= 356; i++ {
+		p.addDownload(t, p.ctx, p.client, fmt.Sprintf("guid-%d", i), fmt.Sprint(i), nil)
+		items = append(items, nzbget.HistoryItem{NZBID: i, Status: "FAILURE/UNPACK"})
+		logs[i] = unrarCRCLog
+	}
+	p.nzb.set(items, logs)
+	p.scanner.checkNZBGetDownloads(p.ctx, p.client)
+	for i := 351; i <= 356; i++ {
+		if !p.blocked(t, i) {
+			t.Errorf("release %d with a CRC error in its log was not blocklisted", i)
+		}
+	}
+	if a := p.advisory(); a != "" {
+		t.Fatalf("client health = %q, want no paused blocklisting for broken releases", a)
 	}
 }

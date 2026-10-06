@@ -130,7 +130,17 @@ func (h *DownloadClientHandler) forgetPausedBlocklisting(clientID int64) {
 		h.resetContentBreaker(clientID)
 	}
 	if h.health != nil {
-		h.health.ClearAdvisory(clientID)
+		h.health.ClearAdvisory(clientID, downloader.AdvisoryBlocklist)
+	}
+}
+
+// forgetClient drops everything kept about a client that was disabled or
+// deleted: the importer's breaker, every advisory and the cached NZBGet
+// unpacker check.
+func (h *DownloadClientHandler) forgetClient(clientID int64) {
+	h.forgetPausedBlocklisting(clientID)
+	if h.health != nil {
+		h.health.ForgetClient(clientID)
 	}
 }
 
@@ -392,7 +402,7 @@ func (h *DownloadClientHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if h.health != nil {
 		h.health.Delete(id)
 	}
-	h.forgetPausedBlocklisting(id)
+	h.forgetClient(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -537,7 +547,7 @@ func (h *DownloadClientHandler) refreshClientHealthAsync(client models.DownloadC
 	}
 	if !client.Enabled {
 		h.health.Delete(client.ID)
-		h.forgetPausedBlocklisting(client.ID)
+		h.forgetClient(client.ID)
 		return
 	}
 	h.health.Set(client.ID, downloader.CheckingHealth())
@@ -548,6 +558,9 @@ func (h *DownloadClientHandler) refreshClientHealthAsync(client models.DownloadC
 		ctx, cancel := context.WithTimeout(h.bgCtx(), 15*time.Second)
 		defer cancel()
 		h.health.Set(client.ID, downloader.CheckDownloadClientHealth(ctx, &client, h.downloadDir, h.audiobookDownloadDir, h.downloadPathRemap))
+		// Create and edit are when an NZBGet's unpackers are worth asking
+		// about; the periodic probe never does (see NZBGetUnpackers).
+		h.health.NZBGetUnpackers(ctx, &client, true)
 	}()
 }
 
@@ -557,10 +570,11 @@ func (h *DownloadClientHandler) refreshClientHealth(ctx context.Context, client 
 	}
 	if !client.Enabled {
 		h.health.Delete(client.ID)
-		h.forgetPausedBlocklisting(client.ID)
+		h.forgetClient(client.ID)
 		return nil
 	}
 	h.health.Set(client.ID, downloader.CheckDownloadClientHealth(ctx, client, h.downloadDir, h.audiobookDownloadDir, h.downloadPathRemap))
+	h.health.NZBGetUnpackers(ctx, client, true)
 	// Return what the store now shows, not the raw probe: the store also
 	// carries the importer's paused blocklisting advisory (#3024), and the
 	// UI replaces the client's health with this answer.

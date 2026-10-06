@@ -55,6 +55,17 @@ func TestClassifyFailureLog(t *testing.T) {
 		{"par health skip", entries("Skipping par-check for Book due to health 41.2% below critical 85.0%"), EvidenceContent},
 		{"renamed archives", entries("Could not unpack Book due to renamed archive files"), EvidenceContent},
 		{"no par files is not a host fault", entries("Could not start par-check for Book. Could not find any par-files"), EvidenceUnknown},
+		{"7z missing volume", entries("7-Zip: ERROR: Missing volume : book.7z.002", "7-Zip error code: 2"), EvidenceContent},
+		{"unrar 5 checksum error", entries("Unrar: book.epub             - checksum error", "Unrar error code: 3"), EvidenceContent},
+		{"7z command unparsable", entries("Could not start 7-Zip, failed to parse command line: \"7z"), EvidenceHost},
+		{"7z missing", entries("7-Zip: Could not start /usr/bin/7z: No such file or directory"), EvidenceHost},
+
+		// A post processing script that will not start is not the unpacker:
+		// NZBGet logs "Could not start" for every program, and scripts run on
+		// failed jobs too (#3024 review).
+		{"broken script alone", entries("Could not start /scripts/Notify.py: Permission denied"), EvidenceUnknown},
+		{"script prefix alone", entries("Notify: Could not start /scripts/Notify.py: No such file or directory"), EvidenceUnknown},
+		{"broken script plus crc", entries("Unrar: a.epub - CRC failed", "Notify: Could not start /scripts/Notify.py: No such file or directory"), EvidenceContent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

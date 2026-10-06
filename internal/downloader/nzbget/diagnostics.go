@@ -112,6 +112,10 @@ var (
 		// unrar: the conditions UnpackController cancels on, and volumes.
 		" - CRC failed",
 		" - checksum failed",
+		// unrar 5 and later word a file CRC error this way (MCRCFailed in
+		// unrar's loclang.hpp). NZBGet does not cancel on it, so unrar
+		// finishes and also exits with code 3, matched below.
+		" - checksum error",
 		" : packed data CRC failed in volume",
 		" : packed data checksum error in volume",
 		"You need to start extraction from a previous volume",
@@ -127,6 +131,7 @@ var (
 		"Headers Error",
 		"Can not open the file as archive",
 		"Unexpected end of data",
+		"Missing volume",
 		// Obfuscated archives NZBGet could not put back together.
 		"due to renamed archive files",
 		// par2 verdicts about the data (Par2CmdLineErrStr 2, 4 and 5).
@@ -142,6 +147,25 @@ var (
 	sevenZipExitMarker = "7-Zip error code: "
 )
 
+// unpackerCouldNotStart reports whether a log line says unrar or 7-Zip could
+// not be run at all. NZBGet writes "Could not start <program>" for every
+// program it runs, post processing scripts included, and scripts run on
+// failed jobs too, so only the unpacker's own lines count: the exec failure
+// arrives through the unpacker's log prefix ("Unrar: Could not start
+// /usr/bin/unrar: No such file or directory", from the child in
+// ScriptController, which also covers the Windows CreateProcess message),
+// and an unparsable command line is logged before the prefix is set
+// ("Could not start unrar, failed to parse command line",
+// UnpackController::PrepareCmdParams).
+func unpackerCouldNotStart(text string) bool {
+	for _, p := range []string{"Unrar: Could not start ", "7-Zip: Could not start ", "Could not start unrar", "Could not start 7-Zip"} {
+		if strings.HasPrefix(text, p) {
+			return true
+		}
+	}
+	return false
+}
+
 // ClassifyFailureLog reads a failed job's log for the cause. A host marker
 // wins over a content marker, because a broken host can make a good archive
 // look damaged but not the other way round, and the cost of a wrong
@@ -151,13 +175,7 @@ func ClassifyFailureLog(entries []LogEntry) (evidence FailureEvidence, detail st
 	var contentLine, sevenZipExit string
 	for _, e := range entries {
 		text := e.Text
-		// The unpacker could not be run at all: exec failed ("Unrar: Could
-		// not start /usr/bin/unrar: No such file or directory", from the
-		// child in ScriptController) or its command line did not parse
-		// ("Could not start unrar, failed to parse command line"). The
-		// par checker's "Could not start par-check for X. Could not find any
-		// par-files" is about the release and is excluded.
-		if strings.Contains(text, "Could not start ") && !strings.Contains(text, "Could not start par-check") {
+		if unpackerCouldNotStart(text) {
 			return EvidenceHost, text
 		}
 		for _, m := range hostFaultMarkers {

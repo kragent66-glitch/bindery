@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -27,8 +28,9 @@ import (
 //  1. The job's own log (nzbget.ClassifyFailureLog). A host fault line holds
 //     the blocklist back and opens the breaker for that status; a content
 //     line (a CRC error, a missing volume, too little par data) blocklists.
-//  2. For FAILURE/UNPACK, NZBGet's sysinfo, via the client's health: while
-//     an unpacker is missing nothing is blocklisted for that status.
+//  2. For FAILURE/UNPACK only, NZBGet's sysinfo, asked lazily and cached
+//     (HealthStore.NZBGetUnpackers): while UnRAR is missing nothing is
+//     blocklisted for that status.
 //  3. The breaker below, which counts failures that had no evidence.
 //
 // The breaker is per client and per status, so an unpack problem never stops
@@ -192,7 +194,7 @@ func (s *Scanner) WithClientHealth(store *downloader.HealthStore) *Scanner {
 // disabled.
 func (s *Scanner) ResetContentBreaker(clientID int64) {
 	s.contentBreaker.reset(clientID)
-	s.clientHealth.ClearAdvisory(clientID)
+	s.clientHealth.ClearAdvisory(clientID, downloader.AdvisoryBlocklist)
 }
 
 // syncBreakerAdvisory publishes the client's open breakers on its health, or
@@ -200,20 +202,13 @@ func (s *Scanner) ResetContentBreaker(clientID int64) {
 func (s *Scanner) syncBreakerAdvisory(client *models.DownloadClient) {
 	reasons := s.contentBreaker.openReasons(client.ID)
 	if len(reasons) == 0 {
-		s.clientHealth.ClearAdvisory(client.ID)
+		s.clientHealth.ClearAdvisory(client.ID, downloader.AdvisoryBlocklist)
 		return
 	}
 	msg := "Automatic blocklisting is paused for some failures, because they look like a problem with the download client rather than the releases (" +
 		strings.Join(reasons, "; ") +
 		"). Check its unrar and 7-Zip, free space and folder permissions. Failed downloads are retried as usual; blocklisting resumes once the client completes that step again"
-	s.clientHealth.SetAdvisory(client.ID, models.DownloadClientHealth{Status: downloader.HealthError, Message: msg})
-}
-
-func (s *Scanner) missingUnpackers(clientID int64) []string {
-	if h := s.clientHealth.Get(clientID); h != nil {
-		return h.MissingUnpackers
-	}
-	return nil
+	s.clientHealth.SetAdvisory(client.ID, downloader.AdvisoryBlocklist, models.DownloadClientHealth{Status: downloader.HealthError, Message: msg})
 }
 
 // handleNZBGetContentFailure decides whether a release NZBGet failed with a
@@ -250,12 +245,14 @@ func (s *Scanner) handleNZBGetContentFailure(ctx context.Context, client *models
 		return
 	}
 
-	if status == "FAILURE/UNPACK" {
-		if missing := s.missingUnpackers(client.ID); len(missing) > 0 {
-			slog.Info("download failed: not blocklisting an unpack failure while NZBGet reports a missing unpacker",
-				"client", client.Name, "title", dl.Title, "missing", strings.Join(missing, ", "))
-			return
-		}
+	// Only an UNPACK failure with nothing in its log asks NZBGet's sysinfo,
+	// and the answer is cached (HealthStore.NZBGetUnpackers). A missing 7-Zip
+	// alone does not hold anything back: NZBGet's default SevenZipCmd is
+	// often absent, and a RAR release that failed is still the release.
+	if status == "FAILURE/UNPACK" && slices.Contains(s.clientHealth.NZBGetUnpackers(ctx, client, false), "UnRAR") {
+		slog.Info("download failed: not blocklisting an unpack failure while NZBGet cannot find UnRAR",
+			"client", client.Name, "title", dl.Title)
+		return
 	}
 
 	allow, tripped, distinct := s.contentBreaker.recordFailure(client.ID, dl.GUID, status)

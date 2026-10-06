@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -45,32 +46,53 @@ const notifierEventHealth = "health"
 type HealthStore struct {
 	mu   sync.RWMutex
 	byID map[int64]models.DownloadClientHealth
-	// advisory holds a problem found while polling the client rather than by
-	// the path probe, such as the importer pausing automatic blocklisting
-	// (#3024). It lives apart from byID because the 15 minute probe rewrites
-	// byID wholesale and would otherwise erase it.
-	advisory map[int64]models.DownloadClientHealth
+	// advisory holds problems found outside the path probe, by source: the
+	// importer pausing automatic blocklisting (AdvisoryBlocklist) and NZBGet
+	// missing UnRAR (AdvisoryUnpackers), both #3024. They live apart from
+	// byID because the 15 minute probe rewrites byID wholesale and would
+	// otherwise erase them.
+	advisory map[int64]map[string]models.DownloadClientHealth
 	notif    eventNotifier
+
+	// unpackers caches what NZBGet's sysinfo said (see NZBGetUnpackers).
+	unpackersMu sync.Mutex
+	unpackers   map[int64]*unpackerEntry
+	// sysinfo and now are test seams; nil means the real NZBGet call and
+	// time.Now.
+	sysinfo func(ctx context.Context, client *models.DownloadClient) ([]string, error)
+	now     func() time.Time
 }
+
+// Advisory sources.
+const (
+	AdvisoryBlocklist = "blocklist"
+	AdvisoryUnpackers = "unpackers"
+)
 
 func NewHealthStore() *HealthStore {
 	return &HealthStore{
-		byID:     make(map[int64]models.DownloadClientHealth),
-		advisory: make(map[int64]models.DownloadClientHealth),
+		byID:      make(map[int64]models.DownloadClientHealth),
+		advisory:  make(map[int64]map[string]models.DownloadClientHealth),
+		unpackers: make(map[int64]*unpackerEntry),
 	}
 }
 
-// SetAdvisory records a polling problem for the client. It is shown in place
-// of a passing path check, or after a failing one, until ClearAdvisory. The
-// first advisory for a client publishes the health event, like an entry into
-// HealthError does in Set.
-func (s *HealthStore) SetAdvisory(id int64, health models.DownloadClientHealth) {
+// SetAdvisory records a problem for the client from one source. It is shown
+// in place of a passing path check, or after a failing one, until
+// ClearAdvisory. The first advisory from a source publishes the health
+// event, like an entry into HealthError does in Set.
+func (s *HealthStore) SetAdvisory(id int64, source string, health models.DownloadClientHealth) {
 	if s == nil || id == 0 {
 		return
 	}
 	s.mu.Lock()
-	_, had := s.advisory[id]
-	s.advisory[id] = health
+	bySource := s.advisory[id]
+	if bySource == nil {
+		bySource = make(map[string]models.DownloadClientHealth)
+		s.advisory[id] = bySource
+	}
+	_, had := bySource[source]
+	bySource[source] = health
 	notif := s.notif
 	s.mu.Unlock()
 	if had || notif == nil {
@@ -83,14 +105,33 @@ func (s *HealthStore) SetAdvisory(id int64, health models.DownloadClientHealth) 
 	})
 }
 
-// ClearAdvisory removes the polling problem SetAdvisory recorded, if any.
-func (s *HealthStore) ClearAdvisory(id int64) {
+// ClearAdvisory removes one source's advisory, if any.
+func (s *HealthStore) ClearAdvisory(id int64, source string) {
 	if s == nil || id == 0 {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if bySource := s.advisory[id]; bySource != nil {
+		delete(bySource, source)
+		if len(bySource) == 0 {
+			delete(s.advisory, id)
+		}
+	}
+}
+
+// ForgetClient drops every advisory and the cached unpacker check for a
+// client that was disabled or deleted.
+func (s *HealthStore) ForgetClient(id int64) {
+	if s == nil || id == 0 {
+		return
+	}
+	s.mu.Lock()
 	delete(s.advisory, id)
+	s.mu.Unlock()
+	s.unpackersMu.Lock()
+	delete(s.unpackers, id)
+	s.unpackersMu.Unlock()
 }
 
 // WithNotifier attaches a webhook event notifier so transitions into
@@ -113,11 +154,6 @@ func (s *HealthStore) Set(id int64, health models.DownloadClientHealth) {
 	}
 	s.mu.Lock()
 	prev, hadPrev := s.byID[id]
-	if hadPrev && health.Status == HealthChecking && health.MissingUnpackers == nil {
-		// The placeholder written before every probe must not make the
-		// importer forget a missing unpacker for the seconds the probe runs.
-		health.MissingUnpackers = prev.MissingUnpackers
-	}
 	s.byID[id] = health
 	notif := s.notif
 	s.mu.Unlock()
@@ -162,18 +198,26 @@ func (s *HealthStore) Get(id int64) *models.DownloadClientHealth {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	health, ok := s.byID[id]
-	adv, hasAdv := s.advisory[id]
-	switch {
-	case hasAdv && ok && health.Status == HealthError:
-		health.Message = strings.TrimRight(health.Message, ". ") + ". " + adv.Message
+	bySource := s.advisory[id]
+	if len(bySource) == 0 {
+		if !ok {
+			return nil
+		}
 		return &health
-	case hasAdv:
-		adv.MissingUnpackers = health.MissingUnpackers
-		return &adv
-	case !ok:
-		return nil
 	}
-	return &health
+	sources := make([]string, 0, len(bySource))
+	for src := range bySource {
+		sources = append(sources, src)
+	}
+	sort.Strings(sources)
+	msgs := make([]string, 0, len(sources)+1)
+	if ok && health.Status == HealthError {
+		msgs = append(msgs, strings.TrimRight(health.Message, ". "))
+	}
+	for _, src := range sources {
+		msgs = append(msgs, strings.TrimRight(bySource[src].Message, ". "))
+	}
+	return &models.DownloadClientHealth{Status: HealthError, Message: strings.Join(msgs, ". ")}
 }
 
 func (s *HealthStore) Attach(client *models.DownloadClient) {
@@ -251,39 +295,7 @@ func CheckDownloadClientHealth(ctx context.Context, client *models.DownloadClien
 	if client.Type == "qbittorrent" {
 		return checkQbittorrentCategoryPath(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
 	}
-	health := checkCompletedPath(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
-	if client.Type == "nzbget" {
-		health = withNZBGetUnpackers(ctx, client, health)
-	}
-	return health
-}
-
-// withNZBGetUnpackers adds what NZBGet's sysinfo says about its unpackers to
-// a path check result (#3024). NZBGet reports an unrar it cannot run as
-// FAILURE/UNPACK, the same status as a broken archive, so a missing unpacker
-// is both something to tell the user and a reason for the importer not to
-// blocklist on that status. NZBGet before 24 has no sysinfo; the call fails
-// and the result is returned unchanged.
-func withNZBGetUnpackers(ctx context.Context, client *models.DownloadClient, health models.DownloadClientHealth) models.DownloadClientHealth {
-	info, err := NzbgetFor(client).SysInfo(ctx)
-	if err != nil {
-		return health
-	}
-	missing := info.MissingUnpackers()
-	if len(missing) == 0 {
-		return health
-	}
-	health.MissingUnpackers = missing
-	msg := fmt.Sprintf("NZBGet cannot find %s, so it cannot unpack archives that need it. "+
-		"Check UnrarCmd and SevenZipCmd in NZBGet's settings. Until it can, Bindery does not blocklist releases NZBGet fails to unpack",
-		strings.Join(missing, " or "))
-	if health.Status == HealthError {
-		health.Message = strings.TrimRight(health.Message, ". ") + ". " + msg
-	} else {
-		health.Status = HealthError
-		health.Message = msg
-	}
-	return health
+	return checkCompletedPath(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
 }
 
 // checkCompletedPath is the shared visibility check for every client type
