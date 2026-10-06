@@ -113,6 +113,11 @@ func (s *HealthStore) Set(id int64, health models.DownloadClientHealth) {
 	}
 	s.mu.Lock()
 	prev, hadPrev := s.byID[id]
+	if hadPrev && health.Status == HealthChecking && health.MissingUnpackers == nil {
+		// The placeholder written before every probe must not make the
+		// importer forget a missing unpacker for the seconds the probe runs.
+		health.MissingUnpackers = prev.MissingUnpackers
+	}
 	s.byID[id] = health
 	notif := s.notif
 	s.mu.Unlock()
@@ -163,6 +168,7 @@ func (s *HealthStore) Get(id int64) *models.DownloadClientHealth {
 		health.Message = strings.TrimRight(health.Message, ". ") + ". " + adv.Message
 		return &health
 	case hasAdv:
+		adv.MissingUnpackers = health.MissingUnpackers
 		return &adv
 	case !ok:
 		return nil
@@ -245,7 +251,44 @@ func CheckDownloadClientHealth(ctx context.Context, client *models.DownloadClien
 	if client.Type == "qbittorrent" {
 		return checkQbittorrentCategoryPath(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
 	}
+	health := checkCompletedPath(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
+	if client.Type == "nzbget" {
+		health = withNZBGetUnpackers(ctx, client, health)
+	}
+	return health
+}
 
+// withNZBGetUnpackers adds what NZBGet's sysinfo says about its unpackers to
+// a path check result (#3024). NZBGet reports an unrar it cannot run as
+// FAILURE/UNPACK, the same status as a broken archive, so a missing unpacker
+// is both something to tell the user and a reason for the importer not to
+// blocklist on that status. NZBGet before 24 has no sysinfo; the call fails
+// and the result is returned unchanged.
+func withNZBGetUnpackers(ctx context.Context, client *models.DownloadClient, health models.DownloadClientHealth) models.DownloadClientHealth {
+	info, err := NzbgetFor(client).SysInfo(ctx)
+	if err != nil {
+		return health
+	}
+	missing := info.MissingUnpackers()
+	if len(missing) == 0 {
+		return health
+	}
+	health.MissingUnpackers = missing
+	msg := fmt.Sprintf("NZBGet cannot find %s, so it cannot unpack archives that need it. "+
+		"Check UnrarCmd and SevenZipCmd in NZBGet's settings. Until it can, Bindery does not blocklist releases NZBGet fails to unpack",
+		strings.Join(missing, " or "))
+	if health.Status == HealthError {
+		health.Message = strings.TrimRight(health.Message, ". ") + ". " + msg
+	} else {
+		health.Status = HealthError
+		health.Message = msg
+	}
+	return health
+}
+
+// checkCompletedPath is the shared visibility check for every client type
+// but qBittorrent.
+func checkCompletedPath(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir, globalRemap string) models.DownloadClientHealth {
 	vis := CheckCompletedPathVisibility(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
 	switch vis.Status {
 	case PathVisible:

@@ -487,9 +487,12 @@ func IsFailure(status string) bool {
 // move out of the _unpack folder all report FAILURE/UNPACK; a par2 file or
 // memory error during repair reports FAILURE/PAR; and a failed rename of the
 // NZB in NzbDir (permissions) reports FAILURE/SCAN. Those fail every job, not
-// one release, so a caller that blocklists on this answer must also stop when
-// many different releases fail the same way from one client (the importer's
-// contentFailureBreaker does).
+// one release, so for these three NeedsLogEvidence is true: a caller must read
+// the job's log first (ClassifyFailureLog) and, when it says nothing, hold
+// back once many different releases fail the same way (the importer's
+// contentFailureBreaker). FAILURE/HEALTH and FAILURE/BAD have no such host
+// cause: missing articles say nothing about NZBGet's own machine, and a mark is a
+// deliberate verdict, so they always count.
 //
 // Everything else is left to the #2710 cooldown: FAILURE/MOVE is the disk or
 // permissions on the client, FAILURE/FETCH a URL fetch, DELETED/MANUAL a
@@ -500,6 +503,34 @@ func IsContentFailure(status string) bool {
 	switch status {
 	case "FAILURE/PAR", "FAILURE/UNPACK", "FAILURE/HEALTH", "FAILURE/SCAN", "FAILURE/BAD":
 		return true
+	}
+	return false
+}
+
+// NeedsLogEvidence reports whether a content status is one NZBGet also uses
+// for faults of its own machine, so it must not blocklist on the status
+// alone (see IsContentFailure).
+func NeedsLogEvidence(status string) bool {
+	switch status {
+	case "FAILURE/PAR", "FAILURE/UNPACK", "FAILURE/SCAN":
+		return true
+	}
+	return false
+}
+
+// StageSucceeded reports whether a history item shows the stage behind a
+// NeedsLogEvidence status completing: UnpackStatus SUCCESS for FAILURE/UNPACK,
+// ParStatus SUCCESS for FAILURE/PAR, and for FAILURE/SCAN any job that got
+// past scanning to a SUCCESS status. A plain epub that never touched the
+// unpacker reports UnpackStatus NONE and proves nothing about unrar.
+func StageSucceeded(status string, item HistoryItem) bool {
+	switch status {
+	case "FAILURE/UNPACK":
+		return item.UnpackStatus == "SUCCESS"
+	case "FAILURE/PAR":
+		return item.ParStatus == "SUCCESS"
+	case "FAILURE/SCAN":
+		return IsSuccess(item.Status)
 	}
 	return false
 }

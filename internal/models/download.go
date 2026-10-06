@@ -46,6 +46,11 @@ type DownloadClient struct {
 type DownloadClientHealth struct {
 	Status  string `json:"status"`
 	Message string `json:"message"`
+	// MissingUnpackers names the unpackers NZBGet's sysinfo reports it cannot
+	// find ("UnRAR", "7-Zip"). The importer reads it to hold back blocklisting
+	// an unpack failure that has no other evidence (#3024). Empty for other
+	// client types and for NZBGet before 24, which has no sysinfo.
+	MissingUnpackers []string `json:"missingUnpackers,omitempty"`
 }
 
 type Download struct {

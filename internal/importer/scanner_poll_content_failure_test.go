@@ -235,34 +235,47 @@ func TestCheckNZBGetDownloads_ContentFailureOtherBookRow(t *testing.T) {
 	}
 }
 
-// TestCheckNZBGetDownloads_ContentFailureStorm is the broken client case: an
-// unrar NZBGet cannot run fails every RAR job with FAILURE/UNPACK. Four
-// different releases failing that way with nothing completing must not
-// blocklist all four; the breaker stops at contentBreakerDistinct-1.
+// TestCheckNZBGetDownloads_ContentFailureStorm covers a sweep's worth of
+// failures arriving at once, the reporter's shape in #3024 (about 36 a sweep,
+// mostly FAILURE/HEALTH on an old backlog). Statuses NZBGet never uses for its
+// own faults blocklist every one. FAILURE/UNPACK with no log to go on is the
+// broken unrar case, and the breaker stops it at contentBreakerDistinct-1.
 func TestCheckNZBGetDownloads_ContentFailureStorm(t *testing.T) {
-	ctx := context.Background()
-	var items []nzbget.HistoryItem
-	for i := 1; i <= 4; i++ {
-		items = append(items, nzbget.HistoryItem{NZBID: 100 + i, NZBName: fmt.Sprintf("Book %d", i), Status: "FAILURE/UNPACK"})
+	cases := []struct {
+		status string
+		want   int
+	}{
+		{"FAILURE/HEALTH", 6},
+		{"FAILURE/BAD", 6},
+		{"FAILURE/UNPACK", 2},
 	}
-	srv := httptest.NewServer(nzbgetHandler(t, items, nil))
-	defer srv.Close()
+	for _, tc := range cases {
+		t.Run(tc.status, func(t *testing.T) {
+			ctx := context.Background()
+			var items []nzbget.HistoryItem
+			for i := 1; i <= 6; i++ {
+				items = append(items, nzbget.HistoryItem{NZBID: 100 + i, NZBName: fmt.Sprintf("Book %d", i), Status: tc.status})
+			}
+			srv := httptest.NewServer(nzbgetHandler(t, items, nil))
+			defer srv.Close()
 
-	f := newContentFailureFixture(t)
-	client := nzbgetClient(t, ctx, f.clients, srv.URL)
-	for i := 1; i <= 4; i++ {
-		f.addDownload(t, ctx, client, fmt.Sprintf("guid-storm-%d", i), fmt.Sprint(100+i), nil)
-	}
+			f := newContentFailureFixture(t)
+			client := nzbgetClient(t, ctx, f.clients, srv.URL)
+			for i := 1; i <= 6; i++ {
+				f.addDownload(t, ctx, client, fmt.Sprintf("guid-storm-%d", i), fmt.Sprint(100+i), nil)
+			}
 
-	f.scanner.checkNZBGetDownloads(ctx, client)
+			f.scanner.checkNZBGetDownloads(ctx, client)
 
-	if got := f.entries(t, ctx); len(got) != 2 {
-		t.Fatalf("blocklist has %d entries after 4 releases failed the same way, want 2 (the breaker must stop the rest)", len(got))
-	}
-	for i := 1; i <= 4; i++ {
-		dl, err := f.downloads.GetByGUID(ctx, fmt.Sprintf("guid-storm-%d", i))
-		if err != nil || dl == nil || dl.Status != models.StateFailed {
-			t.Errorf("download %d not failed: %+v %v", i, dl, err)
-		}
+			if got := f.entries(t, ctx); len(got) != tc.want {
+				t.Fatalf("blocklist has %d entries after 6 releases failed with %s, want %d", len(got), tc.status, tc.want)
+			}
+			for i := 1; i <= 6; i++ {
+				dl, err := f.downloads.GetByGUID(ctx, fmt.Sprintf("guid-storm-%d", i))
+				if err != nil || dl == nil || dl.Status != models.StateFailed {
+					t.Errorf("download %d not failed: %+v %v", i, dl, err)
+				}
+			}
+		})
 	}
 }

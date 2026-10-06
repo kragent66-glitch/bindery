@@ -2,54 +2,133 @@ package importer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/vavallee/bindery/internal/downloader"
 	"github.com/vavallee/bindery/internal/downloader/nzbget"
+	"github.com/vavallee/bindery/internal/models"
+)
+
+// fakeNZBGet answers history, loadlog and editqueue, with history and logs
+// that a test can change between polls.
+type fakeNZBGet struct {
+	mu    sync.Mutex
+	items []nzbget.HistoryItem
+	logs  map[int][]nzbget.LogEntry
+}
+
+func (f *fakeNZBGet) set(items []nzbget.HistoryItem, logs map[int][]nzbget.LogEntry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.items, f.logs = items, logs
+}
+
+func (f *fakeNZBGet) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	var req struct {
+		Method string            `json:"method"`
+		Params []json.RawMessage `json:"params"`
+	}
+	_ = json.Unmarshal(body, &req)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch req.Method {
+	case "history":
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": f.items})
+	case "loadlog":
+		var id int
+		if len(req.Params) > 0 {
+			_ = json.Unmarshal(req.Params[0], &id)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": f.logs[id]})
+	case "editqueue":
+		_ = json.NewEncoder(w).Encode(map[string]any{"result": true})
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func logLines(lines ...string) []nzbget.LogEntry {
+	out := make([]nzbget.LogEntry, len(lines))
+	for i, l := range lines {
+		out[i] = nzbget.LogEntry{ID: i + 1, Kind: "INFO", Text: l}
+	}
+	return out
+}
+
+// Log lines as NZBGet writes them (UnpackController.cpp, ScriptController.cpp).
+var (
+	unrarMissingLog = logLines(
+		"Unpacking Broken Book",
+		"Unrar: Could not start /usr/bin/unrar: No such file or directory",
+		"Unrar failed",
+	)
+	unrarCRCLog = logLines(
+		"Unpacking Broken Book",
+		"Unrar: Extracting  book.epub",
+		"Unrar: book.epub - CRC failed",
+		"Cancelling unrar due to errors",
+		"Unrar error code: 3",
+		"Unrar failed",
+	)
 )
 
 func TestContentFailureBreaker(t *testing.T) {
 	now := time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC)
 	b := &contentFailureBreaker{now: func() time.Time { return now }}
 
-	// A single bad release, and the same release failing again, stay allowed.
+	// One release failing again and again stays allowed.
 	for i := 0; i < 3; i++ {
-		if allow, _, _ := b.recordFailure(1, "guid-a", "FAILURE/PAR"); !allow {
+		if allow, _, _ := b.recordFailure(1, "guid-a", "FAILURE/UNPACK"); !allow {
 			t.Fatalf("repeat failure %d of one release was refused", i)
 		}
 	}
-	// Different kinds do not add up.
-	if allow, _, _ := b.recordFailure(1, "guid-b", "FAILURE/HEALTH"); !allow {
-		t.Fatal("a second release with a different status was refused")
-	}
-	// Other clients are independent.
-	if allow, _, _ := b.recordFailure(2, "guid-c", "FAILURE/PAR"); !allow {
-		t.Fatal("another client's failure was refused")
-	}
-	// The second distinct release with FAILURE/PAR is still allowed, the third trips.
-	if allow, _, _ := b.recordFailure(1, "guid-d", "FAILURE/PAR"); !allow {
+	// The second distinct release is allowed, the third trips.
+	if allow, _, _ := b.recordFailure(1, "guid-b", "FAILURE/UNPACK"); !allow {
 		t.Fatal("second distinct release refused")
 	}
-	allow, tripped, distinct := b.recordFailure(1, "guid-e", "FAILURE/PAR")
+	allow, tripped, distinct := b.recordFailure(1, "guid-c", "FAILURE/UNPACK")
 	if allow || !tripped || distinct != 3 {
 		t.Fatalf("third distinct release: allow=%v tripped=%v distinct=%d, want false true 3", allow, tripped, distinct)
 	}
-	// Open: refused without tripping again, for any kind, even past the window.
+	// Per kind: an UNPACK trip leaves PAR alone, and per client.
+	if allow, _, _ := b.recordFailure(1, "guid-d", "FAILURE/PAR"); !allow {
+		t.Fatal("an UNPACK trip refused a PAR failure")
+	}
+	if allow, _, _ := b.recordFailure(2, "guid-e", "FAILURE/UNPACK"); !allow {
+		t.Fatal("another client's failure was refused")
+	}
+	// Stays open past the window.
 	now = now.Add(5 * time.Hour)
-	if allow, tripped, _ := b.recordFailure(1, "guid-f", "FAILURE/HEALTH"); allow || tripped {
+	if allow, tripped, _ := b.recordFailure(1, "guid-f", "FAILURE/UNPACK"); allow || tripped {
 		t.Fatalf("open breaker: allow=%v tripped=%v, want false false", allow, tripped)
 	}
-	// A completed download closes it.
-	if !b.recordSuccess(1) {
-		t.Fatal("recordSuccess did not report the open breaker")
+	// Only the same stage closes it.
+	if b.stageSucceeded(1, "FAILURE/PAR") {
+		t.Fatal("a PAR success reported closing an open breaker")
 	}
-	if allow, _, _ := b.recordFailure(1, "guid-g", "FAILURE/PAR"); !allow {
-		t.Fatal("failure after a success was refused")
+	if allow, _, _ := b.recordFailure(1, "guid-g", "FAILURE/UNPACK"); allow {
+		t.Fatal("a PAR success closed the UNPACK breaker")
+	}
+	if !b.stageSucceeded(1, "FAILURE/UNPACK") {
+		t.Fatal("an UNPACK success did not report the open breaker")
+	}
+	if allow, _, _ := b.recordFailure(1, "guid-h", "FAILURE/UNPACK"); !allow {
+		t.Fatal("failure after the stage succeeded was refused")
+	}
+	// reset forgets a client.
+	b.open(1, "FAILURE/SCAN", "test")
+	b.reset(1)
+	if len(b.openReasons(1)) != 0 {
+		t.Fatal("reset left a breaker open")
 	}
 
 	// Failures further apart than the window do not add up.
@@ -62,49 +141,138 @@ func TestContentFailureBreaker(t *testing.T) {
 	}
 }
 
-// TestCheckNZBGetDownloads_ContentFailureBreakerRecovers drives the breaker
-// through the poll path: a storm trips it and reports it on the client's
-// health, a completed download closes it and clears the report, and the next
-// single bad release is blocklisted again.
-func TestCheckNZBGetDownloads_ContentFailureBreakerRecovers(t *testing.T) {
-	ctx := context.Background()
-	var items []nzbget.HistoryItem
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		nzbgetHandler(t, items, nil)(w, r)
-	}))
-	defer srv.Close()
+// pollFixture is a scanner, a fake NZBGet and a health store wired together.
+type pollFixture struct {
+	contentFailureFixture
+	nzb    *fakeNZBGet
+	health *downloader.HealthStore
+	client *models.DownloadClient
+	ctx    context.Context
+}
 
+func newPollFixture(t *testing.T) *pollFixture {
+	t.Helper()
+	fake := &fakeNZBGet{}
+	srv := httptest.NewServer(fake)
+	t.Cleanup(srv.Close)
 	f := newContentFailureFixture(t)
 	health := downloader.NewHealthStore()
 	f.scanner.WithClientHealth(health)
-	client := nzbgetClient(t, ctx, f.clients, srv.URL)
+	ctx := context.Background()
+	return &pollFixture{contentFailureFixture: f, nzb: fake, health: health, client: nzbgetClient(t, ctx, f.clients, srv.URL), ctx: ctx}
+}
 
-	for i := 1; i <= 3; i++ {
-		items = append(items, nzbget.HistoryItem{NZBID: 200 + i, Status: "FAILURE/UNPACK"})
-		f.addDownload(t, ctx, client, fmt.Sprintf("guid-r-%d", i), fmt.Sprint(200+i), nil)
+// fail sends one failed job for a new release through a poll.
+func (p *pollFixture) fail(t *testing.T, nzbID int, status string, log []nzbget.LogEntry) {
+	t.Helper()
+	p.addDownload(t, p.ctx, p.client, fmt.Sprintf("guid-%d", nzbID), fmt.Sprint(nzbID), nil)
+	p.nzb.set([]nzbget.HistoryItem{{NZBID: nzbID, Status: status}}, map[int][]nzbget.LogEntry{nzbID: log})
+	p.scanner.checkNZBGetDownloads(p.ctx, p.client)
+}
+
+// complete sends one completed job through a poll.
+func (p *pollFixture) complete(t *testing.T, nzbID int, item nzbget.HistoryItem) {
+	t.Helper()
+	p.addDownload(t, p.ctx, p.client, fmt.Sprintf("guid-%d", nzbID), fmt.Sprint(nzbID), nil)
+	item.NZBID = nzbID
+	item.DestDir = t.TempDir()
+	p.nzb.set([]nzbget.HistoryItem{item}, nil)
+	p.scanner.checkNZBGetDownloads(p.ctx, p.client)
+}
+
+func (p *pollFixture) blocked(t *testing.T, nzbID int) bool {
+	t.Helper()
+	ok, err := p.blocklist.IsBlocked(p.ctx, fmt.Sprintf("guid-%d", nzbID))
+	if err != nil {
+		t.Fatal(err)
 	}
-	f.scanner.checkNZBGetDownloads(ctx, client)
-	if got := f.entries(t, ctx); len(got) != 2 {
-		t.Fatalf("blocklist has %d entries after the storm, want 2", len(got))
+	return ok
+}
+
+func (p *pollFixture) advisory() string {
+	if h := p.health.Get(p.client.ID); h != nil {
+		return h.Message
 	}
-	h := health.Get(client.ID)
-	if h == nil || h.Status != downloader.HealthError || !strings.Contains(h.Message, "Automatic blocklisting is paused") {
-		t.Fatalf("client health after the storm = %+v, want the paused blocklisting advisory", h)
+	return ""
+}
+
+// TestNZBGetUnpackFailure_HostFaultLogNotBlocklisted: the job log shows unrar
+// could not be started, so the release is not blocklisted, the client's
+// health says why, and later evidence free unpack failures are held back too.
+func TestNZBGetUnpackFailure_HostFaultLogNotBlocklisted(t *testing.T) {
+	p := newPollFixture(t)
+	p.fail(t, 301, "FAILURE/UNPACK", unrarMissingLog)
+	if p.blocked(t, 301) {
+		t.Fatal("an unpack failure whose log shows unrar could not start was blocklisted")
+	}
+	if !strings.Contains(p.advisory(), "Could not start /usr/bin/unrar") {
+		t.Fatalf("client health = %q, want the paused blocklisting advisory naming the log line", p.advisory())
+	}
+	p.fail(t, 302, "FAILURE/UNPACK", nil)
+	if p.blocked(t, 302) {
+		t.Fatal("an evidence free unpack failure was blocklisted after a host fault")
+	}
+	// A different step is not held back.
+	p.fail(t, 303, "FAILURE/PAR", nil)
+	p.fail(t, 304, "FAILURE/HEALTH", nil)
+	if !p.blocked(t, 303) || !p.blocked(t, 304) {
+		t.Fatal("an unpack host fault stopped a PAR or HEALTH failure from blocklisting")
+	}
+}
+
+// TestNZBGetUnpackFailure_CRCLogBlocklisted: a CRC error in the log is the
+// release, and blocklists even while the unpack breaker is open.
+func TestNZBGetUnpackFailure_CRCLogBlocklisted(t *testing.T) {
+	p := newPollFixture(t)
+	p.fail(t, 311, "FAILURE/UNPACK", unrarCRCLog)
+	if !p.blocked(t, 311) {
+		t.Fatal("an unpack failure whose log shows a CRC error was not blocklisted")
+	}
+	p.fail(t, 312, "FAILURE/UNPACK", unrarMissingLog)
+	p.fail(t, 313, "FAILURE/UNPACK", unrarCRCLog)
+	if !p.blocked(t, 313) {
+		t.Fatal("a CRC error was not blocklisted while the breaker was open")
+	}
+}
+
+// TestNZBGetUnpackFailure_OnlyUnpackSuccessCloses: a plain epub completing
+// (SUCCESS/HEALTH, UnpackStatus NONE) never ran unrar and does not close an
+// unpack trip; a job that unpacked does.
+func TestNZBGetUnpackFailure_OnlyUnpackSuccessCloses(t *testing.T) {
+	p := newPollFixture(t)
+	p.fail(t, 321, "FAILURE/UNPACK", unrarMissingLog)
+
+	p.complete(t, 322, nzbget.HistoryItem{Status: "SUCCESS/HEALTH", UnpackStatus: "NONE", ParStatus: "NONE"})
+	if p.advisory() == "" {
+		t.Fatal("a completed epub that never ran unrar cleared the advisory")
+	}
+	p.fail(t, 323, "FAILURE/UNPACK", nil)
+	if p.blocked(t, 323) {
+		t.Fatal("a completed epub that never ran unrar reopened unpack blocklisting")
 	}
 
-	// The client completes a download: the breaker closes and the advisory goes.
-	items = []nzbget.HistoryItem{{NZBID: 210, Status: "SUCCESS/ALL", DestDir: t.TempDir()}}
-	f.addDownload(t, ctx, client, "guid-r-ok", "210", nil)
-	f.scanner.checkNZBGetDownloads(ctx, client)
-	if h := health.Get(client.ID); h != nil {
-		t.Fatalf("client health after a completed download = %+v, want the advisory cleared", h)
+	p.complete(t, 324, nzbget.HistoryItem{Status: "SUCCESS/UNPACK", UnpackStatus: "SUCCESS", ParStatus: "NONE"})
+	if a := p.advisory(); a != "" {
+		t.Fatalf("client health after a successful unpack = %q, want the advisory cleared", a)
 	}
+	p.fail(t, 325, "FAILURE/UNPACK", nil)
+	if !p.blocked(t, 325) {
+		t.Fatal("unpack blocklisting did not resume after a successful unpack")
+	}
+}
 
-	// One bad release now blocklists again.
-	items = []nzbget.HistoryItem{{NZBID: 211, Status: "FAILURE/UNPACK"}}
-	f.addDownload(t, ctx, client, "guid-r-bad", "211", nil)
-	f.scanner.checkNZBGetDownloads(ctx, client)
-	if got := f.entries(t, ctx); len(got) != 3 {
-		t.Fatalf("blocklist has %d entries, want 3: a single bad release after recovery must blocklist", len(got))
+// TestNZBGetUnpackFailure_MissingUnpackerHoldsBack: while the health probe
+// reports a missing unpacker (NZBGet sysinfo), an evidence free unpack
+// failure is not blocklisted.
+func TestNZBGetUnpackFailure_MissingUnpackerHoldsBack(t *testing.T) {
+	p := newPollFixture(t)
+	p.health.Set(p.client.ID, models.DownloadClientHealth{Status: downloader.HealthError, Message: "NZBGet cannot find UnRAR", MissingUnpackers: []string{"UnRAR"}})
+	p.fail(t, 331, "FAILURE/UNPACK", nil)
+	if p.blocked(t, 331) {
+		t.Fatal("an unpack failure was blocklisted while NZBGet reports UnRAR missing")
+	}
+	p.fail(t, 332, "FAILURE/PAR", nil)
+	if !p.blocked(t, 332) {
+		t.Fatal("a missing unpacker stopped a PAR failure from blocklisting")
 	}
 }

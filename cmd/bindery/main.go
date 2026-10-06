@@ -703,6 +703,7 @@ func main() {
 	setupStateHandler := api.NewSetupStateHandler(indexerRepo, dlClientRepo, authorRepo, settingsRepo)
 	dlClientHandler := api.NewDownloadClientHandler(dlClientRepo).
 		WithHealth(downloadHealth).
+		WithContentBreakerReset(importScanner.ResetContentBreaker).
 		WithStoragePaths(cfg.DownloadDir, cfg.AudiobookDownloadDir).
 		WithDownloadPathRemap(cfg.DownloadPathRemap).
 		WithRoots(libraryRoots).
