@@ -2764,7 +2764,8 @@ func largestFileIsVideo(downloadPath string, explicitFiles []string) bool {
 // walked: MediaTypeEbook restricts to libraryDir, MediaTypeAudiobook restricts
 // to audiobookDir (falling back to libraryDir when audiobookDir is unset), and
 // MediaTypeBoth or an empty/unknown value walks both with libraryDir first.
-// Returns the first matching file path, or "" if none is found. Intended to be
+// Returns the best matching file path, or "" when none matches or two files
+// of different titles are too close to call (#2941). Intended to be
 // called before auto-searching so books the user already owns are not
 // re-downloaded.
 func (s *Scanner) FindExisting(ctx context.Context, title, authorName, mediaType string) string {

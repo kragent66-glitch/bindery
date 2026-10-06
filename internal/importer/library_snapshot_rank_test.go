@@ -121,3 +121,54 @@ func TestLibrarySnapshot_SameBookFilesAreNotRivals(t *testing.T) {
 		t.Errorf("formats: got %q, want %q", got, epub)
 	}
 }
+
+// TestLibrarySnapshot_PartialRivalDoesNotWithdrawFile: a rival title that only
+// shares words with the file is no evidence the file is that book's. A scored
+// rival rule withdrew every one of these, so an owned book was downloaded
+// again; only an exact rival title may withdraw a file (#2941 review).
+func TestLibrarySnapshot_PartialRivalDoesNotWithdrawFile(t *testing.T) {
+	for _, tc := range []struct {
+		name, author, file, wanted string
+		rivals                     []string
+	}{
+		{"subtitle in the file name", "Andy Weir", "Project Hail Mary A Novel - Andy Weir.epub", "Project Hail Mary",
+			[]string{"Proyecto Hail Mary"}},
+		{"subtitle in the wanted title", "Andy Weir", "Project Hail Mary.epub", "Project Hail Mary: A Novel",
+			[]string{"Proyecto Hail Mary"}},
+		{"series prefix in the file name", "Patrick Rothfuss", "The Kingkiller Chronicle 1 The Name of the Wind.epub", "The Name of the Wind",
+			[]string{"The Name of the Wind: 10th Anniversary Deluxe Edition"}},
+		{"series name as the file name", "Brandon Sanderson", "Mistborn.epub", "Mistborn: The Final Empire",
+			[]string{"Mistborn: The Well of Ascension", "Mistborn: The Hero of Ages", "Mistborn: Secret History"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			libDir := t.TempDir()
+			path := filepath.Join(libDir, tc.author, tc.file)
+			writeFile(t, path)
+
+			snap := NewLibrarySnapshot(libDir, "")
+			if got := snap.FindExisting(context.Background(), tc.wanted, tc.author, models.MediaTypeEbook); got != path {
+				t.Fatalf("FindExisting(%q) = %q, want %q", tc.wanted, got, path)
+			}
+			if got := snap.FindExistingAmong(context.Background(), tc.wanted, tc.author, models.MediaTypeEbook, tc.rivals); got != path {
+				t.Errorf("FindExistingAmong(%q, %q) = %q, want %q", tc.wanted, tc.rivals, got, path)
+			}
+		})
+	}
+}
+
+// TestLibrarySnapshot_GroupAnswersWithItsBestMember: files whose titles differ
+// only in digits group as one title, but the group must answer with its best
+// member. "Dune 2.epub" walks before "Dune.epub", and "Dune" must still get
+// its own file.
+func TestLibrarySnapshot_GroupAnswersWithItsBestMember(t *testing.T) {
+	libDir := t.TempDir()
+	dir := filepath.Join(libDir, "Frank Herbert")
+	writeFile(t, filepath.Join(dir, "Dune 2.epub"))
+	exact := filepath.Join(dir, "Dune.epub")
+	writeFile(t, exact)
+
+	snap := NewLibrarySnapshot(libDir, "")
+	if got := snap.FindExisting(context.Background(), "Dune", "Frank Herbert", models.MediaTypeEbook); got != exact {
+		t.Errorf("FindExisting(Dune) = %q, want %q", got, exact)
+	}
+}

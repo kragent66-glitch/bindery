@@ -72,8 +72,7 @@ func NewLibrarySnapshot(libraryDir, audiobookDir string) *LibrarySnapshot {
 }
 
 // findExistingMargin is how far the best file must lead a file of a different
-// title before FindExisting answers with it, and how far the wanted book must
-// lead a rival catalogue title for that file (#2941). It is the library scan's
+// title before FindExisting answers with it (#2941). It is the library scan's
 // title margin, so the add path and the scan settle a near tie the same way:
 // five points on the 0 to 1 Jaro-Winkler scale, overridden only by an exact
 // normalised title that is strictly ahead.
@@ -101,18 +100,17 @@ func (ls *LibrarySnapshot) FindExisting(ctx context.Context, title, authorName, 
 //     ahead, or when it leads by findExistingMargin. A closer pair answers
 //     nothing, so the book stays Wanted and searchable. Files whose titles
 //     differ only in their numbers (an audiobook's tracks, one title in two
-//     formats) are one book, not competitors, and the first of them in walk
-//     order answers as before. A file in a numbered book folder is grouped by
-//     the folder, which is where such a layout keeps the volume (#2810).
-//   - Books for the file. The chosen file is then held to the same rule
-//     against each rival title that also clears the match and the volume
-//     veto. Unless the wanted title has the clear lead, nothing answers,
-//     rather than a lower ranked file: "Harry Potter" must not take "Harry
-//     Potter en het vervloekte kind.epub" when that title is also the
-//     author's. A rival with the wanted title's own normalised form is a
-//     duplicate row, not a competitor, and a file in a numbered book folder
-//     skips this step because the folder has already settled the volume
-//     (#2810).
+//     formats) are one book, not competitors; the best-scoring of them
+//     answers, the first in walk order among equals. A file in a numbered
+//     book folder is grouped by the folder, which is where such a layout
+//     keeps the volume (#2810).
+//   - Books for the file. When the chosen file's normalised title is exactly
+//     a rival's and not the wanted one, nothing answers, rather than a lower
+//     ranked file: "Harry Potter" must not take "Harry Potter en het
+//     vervloekte kind.epub" when that title is also the author's. Partial
+//     rival matches never withdraw a file (see wantedTitleOwnsFile). A file
+//     in a numbered book folder skips this step because the folder has
+//     already settled the volume (#2810).
 func (ls *LibrarySnapshot) FindExistingAmong(ctx context.Context, title, authorName, mediaType string, rivals []string) string {
 	if title == "" {
 		return ""
@@ -176,8 +174,10 @@ func bestExistingFile(hits []*libraryEntry, title string) *libraryEntry {
 		topRank = min(topRank, scanClaimRank(e.path))
 	}
 	wanted := normalizeTitle(title)
+	// A group answers with its best-scoring member, the first of equals in
+	// walk order, so "Dune" gets "Dune.epub" and not "Dune 2.epub" beside it.
 	type titleGroup struct {
-		first *libraryEntry
+		best  *libraryEntry
 		score float64
 		exact bool
 	}
@@ -203,12 +203,14 @@ func bestExistingFile(hits []*libraryEntry, title string) *libraryEntry {
 		}
 		g, ok := byKey[key]
 		if !ok {
-			g = &titleGroup{first: e}
+			g = &titleGroup{best: e, score: score, exact: exact}
 			byKey[key] = g
 			groups = append(groups, g)
+			continue
 		}
-		g.score = max(g.score, score)
-		g.exact = g.exact || exact
+		if score > g.score {
+			g.best, g.score, g.exact = e, score, exact
+		}
 	}
 	bestIdx := 0
 	for i, g := range groups {
@@ -216,40 +218,38 @@ func bestExistingFile(hits []*libraryEntry, title string) *libraryEntry {
 			bestIdx = i
 		}
 	}
-	best := groups[bestIdx]
+	top := groups[bestIdx]
 	for i, g := range groups {
-		if i != bestIdx && !clearLead(best.score, best.exact, g.score) {
+		if i != bestIdx && !clearLead(top.score, top.exact, g.score) {
 			slog.Debug("library: existing files too close to call, not binding either",
-				"title", title, "best", best.first.path, "jw", best.score,
-				"runnerUp", g.first.path, "runnerUpJw", g.score)
+				"title", title, "best", top.best.path, "jw", top.score,
+				"runnerUp", g.best.path, "runnerUpJw", g.score)
 			return nil
 		}
 	}
-	return best.first
+	return top.best
 }
 
 // wantedTitleOwnsFile reports whether file belongs to the wanted title rather
-// than to one of the rival catalogue titles, under the rule bestExistingFile
-// applies to files.
+// than to one of the rival catalogue titles. Only an exact normalised rival
+// title withdraws the file. A scored rule (any rival within the margin) was
+// tried and withdrew real matches: "Project Hail Mary A Novel.epub" for
+// "Project Hail Mary" against a "Proyecto Hail Mary" row, or "Mistborn.epub"
+// for "Mistborn: The Final Empire" against the rest of the series, leaving
+// an owned book to be downloaded again. A file named exactly as another book
+// is the one case where the wanted title is provably the wrong owner.
 func wantedTitleOwnsFile(file *libraryEntry, title string, rivals []string) bool {
 	if len(rivals) == 0 || carriesVolumeNumber(file.layoutTitle) {
 		return true
 	}
 	fileNorm := normalizeTitle(file.title)
-	wanted := normalizeTitle(title)
-	own, ownExact := existingTitleScore(fileNorm, wanted)
+	if fileNorm == normalizeTitle(title) {
+		return true
+	}
 	for _, rival := range rivals {
-		rivalNorm := normalizeTitle(rival)
-		if rivalNorm == "" || rivalNorm == wanted {
-			continue
-		}
-		if !titleWordsMatch(file.title, rival) || libraryVolumeConflict(file.title, file.layoutTitle, rival) {
-			continue
-		}
-		score, _ := existingTitleScore(fileNorm, rivalNorm)
-		if !clearLead(own, ownExact, score) {
-			slog.Debug("library: existing file fits another book of the author as well or better, not binding it",
-				"title", title, "rival", rival, "path", file.path, "jw", own, "rivalJw", score)
+		if normalizeTitle(rival) == fileNorm {
+			slog.Debug("library: existing file is titled exactly as another book of the author, not binding it",
+				"title", title, "rival", rival, "path", file.path)
 			return false
 		}
 	}

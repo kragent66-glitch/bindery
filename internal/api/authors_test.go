@@ -7486,6 +7486,60 @@ func TestFetchAuthorBooks_FileGoesToExactTitleNotShorterBook(t *testing.T) {
 	}
 }
 
+// TestHandleNewWantedBook_ExcludedRowDoesNotBlockBind: a row the user
+// excluded is out of the catalogue, so its title must not withdraw a file
+// from the book they kept. An excluded "Project Hail Mary" duplicate would
+// otherwise keep "Project Hail Mary.epub" from "Project Hail Mary: A Novel"
+// forever, and the owned book would be downloaded again (#2941 review).
+func TestHandleNewWantedBook_ExcludedRowDoesNotBlockBind(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	ctx := context.Background()
+
+	libDir := t.TempDir()
+	path := filepath.Join(libDir, "Andy Weir", "Project Hail Mary.epub")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), int(importer.MinPlausibleEbookBytes)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	author := &models.Author{ForeignID: "OL920A", Name: "Andy Weir", SortName: "Weir, Andy"}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	dup := &models.Book{ForeignID: "OL921W", AuthorID: author.ID, Title: "Project Hail Mary",
+		Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, dup); err != nil {
+		t.Fatal(err)
+	}
+	if err := bookRepo.SetExcluded(ctx, dup.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	book := &models.Book{ForeignID: "OL922W", AuthorID: author.ID, Title: "Project Hail Mary: A Novel",
+		Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+
+	if !handleNewWantedBook(ctx, bookRepo, nil, importer.NewLibrarySnapshot(libDir, ""), *book, author.Name) {
+		t.Fatalf("%q was not bound to %q: the excluded %q row withdrew it", book.Title, path, dup.Title)
+	}
+	got, err := bookRepo.GetByID(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FilePath != path {
+		t.Errorf("file path = %q, want %q", got.FilePath, path)
+	}
+}
+
 // intPtr is strPtr's counterpart (queue_test.go) for the *int fields on
 // models.Edition.
 func intPtr(v int) *int { return &v }
