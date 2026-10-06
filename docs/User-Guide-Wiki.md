@@ -424,10 +424,16 @@ been.
   French and English is allowed under an English profile. Region tags are
   ignored, so `en-US` and `en_GB` count as English, Bokmål and Nynorsk (`nb`,
   `nob`, `nn`, `nno`) count as Norwegian, and `cmn` and `yue` count as
-  Chinese. Every two letter ISO 639-1 code is recognised.
+  Chinese. Every two letter ISO 639-1 code is recognised, including the
+  withdrawn `iw`, `in` and `ji`, which count as Hebrew, Indonesian and
+  Yiddish.
 - **The release holds EPUBs in both allowed and disallowed languages**: the
   allowed ones are imported and the others are left out, the same way a
-  disallowed format inside a release is left out.
+  disallowed format inside a release is left out. An EPUB that declares no
+  language, or `und` or `mul`, is imported alongside them. Next to a
+  disallowed EPUB with nothing in an allowed language, though, it does not
+  save the release: it is most likely the same edition with its metadata
+  stripped, so the release is rejected as below.
 - **Every file is in a language the profile does not allow**: the release is
   treated as the wrong release. Nothing is placed, the Queue row is blocked
   with a message naming both languages ("file declares Swedish (swe), but the
@@ -555,8 +561,9 @@ to the records. Things worth knowing before you judge the results:
   its id. Nothing is recorded or overwritten, and the book you imported for
   stays Wanted. If the file really belongs to the book you imported it for,
   open the book it is attached to and use **Fix match** to move it (#2937).
-  When the book holding the path has since been deleted, a download or manual
-  import takes it over automatically; adoption still refuses it.
+  When the book holding the path has since been deleted, a download, a manual
+  import, adopting the file on the Import page, or adding its author takes it
+  over automatically.
 - A folder holding both an ebook and an audiobook for the same book attaches
   both in a single scan — one file per format, so a second scan is not needed.
 - A PDF, TXT, RTF, CBZ or CBR sitting in a folder that also holds audio is treated as
@@ -621,7 +628,9 @@ How to work through the list:
   `Author - Title 1`, `Author - Title 2` and so on. Artist, Album Artist and
   Composer are all checked, so a narrator in Artist beside the author in Album
   Artist is not a conflict, and neither are credits such as Various Artists,
-  Unknown or Full Cast. Such files are also never attached by the scan to the
+  Unknown Author(s), Anonymous, Full Cast, or an audiobook publisher such as
+  Brilliance Audio, Recorded Books or Tantor Audio, however they are
+  punctuated. Such files are also never attached by the scan to the
   book their folder is named after. The row is named after the
   book the files name (the album tag, or the title in those track names), and
   suggestions come from the files' author first, scored on that title. Books

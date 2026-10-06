@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1242,6 +1243,70 @@ func TestHandleNewWantedBook_DoesNotBindAnotherBooksFile(t *testing.T) {
 		if bound := len(files) > 0; bound != tc.wantBound {
 			t.Errorf("%s: book_files rows = %v, want bound=%v", tc.name, files, tc.wantBound)
 		}
+	}
+}
+
+// TestHandleNewWantedBook_BindsAFileLeftByADeletedBook is the other half: a
+// book_files row whose book no longer exists (foreign keys lost, #1727) does
+// not belong to anyone. The write takes such a row over since #2937, so the
+// pre-check must not decline the bind on its account and send the book off to
+// search for a file it already has.
+func TestHandleNewWantedBook_BindsAFileLeftByADeletedBook(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	ctx := context.Background()
+
+	author := &models.Author{ForeignID: "hc:leckie", Name: "Ann Leckie", SortName: "Leckie, Ann"}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	gone := &models.Book{ForeignID: "hc:gone", AuthorID: author.ID, Title: "Gone",
+		Status: models.BookStatusImported, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, gone); err != nil {
+		t.Fatal(err)
+	}
+	const path = "/books/Ann Leckie/Provenance/Provenance.epub"
+	if err := bookRepo.AddBookFile(ctx, gone.ID, models.MediaTypeEbook, path); err != nil {
+		t.Fatal(err)
+	}
+	orphanBook(t, database, gone.ID)
+
+	book := &models.Book{ForeignID: "hc:provenance", AuthorID: author.ID, Title: "Provenance",
+		Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+	finder := &stubLibraryFinder{ownedTitle: book.Title, ownedPath: path}
+	if !handleNewWantedBook(ctx, bookRepo, nil, finder, *book, author.Name) {
+		t.Fatal("handleNewWantedBook declined a file only a deleted book's row held")
+	}
+	files, err := bookRepo.ListFiles(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Path != path {
+		t.Fatalf("book_files = %+v, want the row taken over", files)
+	}
+}
+
+// orphanBook deletes a book row with foreign keys off, leaving its book_files
+// rows pointing at a book that no longer exists (#1727).
+func orphanBook(t *testing.T, database *sql.DB, bookID int64) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, "DELETE FROM books WHERE id = ?", bookID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -6228,6 +6293,102 @@ func TestFetchAuthorBooks_KeepsBookWithUnknownAuthorship(t *testing.T) {
 	synced, got := reparentFixture(t, "OL777A", nil)
 	if got.AuthorID == synced.ID {
 		t.Error("book with unknown authorship must not be moved")
+	}
+}
+
+// With tenancy on, a catalogue sync must not re-link a book into a different
+// owner's library. books.foreign_id is unique across users, so bob's sync of
+// an author whose catalogue lists a work alice holds finds alice's row, and
+// before the fix moved it under bob's author. No owner counts as an owner of
+// its own here: a shared author's sync must not take alice's book out from
+// under her author, and a shared book must not move under bob's private
+// author. Only a shared book under a shared author still moves, and tenancy
+// off keeps the re-link everywhere.
+func TestFetchAuthorBooks_TenancyKeepsAnotherUsersBook(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		tenancy      bool
+		syncedShared bool
+		bookShared   bool
+		wantMoved    bool
+	}{
+		{"tenancy on", true, false, false, false},
+		{"tenancy off", false, false, false, true},
+		{"tenancy on, shared author syncs alice's book", true, true, false, false},
+		{"tenancy on, bob's author syncs a shared book", true, false, true, false},
+		{"tenancy on, shared author syncs a shared book", true, true, true, true},
+		{"tenancy off, shared author syncs alice's book", false, true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			auth.SetEnforceTenancyForTests(t, tc.tenancy)
+			database, err := db.OpenMemory()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { database.Close() })
+			ctx := context.Background()
+			users := db.NewUserRepo(database)
+			alice, err := users.Create(ctx, "alice", "h1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			bob, err := users.Create(ctx, "bob", "h2")
+			if err != nil {
+				t.Fatal(err)
+			}
+			authorRepo := db.NewAuthorRepo(database)
+			bookRepo := db.NewBookRepo(database)
+
+			synced := &models.Author{
+				ForeignID: "OL500A", Name: "Real Author", SortName: "Author, Real",
+				MetadataProvider: "openlibrary", Monitored: true,
+			}
+			syncedOwner, bookOwner := bob.ID, alice.ID
+			if tc.syncedShared {
+				syncedOwner = 0
+			}
+			if tc.bookShared {
+				bookOwner = 0
+			}
+			if err := authorRepo.CreateForUser(ctx, synced, syncedOwner); err != nil {
+				t.Fatal(err)
+			}
+			aliceAuthor := &models.Author{
+				ForeignID: "OL777A", Name: "Other Author", SortName: "Author, Other",
+				MetadataProvider: "openlibrary",
+			}
+			if err := authorRepo.CreateForUser(ctx, aliceAuthor, bookOwner); err != nil {
+				t.Fatal(err)
+			}
+			book := &models.Book{
+				ForeignID: "OL501W", AuthorID: aliceAuthor.ID, Title: "Elantris", SortTitle: "elantris",
+				Language: "eng", Status: models.BookStatusWanted, Monitored: true,
+				Genres: []string{}, MetadataProvider: "openlibrary", OwnerUserID: bookOwner,
+			}
+			if err := bookRepo.Create(ctx, book); err != nil {
+				t.Fatal(err)
+			}
+			stub := &stubMetaProvider{works: []models.Book{{
+				ForeignID: "OL501W", Title: "Elantris", SortTitle: "elantris",
+				Language: "eng", Status: models.BookStatusWanted, Genres: []string{},
+				MetadataProvider: "openlibrary", CreditedAuthorForeignIDs: []string{"OL500A"},
+			}}}
+			h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(stub), nil,
+				db.NewMetadataProfileRepo(database), &searcherSpy{})
+			h.FetchAuthorBooks(synced, false, "")
+
+			got, err := bookRepo.GetByID(ctx, book.ID)
+			if err != nil || got == nil {
+				t.Fatalf("re-read alice's book: %+v err=%v", got, err)
+			}
+			if moved := got.AuthorID == synced.ID; moved != tc.wantMoved {
+				t.Fatalf("alice's book author = %d (bob's synced author %d, alice's %d), want moved=%v",
+					got.AuthorID, synced.ID, aliceAuthor.ID, tc.wantMoved)
+			}
+			if got.OwnerUserID != bookOwner {
+				t.Fatalf("book owner = %d, want %d", got.OwnerUserID, bookOwner)
+			}
+		})
 	}
 }
 

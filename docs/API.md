@@ -995,8 +995,28 @@ GET    /api/v1/settings/descriptors               describe every key Bindery kno
 ```
 
 Secrets (`*.api_key`, `*.api_token`, `auth.*`, and the rest of
-`isSecretSetting`) never appear in a list or a read, and settings whose value is
-a server filesystem path are returned to admins only.
+`isSecretSetting`) never appear in a list or a read, not even for an admin.
+
+Every other key is returned to admins only, with a short allowlist of keys a
+non admin screen reads (#2361). A non admin caller gets exactly these, and any
+other key is left out of the list and answers `404` from a read, the same as an
+unset key:
+
+| Key | Read by |
+|-----|---------|
+| `recommendations.enabled` | Discover page |
+| `metadata.primary_provider` | add to library dialog |
+| `library.defaultRootFolderId` | add author dialog |
+| `library.defaultAudiobookRootFolderId` | add author dialog |
+| `default.media_type` | add author dialog |
+| `author.default_monitor_mode` | add author dialog |
+| `author.default_monitor_latest_count` | add author dialog |
+
+Requests authenticated with the API key are treated as admin, so a script or a
+third party client using the key still reads every non secret setting. A client
+signed in as a `user` account that read other keys should switch to the API
+key. `adminOnly` in the descriptors below says which side of the line a key is
+on.
 
 **`PUT` refuses a key Bindery does not know**, with `400` and the key named.
 Before this, an unrecognised key was stored and then read by nothing, so a typo
