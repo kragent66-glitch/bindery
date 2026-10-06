@@ -34,10 +34,10 @@ function seed(entries: Record<string, string>) {
   mocked.listSettings.mockResolvedValue(Object.entries(entries).map(([key, value]) => ({ key, value })))
 }
 
-// The "Push all" button label is being reworded elsewhere, so it is found
-// through the block that describes it rather than by its text.
+// The mocked t returns keys, so the Push all block is found through its
+// description key and the button is taken from that block.
 function pushAllButton(): HTMLButtonElement {
-  const desc = screen.getByText(/Queue every imported book for the Calibre Bridge plugin/)
+  const desc = screen.getByText('settings.calibre.pushAll.description')
   const block = desc.closest('.pt-3') as HTMLElement
   return within(block).getByRole('button') as HTMLButtonElement
 }
@@ -152,7 +152,7 @@ describe('CalibreTab coverage', () => {
     // No plugin URL yet: the bridge is not probed and Push all is blocked.
     expect(mocked.testCalibre).not.toHaveBeenCalled()
     expect(pushAllButton()).toBeDisabled()
-    expect(pushAllButton()).toHaveAttribute('title', 'Set the plugin URL first')
+    expect(pushAllButton()).toHaveAttribute('title', 'settings.calibre.pushAll.needPluginUrl')
 
     fireEvent.change(url, { target: { value: 'http://calibre:8099' } })
     fireEvent.click(saveButtonFor(url))
@@ -178,12 +178,12 @@ describe('CalibreTab coverage', () => {
     seed({ 'calibre.mode': 'plugin', 'calibre.plugin_url': 'http://calibre:8099' })
     mocked.testCalibre.mockRejectedValueOnce(new Error('refused'))
     render(<CalibreTab />)
-    expect(await screen.findByText(/Bridge not reachable right now/)).toBeInTheDocument()
+    expect(await screen.findByText('settings.calibre.pushAll.bridgeUnreachable')).toBeInTheDocument()
 
     mocked.testCalibre.mockResolvedValueOnce({ ok: 'true', version: '' , message: 'plugin reachable' })
     fireEvent.click(screen.getByText('Test connection'))
     expect(await screen.findByText('✓ Plugin reachable — plugin reachable')).toBeInTheDocument()
-    expect(screen.queryByText(/Bridge not reachable right now/)).not.toBeInTheDocument()
+    expect(screen.queryByText('settings.calibre.pushAll.bridgeUnreachable')).not.toBeInTheDocument()
   })
 
   it('reports a failed check-in lookup in pull mode', async () => {
@@ -222,8 +222,8 @@ describe('CalibreTab coverage', () => {
     fireEvent.click(pushAllButton())
     const dialog = await screen.findByRole('dialog')
     expect(mocked.calibreSyncStart).toHaveBeenCalledTimes(1)
-    expect(await within(dialog).findByText(/Done\. Pushed 1, already in Calibre 1/)).toBeInTheDocument()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+    expect(await within(dialog).findByText(/settings\.calibre\.pushAll\.done \{"pushed":1,"already":1/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'settings.calibre.pushAll.close' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 
