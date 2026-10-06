@@ -1105,7 +1105,9 @@ func main() {
 		// registerQualityProfileRoutes).
 		registerQualityProfileRoutes(r, qualityProfileHandler)
 
-		// Settings — reads available to all; mutations admin-only.
+		// Settings: reads open to every role, but a non admin only gets the
+		// keys on the handler's allowlist (isAdminOnlySetting, #2361);
+		// mutations admin only.
 		r.Get("/setting", settingsHandler.List)
 		r.Get("/setting/{key}", settingsHandler.Get)
 		r.Group(func(r chi.Router) {
