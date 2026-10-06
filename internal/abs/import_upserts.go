@@ -412,7 +412,7 @@ func (i *Importer) enrichAuthor(ctx context.Context, cfg ImportConfig, item Norm
 func (i *Importer) mergeUpstreamAuthor(ctx context.Context, cfg ImportConfig, item NormalizedLibraryItem, author *models.Author, full *models.Author, matcher *authorMatcher) (metadataMergeResult, error) {
 	if author.UpdatedAtRaw == "" {
 		if err := i.reloadAuthor(ctx, author); err != nil {
-			return metadataMergeResult{}, err
+			return mergeReloadFailed(entityTypeAuthor, author.ID, err)
 		}
 	}
 	for attempt := 1; ; attempt++ {
@@ -430,7 +430,7 @@ func (i *Importer) mergeUpstreamAuthor(ctx context.Context, cfg ImportConfig, it
 			}
 			if !written {
 				if err := i.reloadAuthor(ctx, author); err != nil {
-					return metadataMergeResult{}, err
+					return mergeReloadFailed(entityTypeAuthor, author.ID, err)
 				}
 				if attempt < 2 {
 					continue
@@ -555,6 +555,20 @@ func (i *Importer) recordAuthorMergeBookkeeping(ctx context.Context, cfg ImportC
 	return nil
 }
 
+// mergeReloadFailed handles a failed re-read during a guarded merge. A row
+// deleted while the upstream lookup ran is not an import failure: the merge
+// has nothing left to apply to, so it is skipped. Anything else is an error.
+func mergeReloadFailed(entityType string, id int64, err error) (metadataMergeResult, error) {
+	if !errors.Is(err, sql.ErrNoRows) {
+		return metadataMergeResult{}, err
+	}
+	slog.Info("abs import: upstream metadata merge skipped, the row was deleted during the import",
+		"entity", entityType, "id", id)
+	return metadataMergeResult{Messages: []string{
+		entityType + " metadata merge skipped: it was deleted while this import was running",
+	}}, nil
+}
+
 // reloadAuthor replaces author with the stored row, keeping the transport
 // only provider identifiers while the identity is unchanged.
 func (i *Importer) reloadAuthor(ctx context.Context, author *models.Author) error {
@@ -611,8 +625,8 @@ func (i *Importer) enrichBook(ctx context.Context, cfg ImportConfig, item Normal
 // back the older row (#2926). On a lost guard the same upstream record is
 // merged once more onto a fresh read, since it is already in hand. If that
 // loses too the merge is dropped for this import and the next one retries it.
-// The conflict rows and the relinked row's old identifier are recorded only
-// for a merge that was written, so they always describe the stored row.
+// The conflict rows are recorded only for a merge that was written, so they
+// always describe the stored row; the ABS id a relink replaces is kept first.
 // Either way book ends up holding the stored row, which the rest of the
 // import works from.
 func (i *Importer) mergeUpstreamBook(ctx context.Context, cfg ImportConfig, item NormalizedLibraryItem, book *models.Book, full *models.Book, matchedBy string) (metadataMergeResult, error) {
@@ -621,7 +635,7 @@ func (i *Importer) mergeUpstreamBook(ctx context.Context, cfg ImportConfig, item
 	}
 	if book.UpdatedAtRaw == "" {
 		if err := i.books.ReloadHydratedBook(ctx, book); err != nil {
-			return metadataMergeResult{}, err
+			return mergeReloadFailed(entityTypeBook, book.ID, err)
 		}
 	}
 	for attempt := 1; ; attempt++ {
@@ -631,6 +645,12 @@ func (i *Importer) mergeUpstreamBook(ctx context.Context, cfg ImportConfig, item
 			return metadataMergeResult{}, err
 		}
 		if plan.write {
+			// The ABS id goes into the identity table before the relink
+			// overwrites foreign_id, not after: a crash between the two must
+			// not leave a row that no lookup can find by its ABS key (#1691).
+			// If the write then loses, the identifier still names this row's
+			// current id, so it is harmless.
+			i.preserveRelinkedBookIdentifier(ctx, book.ID, plan.previousForeignID)
 			now := time.Now().UTC()
 			merged.LastMetadataRefreshAt = &now
 			written, err := i.books.UpdateIfUnchanged(ctx, &merged, book.UpdatedAtRaw)
@@ -639,7 +659,7 @@ func (i *Importer) mergeUpstreamBook(ctx context.Context, cfg ImportConfig, item
 			}
 			if !written {
 				if err := i.books.ReloadHydratedBook(ctx, book); err != nil {
-					return metadataMergeResult{}, err
+					return mergeReloadFailed(entityTypeBook, book.ID, err)
 				}
 				if attempt < 2 {
 					continue
@@ -652,7 +672,7 @@ func (i *Importer) mergeUpstreamBook(ctx context.Context, cfg ImportConfig, item
 			}
 			*book = merged
 		}
-		if err := i.recordBookMergeBookkeeping(ctx, book.ID, plan); err != nil {
+		if err := i.recordBookMergeBookkeeping(ctx, plan); err != nil {
 			return metadataMergeResult{}, err
 		}
 		return plan.result, nil
@@ -728,16 +748,21 @@ func (i *Importer) planUpstreamBookMerge(ctx context.Context, cfg ImportConfig, 
 	return plan, nil
 }
 
-// recordBookMergeBookkeeping writes what a merge records beside the book row,
-// once that row is written. A failed identifier write is only logged, as it
-// always was; a failed conflict write fails the merge, as it always did.
-func (i *Importer) recordBookMergeBookkeeping(ctx context.Context, bookID int64, plan bookMergePlan) error {
-	if plan.previousForeignID != "" {
-		if err := i.books.UpsertBookIdentifier(ctx, bookID, plan.previousForeignID); err != nil {
-			slog.Warn("could not preserve the ABS book identifier across a relink",
-				"bookId", bookID, "foreignId", plan.previousForeignID, "error", err)
-		}
+// preserveRelinkedBookIdentifier keeps the id a relink is about to replace in
+// the identity table. A failure is only logged, as it always was.
+func (i *Importer) preserveRelinkedBookIdentifier(ctx context.Context, bookID int64, previousForeignID string) {
+	if previousForeignID == "" {
+		return
 	}
+	if err := i.books.UpsertBookIdentifier(ctx, bookID, previousForeignID); err != nil {
+		slog.Warn("could not preserve the ABS book identifier across a relink",
+			"bookId", bookID, "foreignId", previousForeignID, "error", err)
+	}
+}
+
+// recordBookMergeBookkeeping records a merge's conflict rows once the book
+// row is written. A failed conflict write fails the merge, as it always did.
+func (i *Importer) recordBookMergeBookkeeping(ctx context.Context, plan bookMergePlan) error {
 	for _, conflict := range plan.conflicts {
 		if err := i.conflicts.Upsert(ctx, conflict); err != nil {
 			return err

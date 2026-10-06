@@ -1752,11 +1752,6 @@ func (h *AuthorHandler) fetchAuthorBooks(ctx context.Context, author *models.Aut
 	_, _ = h.runCatalogueSync(ctx, author, opts)
 }
 
-// runCatalogueSync is the catalogue sync behind fetchAuthorBooks. It returns
-// how many books the run created and, when the provider could not list the
-// author's works, that error, so scheduled discovery can tell a rate limit
-// from an ordinary run (#2236). Every other early exit returns a nil error:
-// those are decisions, not failures.
 // refreshTitleMatch re-reads a row the catalogue sync matched by title. The
 // title index holds rows as the sync first read them, and the cover, edition
 // and hydration calls since then are long enough for a user to save an edit
@@ -1788,6 +1783,11 @@ func (h *AuthorHandler) writeTitleMatch(ctx context.Context, existing *models.Bo
 	return false, nil
 }
 
+// runCatalogueSync is the catalogue sync behind fetchAuthorBooks. It returns
+// how many books the run created and, when the provider could not list the
+// author's works, that error, so scheduled discovery can tell a rate limit
+// from an ordinary run (#2236). Every other early exit returns a nil error:
+// those are decisions, not failures.
 func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Author, opts catalogueSyncOptions) (int, error) {
 	autoSearch, mediaType, discovery := opts.autoSearch, opts.mediaType, opts.discovery
 	// singleWork: the caller picked one specific book and the direct insert
@@ -2554,6 +2554,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 			}
 			expectedUpdatedAt := existing.UpdatedAtRaw
 			hydrateExistingFromMatchedHardcover := false
+			// lostGuard: an edit landed between the re-read and the write,
+			// so this work's change was not made.
+			lostGuard := false
 			switch {
 			case strings.HasPrefix(existing.ForeignID, "calibre:"):
 				// Upgrade calibre stub to real OL foreign_id.
@@ -2567,7 +2570,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 				}
 				if written, err := h.writeTitleMatch(ctx, existing, expectedUpdatedAt); err != nil {
 					slog.Warn("authors: update during dedup", "error", err, "book_id", existing.ID)
-				} else if written && existing.WantsAudiobook() {
+				} else if !written {
+					lostGuard = true
+				} else if existing.WantsAudiobook() {
 					hydrateExistingFromMatchedHardcover = true
 				}
 			case canUpgradeToBoth(existing.MediaType, b.MediaType) && existing.HasFileForCurrentFormat():
@@ -2595,7 +2600,9 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 				}
 				if written, err := h.writeTitleMatch(ctx, existing, expectedUpdatedAt); err != nil {
 					slog.Warn("failed to upgrade book to dual-format", "title", existing.Title, "error", err)
-				} else if written {
+				} else if !written {
+					lostGuard = true
+				} else {
 					slog.Debug("upgraded book to dual-format", "title", existing.Title, "foreignId", b.ForeignID)
 					hydrateExistingFromMatchedHardcover = true
 				}
@@ -2604,11 +2611,21 @@ func (h *AuthorHandler) runCatalogueSync(ctx context.Context, author *models.Aut
 				if b.RatingsCount > 0 && (existing.RatingsCount == 0 || b.RatingsCount > existing.RatingsCount) {
 					existing.RatingsCount = b.RatingsCount
 					existing.AverageRating = b.AverageRating
-					if _, err := h.writeTitleMatch(ctx, existing, expectedUpdatedAt); err != nil {
+					if written, err := h.writeTitleMatch(ctx, existing, expectedUpdatedAt); err != nil {
 						slog.Warn("authors: update during dedup", "error", err, "book_id", existing.ID)
+					} else if !written {
+						lostGuard = true
 					}
 				}
 				hydrateExistingFromMatchedHardcover = existing.WantsAudiobook()
+			}
+			if lostGuard {
+				// Leave the work unrecorded too. Its ids would make the next
+				// sync resolve it through the id branch above, which never
+				// relinks a calibre stub or widens the format, so the change
+				// would be lost for good instead of retried by title.
+				matched++
+				continue
 			}
 			// A title match is a guess that just paid off. Recording the
 			// incoming ids turns it into an exact match next time, which

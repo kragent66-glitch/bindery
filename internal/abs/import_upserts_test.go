@@ -157,10 +157,10 @@ func TestMergeUpstreamBookRetriesOnTopOfConcurrentEdit(t *testing.T) {
 }
 
 // TestMergeUpstreamBookSkipsWhenTheBookKeepsChanging is the second loss: the
-// merge is dropped for this import, and nothing it would have recorded (the
-// relink count, the ABS identifier, the conflict rows) is written for a merge
-// that never landed. A trigger stands in for an edit that lands on every
-// attempt by silently ignoring the relink write.
+// merge is dropped for this import, and neither the relink count nor the
+// conflict rows are recorded for a merge that never landed. A trigger stands
+// in for an edit that lands on every attempt by silently ignoring the relink
+// write.
 func TestMergeUpstreamBookSkipsWhenTheBookKeepsChanging(t *testing.T) {
 	t.Parallel()
 	f := newMergeRaceFixture(t)
@@ -196,8 +196,10 @@ func TestMergeUpstreamBookSkipsWhenTheBookKeepsChanging(t *testing.T) {
 	if msg := strings.Join(result.Messages, "; "); !strings.Contains(msg, "changed") {
 		t.Errorf("messages = %q, want a skipped merge reason", msg)
 	}
-	if ident, err := f.books.GetBookIdentifier(ctx, absForeignID); err != nil || ident != nil {
-		t.Errorf("ABS identifier recorded for a relink that did not happen: %+v err=%v", ident, err)
+	// The ABS id is kept before the relink write is attempted (#1691), so it
+	// is there even though the relink lost; it still names this row.
+	if ident, err := f.books.GetBookIdentifier(ctx, absForeignID); err != nil || ident == nil || ident.BookID != f.book.ID {
+		t.Errorf("ABS identifier not kept ahead of the relink: %+v err=%v", ident, err)
 	}
 	if conflict, err := f.conflicts.GetByEntityField(ctx, entityTypeBook, f.book.ID, "description"); err != nil || conflict != nil {
 		t.Errorf("conflict recorded for a merge that did not happen: %+v err=%v", conflict, err)
@@ -450,5 +452,53 @@ func TestMergeUpstreamAuthorPersistsWithoutConcurrentEdit(t *testing.T) {
 	}
 	if names := f.aliasNames(t); !slices.Contains(names, "Andy Weir") {
 		t.Errorf("old name not kept as an alias: %v", names)
+	}
+}
+
+// A book deleted while its upstream lookup runs is not an import failure:
+// the merge is skipped with a message rather than failing the item with
+// "sql: no rows".
+func TestMergeUpstreamBookSkipsWhenTheBookIsDeletedDuringLookup(t *testing.T) {
+	t.Parallel()
+	f := newMergeRaceFixture(t)
+	ctx := context.Background()
+	f.provider.edit = func() {
+		if err := f.books.Delete(ctx, f.book.ID); err != nil {
+			t.Errorf("delete book: %v", err)
+		}
+	}
+
+	result, err := f.importer.enrichBook(ctx, asinTestConfig(), f.item, nil, f.book)
+	if err != nil {
+		t.Fatalf("enrichBook failed the item for a deleted book: %v", err)
+	}
+	if msg := strings.Join(result.Messages, "; "); !strings.Contains(msg, "deleted") {
+		t.Errorf("messages = %q, want a deleted row skip reason", msg)
+	}
+	if stored, err := f.books.GetByID(ctx, f.book.ID); err != nil || stored != nil {
+		t.Errorf("the merge recreated a deleted book: %+v err=%v", stored, err)
+	}
+}
+
+// The author counterpart of the deleted book case.
+func TestMergeUpstreamAuthorSkipsWhenTheAuthorIsDeletedDuringLookup(t *testing.T) {
+	t.Parallel()
+	f := newAuthorMergeRaceFixture(t)
+	ctx := context.Background()
+	f.provider.edit = func() {
+		if err := f.authors.Delete(ctx, f.author.ID); err != nil {
+			t.Errorf("delete author: %v", err)
+		}
+	}
+
+	result, err := f.importer.enrichAuthor(ctx, asinTestConfig(), f.item, f.author, f.matcher)
+	if err != nil {
+		t.Fatalf("enrichAuthor failed the item for a deleted author: %v", err)
+	}
+	if msg := strings.Join(result.Messages, "; "); !strings.Contains(msg, "deleted") {
+		t.Errorf("messages = %q, want a deleted row skip reason", msg)
+	}
+	if stored, err := f.authors.GetByID(ctx, f.author.ID); err != nil || stored != nil {
+		t.Errorf("the merge recreated a deleted author: %+v err=%v", stored, err)
 	}
 }
