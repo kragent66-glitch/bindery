@@ -18,22 +18,22 @@ type fakeJobLister struct {
 	nzoHit     int
 }
 
-func (f *fakeJobLister) ListByClientTorrentID(_ context.Context, clientID int64, torrentID string) ([]models.Download, error) {
+func (f *fakeJobLister) ListByClientTorrentID(_ context.Context, client *models.DownloadClient, torrentID string) ([]models.Download, error) {
 	f.torrentHit++
 	var out []models.Download
 	for _, d := range f.rows {
-		if d.DownloadClientID != nil && *d.DownloadClientID == clientID && d.TorrentID != nil && strings.EqualFold(*d.TorrentID, torrentID) {
+		if d.DownloadClientID != nil && *d.DownloadClientID == client.ID && d.TorrentID != nil && strings.EqualFold(*d.TorrentID, torrentID) {
 			out = append(out, d)
 		}
 	}
 	return out, f.err
 }
 
-func (f *fakeJobLister) ListByClientNzoID(_ context.Context, clientID int64, nzoID string) ([]models.Download, error) {
+func (f *fakeJobLister) ListByClientNzoID(_ context.Context, client *models.DownloadClient, nzoID string) ([]models.Download, error) {
 	f.nzoHit++
 	var out []models.Download
 	for _, d := range f.rows {
-		if d.DownloadClientID != nil && *d.DownloadClientID == clientID && d.SABnzbdNzoID != nil && *d.SABnzbdNzoID == nzoID {
+		if d.DownloadClientID != nil && *d.DownloadClientID == client.ID && d.SABnzbdNzoID != nil && *d.SABnzbdNzoID == nzoID {
 			out = append(out, d)
 		}
 	}

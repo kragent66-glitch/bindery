@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/vavallee/bindery/internal/downloader/clienthost"
 	"github.com/vavallee/bindery/internal/models"
 )
 
@@ -116,29 +117,82 @@ func (r *DownloadRepo) GetByTorrentID(ctx context.Context, torrentID string) (*m
 	return &dl[0], nil
 }
 
-// ListByClientTorrentID returns every download on download client clientID
-// whose torrent_id is torrentID, across all owners. A torrent client adopts a
-// torrent it already holds when a grab sends the same info hash again, so
-// several rows can name one torrent; callers use this to find out whether
-// anything else still depends on it before removing it from the client.
+// ListByClientTorrentID returns every download whose torrent_id is torrentID
+// on client or on any other client entry that talks to the same daemon,
+// across all owners. A torrent client adopts a torrent it already holds when a
+// grab sends the same info hash again, so several rows can name one torrent,
+// and two entries configured against one daemon (separate ebook and audiobook
+// entries, say) adopt across each other. Callers use this to find out whether
+// anything else still depends on a torrent before removing it from the client.
+//
 // torrent_id is written lower case (SetTorrentID), but the comparison folds
-// case anyway so a row written by an older path still matches.
-func (r *DownloadRepo) ListByClientTorrentID(ctx context.Context, clientID int64, torrentID string) ([]models.Download, error) {
+// case anyway so a row written by an older path still matches. An empty or
+// whitespace only id never matches anything, and neither does a NULL one.
+func (r *DownloadRepo) ListByClientTorrentID(ctx context.Context, client *models.DownloadClient, torrentID string) ([]models.Download, error) {
 	torrentID = strings.ToLower(strings.TrimSpace(torrentID))
-	if torrentID == "" {
+	if torrentID == "" || client == nil {
 		return nil, nil
 	}
-	return r.query(ctx, "SELECT "+downloadSelectColumns+" FROM downloads WHERE download_client_id=? AND LOWER(TRIM(torrent_id))=?", clientID, torrentID)
+	return r.listOnSameDaemon(ctx, client, "LOWER(TRIM(torrent_id))=?", torrentID)
 }
 
 // ListByClientNzoID is ListByClientTorrentID for the usenet clients, keyed on
 // sabnzbd_nzo_id (SABnzbd's nzo id, or NZBGet's numeric NZBID as text).
-func (r *DownloadRepo) ListByClientNzoID(ctx context.Context, clientID int64, nzoID string) ([]models.Download, error) {
+func (r *DownloadRepo) ListByClientNzoID(ctx context.Context, client *models.DownloadClient, nzoID string) ([]models.Download, error) {
 	nzoID = strings.TrimSpace(nzoID)
-	if nzoID == "" {
+	if nzoID == "" || client == nil {
 		return nil, nil
 	}
-	return r.query(ctx, "SELECT "+downloadSelectColumns+" FROM downloads WHERE download_client_id=? AND TRIM(sabnzbd_nzo_id)=?", clientID, nzoID)
+	return r.listOnSameDaemon(ctx, client, "TRIM(sabnzbd_nzo_id)=?", nzoID)
+}
+
+// listOnSameDaemon runs cond against the downloads of client and of every
+// other client entry of the same type whose connection target
+// (clienthost.TargetKey) matches client's.
+func (r *DownloadRepo) listOnSameDaemon(ctx context.Context, client *models.DownloadClient, cond string, arg any) ([]models.Download, error) {
+	ids, err := r.sameDaemonClientIDs(ctx, client)
+	if err != nil {
+		return nil, err
+	}
+	args := make([]any, 0, len(ids)+1)
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	args = append(args, arg)
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	return r.query(ctx,
+		"SELECT "+downloadSelectColumns+" FROM downloads WHERE download_client_id IN ("+placeholders+") AND "+cond,
+		args...)
+}
+
+// sameDaemonClientIDs returns client.ID plus the ids of every other client
+// entry of the same type configured against the same daemon.
+func (r *DownloadRepo) sameDaemonClientIDs(ctx context.Context, client *models.DownloadClient) ([]int64, error) {
+	ids := []int64{client.ID}
+	want := clienthost.TargetKey(client.Type, client.Host, client.Port, client.UseSSL, client.URLBase)
+	rows, err := r.db.QueryContext(ctx,
+		"SELECT id, host, port, use_ssl, url_base FROM download_clients WHERE LOWER(type)=LOWER(?) AND id<>?",
+		client.Type, client.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list download clients on the same daemon: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id      int64
+			host    string
+			port    int
+			ssl     bool
+			urlBase sql.NullString
+		)
+		if err := rows.Scan(&id, &host, &port, &ssl, &urlBase); err != nil {
+			return nil, fmt.Errorf("scan download client: %w", err)
+		}
+		if clienthost.TargetKey(client.Type, host, port, ssl, urlBase.String) == want {
+			ids = append(ids, id)
+		}
+	}
+	return ids, rows.Err()
 }
 
 // downloadOwnerArg maps 0 to NULL so unowned downloads keep the legacy

@@ -10,11 +10,11 @@ import (
 )
 
 // ClientJobLister finds the download rows that name one job in one download
-// client. *db.DownloadRepo satisfies it; the interface keeps this package free
+// client daemon, across every client entry configured against that daemon. *db.DownloadRepo satisfies it; the interface keeps this package free
 // of the db import.
 type ClientJobLister interface {
-	ListByClientTorrentID(ctx context.Context, clientID int64, torrentID string) ([]models.Download, error)
-	ListByClientNzoID(ctx context.Context, clientID int64, nzoID string) ([]models.Download, error)
+	ListByClientTorrentID(ctx context.Context, client *models.DownloadClient, torrentID string) ([]models.Download, error)
+	ListByClientNzoID(ctx context.Context, client *models.DownloadClient, nzoID string) ([]models.Download, error)
 }
 
 // clientJobRef is the identifier RemoveDownload hands the client for dl, and
@@ -96,9 +96,9 @@ func OtherDownloadUsingClientJob(ctx context.Context, lister ClientJobLister, cl
 		err  error
 	)
 	if torrent {
-		rows, err = lister.ListByClientTorrentID(ctx, client.ID, ref)
+		rows, err = lister.ListByClientTorrentID(ctx, client, ref)
 	} else {
-		rows, err = lister.ListByClientNzoID(ctx, client.ID, ref)
+		rows, err = lister.ListByClientNzoID(ctx, client, ref)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("look up other downloads using %s: %w", ref, err)

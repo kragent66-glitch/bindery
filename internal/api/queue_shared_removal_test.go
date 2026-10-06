@@ -252,3 +252,44 @@ func TestQueueBulkDelete_SharedDownloadRemovedOnce(t *testing.T) {
 		}
 	}
 }
+
+// TestQueueDelete_SharedAcrossClientEntriesOnOneDaemon: two client entries
+// configured against one daemon (an ebook and an audiobook entry on the same
+// qBittorrent) adopt torrents across each other, so a row on the second entry
+// still uses the torrent a row on the first one is being removed from.
+func TestQueueDelete_SharedAcrossClientEntriesOnOneDaemon(t *testing.T) {
+	t.Setenv("BINDERY_ENFORCE_TENANCY", "true")
+	c := sharedRemovalCase{"qbittorrent", "0123456789abcdef0123456789abcdef01234567"}
+	h, database, downloads, stub, alice, bob, dlA, dlB := seedSharedDownloads(t, c)
+	ctx := context.Background()
+	clients := db.NewDownloadClientRepo(database)
+
+	first, err := clients.GetByID(ctx, *dlA.DownloadClientID)
+	if err != nil || first == nil {
+		t.Fatalf("load client: %v", err)
+	}
+	second := *first
+	second.ID = 0
+	second.Name = "qbittorrent audiobooks"
+	second.Host = strings.ToUpper(first.Host)
+	second.Category = "audiobooks"
+	if err := clients.Create(ctx, &second); err != nil {
+		t.Fatalf("create second entry: %v", err)
+	}
+	if _, err := database.Exec("UPDATE downloads SET download_client_id=? WHERE id=?", second.ID, dlB.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	deleteQueueItemAs(t, h, alice, dlA.ID, "?deleteFiles=true")
+	if req, _ := stub.counts(); req != 0 {
+		t.Fatalf("the daemon was contacted %d times while a row on the other entry still uses the torrent", req)
+	}
+	if got, _ := downloads.GetByID(ctx, dlB.ID); got == nil {
+		t.Fatal("bob's row must be intact")
+	}
+
+	deleteQueueItemAs(t, h, bob, dlB.ID, "")
+	if _, rem := stub.counts(); rem != 1 {
+		t.Fatalf("removing the last row should remove the torrent once, got %d removals", rem)
+	}
+}
