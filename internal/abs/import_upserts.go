@@ -2,6 +2,7 @@ package abs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -399,41 +400,104 @@ func (i *Importer) enrichAuthor(ctx context.Context, cfg ImportConfig, item Norm
 	if full == nil {
 		return metadataMergeResult{}, nil
 	}
+	return i.mergeUpstreamAuthor(ctx, cfg, item, author, full, matcher)
+}
+
+// mergeUpstreamAuthor merges an upstream author record onto author and writes
+// it, under the same rules as mergeUpstreamBook (#2926): the write is guarded
+// on author's updated_at, a lost guard merges the record already in hand once
+// more onto a fresh read, and a second loss drops the merge for this import.
+// The variant alias, the identifier and the conflict rows are recorded only
+// for a merge that was written, or that needed no write.
+func (i *Importer) mergeUpstreamAuthor(ctx context.Context, cfg ImportConfig, item NormalizedLibraryItem, author *models.Author, full *models.Author, matcher *authorMatcher) (metadataMergeResult, error) {
+	if author.UpdatedAtRaw == "" {
+		if err := i.reloadAuthor(ctx, author); err != nil {
+			return metadataMergeResult{}, err
+		}
+	}
+	for attempt := 1; ; attempt++ {
+		merged := *author
+		plan, err := i.planUpstreamAuthorMerge(ctx, cfg, item, &merged, full, matcher)
+		if err != nil {
+			return metadataMergeResult{}, err
+		}
+		if plan.write {
+			now := time.Now().UTC()
+			merged.LastMetadataRefreshAt = &now
+			written, err := i.authors.UpdateIfUnchanged(ctx, &merged, author.UpdatedAtRaw)
+			if err != nil {
+				return metadataMergeResult{}, err
+			}
+			if !written {
+				if err := i.reloadAuthor(ctx, author); err != nil {
+					return metadataMergeResult{}, err
+				}
+				if attempt < 2 {
+					continue
+				}
+				slog.Info("abs import: upstream author merge skipped, the author kept changing during the import; the next import retries it",
+					"authorId", author.ID, "author", author.Name, "upstreamForeignId", full.ForeignID)
+				return metadataMergeResult{Messages: []string{
+					"author metadata merge skipped: the author changed while this import was running, the next import retries it",
+				}}, nil
+			}
+			*author = merged
+		}
+		if err := i.recordAuthorMergeBookkeeping(ctx, cfg, author.ID, plan, matcher); err != nil {
+			return metadataMergeResult{}, err
+		}
+		if plan.write {
+			matcher.addAuthor(author)
+		}
+		return plan.result, nil
+	}
+}
+
+// authorMergePlan is one attempt of mergeUpstreamAuthor.
+type authorMergePlan struct {
+	result metadataMergeResult
+	write  bool
+	// aliasName is the local name a rename replaces, kept as a variant alias.
+	aliasName string
+	// identifier is an upstream id to attach without relinking, for an
+	// author whose identity is not replaceable.
+	identifier string
+	conflicts  []*models.ABSMetadataConflict
+}
+
+// planUpstreamAuthorMerge applies full onto author in memory. It reads the
+// database but writes nothing.
+func (i *Importer) planUpstreamAuthorMerge(ctx context.Context, cfg ImportConfig, item NormalizedLibraryItem, author *models.Author, full *models.Author, matcher *authorMatcher) (authorMergePlan, error) {
+	// Checked on every attempt: an edit that renamed the author may mean the
+	// ABS name no longer belongs to it.
 	matches, err := matcher.authorMatchesABSName(ctx, author, item.Authors[0].Name)
 	if err != nil {
-		return metadataMergeResult{}, err
+		return authorMergePlan{}, err
 	}
 	if !matches {
-		return metadataMergeResult{Messages: []string{"author relink skipped: ABS author no longer matches local author"}}, nil
+		return authorMergePlan{result: metadataMergeResult{Messages: []string{"author relink skipped: ABS author no longer matches local author"}}}, nil
 	}
 
-	result := metadataMergeResult{Matched: 1}
+	plan := authorMergePlan{result: metadataMergeResult{Matched: 1}}
 	changed := false
 	if name := strings.TrimSpace(full.Name); name != "" && strings.TrimSpace(author.Name) != name {
-		oldName := author.Name
+		plan.aliasName = author.Name
 		author.Name = name
 		if full.SortName != "" {
 			author.SortName = full.SortName
-		}
-		if !cfg.DryRun {
-			i.recordAuthorVariantAlias(ctx, author.ID, oldName, matcher)
 		}
 		changed = true
 	}
 	if full.ForeignID != "" && author.ForeignID != full.ForeignID {
 		existing, err := i.authors.GetByAnyForeignID(ctx, full.ForeignID)
 		if err != nil {
-			return metadataMergeResult{}, err
+			return authorMergePlan{}, err
 		}
 		if existing != nil && existing.ID != author.ID {
-			result.Messages = append(result.Messages, "author relink skipped: upstream author already exists locally")
+			plan.result.Messages = append(plan.result.Messages, "author relink skipped: upstream author already exists locally")
 		} else if !models.CanReplaceAuthorIdentity(author) {
-			if !cfg.DryRun {
-				if err := i.authors.UpsertAuthorIdentifier(ctx, author.ID, full.ForeignID); err != nil {
-					return metadataMergeResult{}, err
-				}
-			}
-			result.Messages = append(result.Messages, "author relink skipped: existing metadata identity is not replaceable")
+			plan.identifier = full.ForeignID
+			plan.result.Messages = append(plan.result.Messages, "author relink skipped: existing metadata identity is not replaceable")
 		} else {
 			author.ForeignID = full.ForeignID
 			if full.MetadataProvider != "" {
@@ -441,37 +505,71 @@ func (i *Importer) enrichAuthor(ctx context.Context, cfg ImportConfig, item Norm
 			} else {
 				author.MetadataProvider = models.AuthorProviderFromForeignID(full.ForeignID)
 			}
-			result.Relinked++
+			plan.result.Relinked++
 			changed = true
 		}
 	}
 	for _, field := range authorConflictFields {
-		fieldResult, fieldChanged, err := i.applyConflictField(ctx, cfg, item, entityTypeAuthor, author.ID, field,
+		fieldResult, fieldChanged, conflict, err := i.planConflictField(ctx, cfg, item, entityTypeAuthor, author.ID, field,
 			SerializeAuthorConflictValue(author, field),
 			SerializeAuthorConflictValue(full, field),
 			func(value string) error { return ApplyAuthorConflictValue(author, field, value) },
 			func() string { return SerializeAuthorConflictValue(author, field) },
 		)
 		if err != nil {
-			return metadataMergeResult{}, err
+			return authorMergePlan{}, err
 		}
-		result.Matched += fieldResult.Matched
-		result.Relinked += fieldResult.Relinked
-		result.Conflicts += fieldResult.Conflicts
-		result.AutoResolved += fieldResult.AutoResolved
-		result.Messages = append(result.Messages, fieldResult.Messages...)
+		plan.result.Matched += fieldResult.Matched
+		plan.result.Relinked += fieldResult.Relinked
+		plan.result.Conflicts += fieldResult.Conflicts
+		plan.result.AutoResolved += fieldResult.AutoResolved
+		plan.result.Messages = append(plan.result.Messages, fieldResult.Messages...)
+		if conflict != nil {
+			plan.conflicts = append(plan.conflicts, conflict)
+		}
 		changed = changed || fieldChanged
 	}
-	if !changed && result.Conflicts == 0 && result.AutoResolved == 0 && result.Relinked == 0 {
-		return result, nil
+	r := plan.result
+	plan.write = changed || r.Conflicts != 0 || r.AutoResolved != 0 || r.Relinked != 0
+	return plan, nil
+}
+
+// recordAuthorMergeBookkeeping writes what an author merge records beside the
+// author row, once that row is written. Failures are handled as before the
+// split: a failed alias is logged, a failed identifier or conflict write
+// fails the merge.
+func (i *Importer) recordAuthorMergeBookkeeping(ctx context.Context, cfg ImportConfig, authorID int64, plan authorMergePlan, matcher *authorMatcher) error {
+	if plan.aliasName != "" && !cfg.DryRun {
+		i.recordAuthorVariantAlias(ctx, authorID, plan.aliasName, matcher)
 	}
-	now := time.Now().UTC()
-	author.LastMetadataRefreshAt = &now
-	if err := i.authors.Update(ctx, author); err != nil {
-		return metadataMergeResult{}, err
+	if plan.identifier != "" && !cfg.DryRun {
+		if err := i.authors.UpsertAuthorIdentifier(ctx, authorID, plan.identifier); err != nil {
+			return err
+		}
 	}
-	matcher.addAuthor(author)
-	return result, nil
+	for _, conflict := range plan.conflicts {
+		if err := i.conflicts.Upsert(ctx, conflict); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// reloadAuthor replaces author with the stored row, keeping the transport
+// only provider identifiers while the identity is unchanged.
+func (i *Importer) reloadAuthor(ctx context.Context, author *models.Author) error {
+	current, err := i.authors.GetByID(ctx, author.ID)
+	if err != nil {
+		return fmt.Errorf("reload author %d: %w", author.ID, err)
+	}
+	if current == nil {
+		return fmt.Errorf("reload author %d: %w", author.ID, sql.ErrNoRows)
+	}
+	if current.ForeignID == author.ForeignID {
+		current.ProviderIdentifiers = author.ProviderIdentifiers
+	}
+	*author = *current
+	return nil
 }
 
 func (i *Importer) enrichBook(ctx context.Context, cfg ImportConfig, item NormalizedLibraryItem, author *models.Author, book *models.Book) (metadataMergeResult, error) {

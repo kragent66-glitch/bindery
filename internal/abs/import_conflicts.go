@@ -8,32 +8,11 @@ import (
 	"github.com/vavallee/bindery/internal/textutil"
 )
 
-func (i *Importer) applyConflictField(
-	ctx context.Context,
-	cfg ImportConfig,
-	item NormalizedLibraryItem,
-	entityType string,
-	localID int64,
-	fieldName, absValue, upstreamValue string,
-	apply func(string) error,
-	currentValue func() string,
-) (metadataMergeResult, bool, error) {
-	result, changed, conflict, err := i.planConflictField(ctx, cfg, item, entityType, localID, fieldName, absValue, upstreamValue, apply, currentValue)
-	if err != nil {
-		return metadataMergeResult{}, false, err
-	}
-	if conflict != nil {
-		if err := i.conflicts.Upsert(ctx, conflict); err != nil {
-			return metadataMergeResult{}, false, err
-		}
-	}
-	return result, changed, nil
-}
-
-// planConflictField is applyConflictField without the write to the conflicts
-// table: it applies the chosen value through apply and returns the conflict
-// row to record, if any, so a caller whose entity write can lose a guard
-// records it only once that write lands (#2926).
+// planConflictField decides one field of an ABS metadata merge: it applies
+// the chosen value through apply and returns the conflict row to record, if
+// any, without writing it. Callers record the row only once their guarded
+// entity write lands, so a merge that loses the guard leaves no conflict
+// behind for a value that was never stored (#2926).
 func (i *Importer) planConflictField(
 	ctx context.Context,
 	cfg ImportConfig,

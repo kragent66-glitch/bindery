@@ -810,8 +810,8 @@ it asks you to try again. **Rebind** does the same when the book changes while
 the new record is being fetched.
 
 The same goes for the other writes that follow a provider lookup. When an
-Audiobookshelf import merges a book with its upstream record, an edit you saved
-during the lookup is kept and the merge is applied on top of it; if the book
+Audiobookshelf import merges a book or an author with its upstream record, an edit you saved
+during the lookup is kept and the merge is applied on top of it; if the row
 keeps changing, the merge waits for the next import. A **Refresh Metadata** on
 an author re-reads each book it matched by title just before updating it, so
 edits made while the refresh runs are kept. The scheduled author metadata
