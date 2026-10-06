@@ -2,13 +2,16 @@ package importer
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/vavallee/bindery/internal/models"
+	"github.com/vavallee/bindery/internal/textutil"
 )
 
 // LibrarySnapshot answers FindExisting queries from one walk of each library
@@ -68,15 +71,53 @@ func NewLibrarySnapshot(libraryDir, audiobookDir string) *LibrarySnapshot {
 	return &LibrarySnapshot{libraryDir: libraryDir, audiobookDir: audiobookDir}
 }
 
-// FindExisting reports the first library file matching title/author, or "".
-// Root selection, the author-folder pre-filter and the title/author match are
-// those of the pre-snapshot Scanner walk; the candidate set is filtered and
-// ranked by walkLibraryEntries so a supplement-class file beside audio never
-// answers and a real container outranks a supplement (#2188/#2240).
+// findExistingMargin is how far the best file must lead a file of a different
+// title before FindExisting answers with it, and how far the wanted book must
+// lead a rival catalogue title for that file (#2941). It is the library scan's
+// title margin, so the add path and the scan settle a near tie the same way:
+// five points on the 0 to 1 Jaro-Winkler scale, overridden only by an exact
+// normalised title that is strictly ahead.
+const findExistingMargin = 0.05
+
+// FindExisting reports the library file that best matches title/author, or
+// "". Root selection, the author-folder pre-filter and the title/author match
+// are those of the pre-snapshot Scanner walk; the candidate set is filtered
+// and ranked by walkLibraryEntries so a supplement-class file beside audio
+// never answers and a real container outranks a supplement (#2188/#2240).
+//
+// Every file that clears the match is scored, not just the first one walked
+// (#2941). See FindExistingAmong for the ranking rule.
 func (ls *LibrarySnapshot) FindExisting(ctx context.Context, title, authorName, mediaType string) string {
+	return ls.FindExistingAmong(ctx, title, authorName, mediaType, nil)
+}
+
+// FindExistingAmong is FindExisting for a book whose author has other
+// catalogue books, given as rivals. It ranks in both directions, the way the
+// library scan's title tier ranks books for a file (#2941):
+//
+//   - Files for the book. Every matching file is scored by Jaro-Winkler on the
+//     normalised titles. The best one answers when no file of a different
+//     title competes, when its title is exactly the wanted one and strictly
+//     ahead, or when it leads by findExistingMargin. A closer pair answers
+//     nothing, so the book stays Wanted and searchable. Files whose titles
+//     differ only in their numbers (an audiobook's tracks, one title in two
+//     formats) are one book, not competitors, and the first of them in walk
+//     order answers as before. A file in a numbered book folder is grouped by
+//     the folder, which is where such a layout keeps the volume (#2810).
+//   - Books for the file. The chosen file is then held to the same rule
+//     against each rival title that also clears the match and the volume
+//     veto. Unless the wanted title has the clear lead, nothing answers,
+//     rather than a lower ranked file: "Harry Potter" must not take "Harry
+//     Potter en het vervloekte kind.epub" when that title is also the
+//     author's. A rival with the wanted title's own normalised form is a
+//     duplicate row, not a competitor, and a file in a numbered book folder
+//     skips this step because the folder has already settled the volume
+//     (#2810).
+func (ls *LibrarySnapshot) FindExistingAmong(ctx context.Context, title, authorName, mediaType string, rivals []string) string {
 	if title == "" {
 		return ""
 	}
+	var hits []*libraryEntry
 	for _, root := range ls.rootsForMediaType(mediaType) {
 		entries, ok := ls.entriesFor(ctx, root)
 		if !ok {
@@ -101,11 +142,139 @@ func (ls *LibrarySnapshot) FindExisting(ctx context.Context, title, authorName, 
 				continue
 			}
 			if titleWordsMatch(e.title, title) {
-				return e.path
+				hits = append(hits, e)
 			}
 		}
 	}
-	return ""
+	best := bestExistingFile(hits, title)
+	if best == nil || !wantedTitleOwnsFile(best, title, rivals) {
+		return ""
+	}
+	return best.path
+}
+
+// existingTitleScore scores a file's normalised title against a wanted one:
+// 1 for an identical normalised title, Jaro-Winkler otherwise.
+func existingTitleScore(fileNorm, wantedNorm string) (score float64, exact bool) {
+	if fileNorm == wantedNorm {
+		return 1, true
+	}
+	return textutil.JaroWinkler(fileNorm, wantedNorm), false
+}
+
+// bestExistingFile picks FindExistingAmong's answer from the matching files,
+// given in walk order: nil when there is none, or when the best is not clear
+// of a file of a different title.
+func bestExistingFile(hits []*libraryEntry, title string) *libraryEntry {
+	if len(hits) == 0 {
+		return nil
+	}
+	// Supplement ranking stays a tier, not a score: a real container answers
+	// whenever one matches, and a supplement only when none does (#2188).
+	topRank := scanClaimRank(hits[0].path)
+	for _, e := range hits[1:] {
+		topRank = min(topRank, scanClaimRank(e.path))
+	}
+	wanted := normalizeTitle(title)
+	type titleGroup struct {
+		first *libraryEntry
+		score float64
+		exact bool
+	}
+	var groups []*titleGroup
+	byKey := make(map[string]*titleGroup)
+	for _, e := range hits {
+		if scanClaimRank(e.path) != topRank {
+			continue
+		}
+		norm := normalizeTitle(e.title)
+		score, exact := existingTitleScore(norm, wanted)
+		key := titleSansDigits(norm)
+		// A numbered book folder is the better evidence of which book a file
+		// is (#2810): a Libation file name carries an ASIN and no volume, so
+		// every volume's file would read as a different title. The folder
+		// names the group, and its score counts when it is the higher.
+		if carriesVolumeNumber(e.layoutTitle) {
+			folderNorm := normalizeTitle(e.layoutTitle)
+			folderScore, folderExact := existingTitleScore(folderNorm, wanted)
+			score = max(score, folderScore)
+			exact = exact || folderExact
+			key = titleSansDigits(folderNorm)
+		}
+		g, ok := byKey[key]
+		if !ok {
+			g = &titleGroup{first: e}
+			byKey[key] = g
+			groups = append(groups, g)
+		}
+		g.score = max(g.score, score)
+		g.exact = g.exact || exact
+	}
+	bestIdx := 0
+	for i, g := range groups {
+		if g.score > groups[bestIdx].score {
+			bestIdx = i
+		}
+	}
+	best := groups[bestIdx]
+	for i, g := range groups {
+		if i != bestIdx && !clearLead(best.score, best.exact, g.score) {
+			slog.Debug("library: existing files too close to call, not binding either",
+				"title", title, "best", best.first.path, "jw", best.score,
+				"runnerUp", g.first.path, "runnerUpJw", g.score)
+			return nil
+		}
+	}
+	return best.first
+}
+
+// wantedTitleOwnsFile reports whether file belongs to the wanted title rather
+// than to one of the rival catalogue titles, under the rule bestExistingFile
+// applies to files.
+func wantedTitleOwnsFile(file *libraryEntry, title string, rivals []string) bool {
+	if len(rivals) == 0 || carriesVolumeNumber(file.layoutTitle) {
+		return true
+	}
+	fileNorm := normalizeTitle(file.title)
+	wanted := normalizeTitle(title)
+	own, ownExact := existingTitleScore(fileNorm, wanted)
+	for _, rival := range rivals {
+		rivalNorm := normalizeTitle(rival)
+		if rivalNorm == "" || rivalNorm == wanted {
+			continue
+		}
+		if !titleWordsMatch(file.title, rival) || libraryVolumeConflict(file.title, file.layoutTitle, rival) {
+			continue
+		}
+		score, _ := existingTitleScore(fileNorm, rivalNorm)
+		if !clearLead(own, ownExact, score) {
+			slog.Debug("library: existing file fits another book of the author as well or better, not binding it",
+				"title", title, "rival", rival, "path", file.path, "jw", own, "rivalJw", score)
+			return false
+		}
+	}
+	return true
+}
+
+// clearLead is the #2941 decision between a leader and one competitor: an
+// exact normalised title strictly ahead wins, and otherwise the leader needs
+// findExistingMargin in hand.
+func clearLead(lead float64, leadExact bool, other float64) bool {
+	if leadExact && lead > other {
+		return true
+	}
+	return lead-other >= findExistingMargin
+}
+
+// titleSansDigits drops the digits from a normalised title, so files that
+// differ only in a track, part or disc number group as one book.
+func titleSansDigits(norm string) string {
+	return strings.Join(strings.Fields(strings.Map(func(r rune) rune {
+		if unicode.IsDigit(r) {
+			return ' '
+		}
+		return r
+	}, norm)), " ")
 }
 
 // rootsForMediaType selects which roots a query walks: ebook → libraryDir,

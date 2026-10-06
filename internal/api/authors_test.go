@@ -7422,6 +7422,70 @@ func TestFetchAuthorBooks_UsesOneLibrarySnapshotForTheLoop(t *testing.T) {
 	}
 }
 
+// TestFetchAuthorBooks_FileGoesToExactTitleNotShorterBook is #2941 on the add
+// author path. The library holds one untracked epub titled exactly as one of
+// the author's books; a second book, "Harry Potter", is created first and its
+// title also clears FindExisting's word match. It used to take the file, skip
+// its search, and leave the exact book unbound because the file was by then
+// owned. The file must go to the exact title and the shorter book stay
+// without one.
+func TestFetchAuthorBooks_FileGoesToExactTitleNotShorterBook(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	database.SetMaxOpenConns(1)
+
+	libDir := t.TempDir()
+	dutchPath := filepath.Join(libDir, "J. K. Rowling", "Harry Potter en het vervloekte kind (2016)", "Harry Potter en het vervloekte kind - J. K. Rowling.epub")
+	if err := os.MkdirAll(filepath.Dir(dutchPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dutchPath, bytes.Repeat([]byte("x"), int(importer.MinPlausibleEbookBytes)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	profileRepo := db.NewMetadataProfileRepo(database)
+
+	ctx := context.Background()
+	author := &models.Author{
+		ForeignID: "OL910A", Name: "J. K. Rowling", SortName: "Rowling, J. K.",
+		MetadataProvider: "openlibrary", Monitored: false,
+	}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+
+	stub := &stubMetaProvider{
+		works: []models.Book{
+			{ForeignID: "OL911W", Title: "Harry Potter", SortTitle: "harry potter", Language: "eng", Status: models.BookStatusWanted, Genres: []string{}, MetadataProvider: "openlibrary", MediaType: models.MediaTypeBoth},
+			{ForeignID: "OL912W", Title: "Harry Potter en het vervloekte kind", SortTitle: "harry potter en het vervloekte kind", Language: "eng", Status: models.BookStatusWanted, Genres: []string{}, MetadataProvider: "openlibrary", MediaType: models.MediaTypeBoth},
+		},
+	}
+	h := NewAuthorHandler(authorRepo, nil, bookRepo, nil, metadata.NewAggregator(stub), nil, profileRepo, nil).
+		WithFinder(importer.NewLibrarySnapshot(libDir, ""))
+
+	h.FetchAuthorBooks(author, false, "")
+
+	short, err := bookRepo.GetByForeignID(ctx, "OL911W")
+	if err != nil || short == nil {
+		t.Fatalf("Harry Potter not created: err=%v", err)
+	}
+	exact, err := bookRepo.GetByForeignID(ctx, "OL912W")
+	if err != nil || exact == nil {
+		t.Fatalf("Harry Potter en het vervloekte kind not created: err=%v", err)
+	}
+	if short.FilePath != "" {
+		t.Errorf("%q took %q, which is titled exactly as another book of the author", short.Title, short.FilePath)
+	}
+	if exact.FilePath != dutchPath {
+		t.Errorf("%q file path = %q, want %q", exact.Title, exact.FilePath, dutchPath)
+	}
+}
+
 // intPtr is strPtr's counterpart (queue_test.go) for the *int fields on
 // models.Edition.
 func intPtr(v int) *int { return &v }
