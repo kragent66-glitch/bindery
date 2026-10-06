@@ -172,3 +172,33 @@ func TestLibrarySnapshot_GroupAnswersWithItsBestMember(t *testing.T) {
 		t.Errorf("FindExisting(Dune) = %q, want %q", got, exact)
 	}
 }
+
+// TestLibrarySnapshot_RivalFileStepsAsideForNextBest: a file titled exactly as
+// another of the author's books is that book's, so it must leave the ranking
+// before the wanted title's file is chosen, not withdraw the answer after.
+// Withdrawing afterwards left "The Way of Kings" with nothing although its
+// own file was on disk.
+func TestLibrarySnapshot_RivalFileStepsAsideForNextBest(t *testing.T) {
+	for _, tc := range []struct {
+		name, author, wanted, own, rivalFile, rival string
+	}{
+		{"Way of Kings", "Brandon Sanderson", "The Way of Kings",
+			"Stormlight Archive The Way of Kings - Brandon Sanderson.epub",
+			"The Way of Kings Prime - Brandon Sanderson.epub", "The Way of Kings Prime"},
+		{"Dune", "Frank Herbert", "Dune",
+			"Dune_ Deluxe Edition - Frank Herbert.epub",
+			"Dune Messiah - Frank Herbert.epub", "Dune Messiah"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			libDir := t.TempDir()
+			own := filepath.Join(libDir, tc.author, tc.own)
+			writeFile(t, own)
+			writeFile(t, filepath.Join(libDir, tc.author, tc.rivalFile))
+
+			snap := NewLibrarySnapshot(libDir, "")
+			if got := snap.FindExistingAmong(context.Background(), tc.wanted, tc.author, models.MediaTypeEbook, []string{tc.rival}); got != own {
+				t.Errorf("FindExistingAmong(%q, [%q]) = %q, want %q", tc.wanted, tc.rival, got, own)
+			}
+		})
+	}
+}

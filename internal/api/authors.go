@@ -2944,7 +2944,7 @@ type rivalAwareFinder interface {
 // file was owned.
 //
 // siblings is the author's catalogue when the caller already holds it, which
-// the author sync does: reading it again per bound book costs a full author
+// the author sync does: reading it again per new book costs a full author
 // listing each time. nil means read it here; every caller runs after its book
 // rows are written, so the listing holds the new book's siblings.
 //
@@ -2956,23 +2956,18 @@ func findExistingForNewBook(ctx context.Context, books *db.BookRepo, finder Libr
 	// A Scanner hands out a snapshot; a fresh one costs the same single walk
 	// its own FindExisting makes.
 	finder = snapshotFinder(finder)
-	path := finder.FindExisting(ctx, book.Title, authorName, book.MediaType)
 	ra, ok := finder.(rivalAwareFinder)
-	if path == "" || !ok || book.AuthorID == 0 {
-		return path
+	if !ok || book.AuthorID == 0 || (siblings == nil && books == nil) {
+		return finder.FindExisting(ctx, book.Title, authorName, book.MediaType)
 	}
-	// Rivals can only withdraw the file FindExisting chose, never pick
-	// another, so the author listing is read only when there is a file to
-	// weigh. The second lookup is served from the snapshot already walked.
+	// Rivals drop files before ranking, so they can turn a near tie into a
+	// clear answer as well as remove one: the lookup always needs them.
 	if siblings == nil {
-		if books == nil {
-			return path
-		}
 		var err error
 		siblings, err = books.ListByAuthor(ctx, book.AuthorID)
 		if err != nil {
 			slog.Warn("library: list author books for rival titles", "error", err, "book_id", book.ID)
-			return path
+			return finder.FindExisting(ctx, book.Title, authorName, book.MediaType)
 		}
 	}
 	rivals := make([]string, 0, len(siblings))

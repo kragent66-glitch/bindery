@@ -104,13 +104,12 @@ func (ls *LibrarySnapshot) FindExisting(ctx context.Context, title, authorName, 
 //     answers, the first in walk order among equals. A file in a numbered
 //     book folder is grouped by the folder, which is where such a layout
 //     keeps the volume (#2810).
-//   - Books for the file. When the chosen file's normalised title is exactly
-//     a rival's and not the wanted one, nothing answers, rather than a lower
-//     ranked file: "Harry Potter" must not take "Harry Potter en het
-//     vervloekte kind.epub" when that title is also the author's. Partial
-//     rival matches never withdraw a file (see wantedTitleOwnsFile). A file
-//     in a numbered book folder skips this step because the folder has
-//     already settled the volume (#2810).
+//   - Books for the files. Before ranking, a file whose normalised title is
+//     exactly a rival's and not the wanted one is dropped, so the next best
+//     file can answer: "Harry Potter" must not take "Harry Potter en het
+//     vervloekte kind.epub" when that title is also the author's, and "Dune"
+//     still finds its own file beside "Dune Messiah.epub". Partial rival
+//     matches never drop a file (see fileBelongsToRival).
 func (ls *LibrarySnapshot) FindExistingAmong(ctx context.Context, title, authorName, mediaType string, rivals []string) string {
 	if title == "" {
 		return ""
@@ -144,11 +143,38 @@ func (ls *LibrarySnapshot) FindExistingAmong(ctx context.Context, title, authorN
 			}
 		}
 	}
-	best := bestExistingFile(hits, title)
-	if best == nil || !wantedTitleOwnsFile(best, title, rivals) {
+	best := bestExistingFile(dropRivalFiles(hits, title, rivals), title)
+	if best == nil {
 		return ""
 	}
 	return best.path
+}
+
+// dropRivalFiles removes the files that belong to a rival catalogue title
+// before ranking, so the wanted title's own file can still answer when a
+// rival's file would have outscored it: "Dune" keeps "Dune_ Deluxe
+// Edition.epub" once "Dune Messiah.epub" is known to be "Dune Messiah"'s.
+func dropRivalFiles(hits []*libraryEntry, title string, rivals []string) []*libraryEntry {
+	if len(rivals) == 0 {
+		return hits
+	}
+	rivalNorms := make(map[string]bool, len(rivals))
+	for _, r := range rivals {
+		if n := normalizeTitle(r); n != "" {
+			rivalNorms[n] = true
+		}
+	}
+	wanted := normalizeTitle(title)
+	kept := make([]*libraryEntry, 0, len(hits))
+	for _, e := range hits {
+		if fileBelongsToRival(e, wanted, rivalNorms) {
+			slog.Debug("library: existing file is titled exactly as another book of the author, not offering it",
+				"title", title, "path", e.path)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept
 }
 
 // existingTitleScore scores a file's normalised title against a wanted one:
@@ -230,30 +256,21 @@ func bestExistingFile(hits []*libraryEntry, title string) *libraryEntry {
 	return top.best
 }
 
-// wantedTitleOwnsFile reports whether file belongs to the wanted title rather
-// than to one of the rival catalogue titles. Only an exact normalised rival
-// title withdraws the file. A scored rule (any rival within the margin) was
-// tried and withdrew real matches: "Project Hail Mary A Novel.epub" for
-// "Project Hail Mary" against a "Proyecto Hail Mary" row, or "Mistborn.epub"
-// for "Mistborn: The Final Empire" against the rest of the series, leaving
-// an owned book to be downloaded again. A file named exactly as another book
-// is the one case where the wanted title is provably the wrong owner.
-func wantedTitleOwnsFile(file *libraryEntry, title string, rivals []string) bool {
-	if len(rivals) == 0 || carriesVolumeNumber(file.layoutTitle) {
-		return true
+// fileBelongsToRival reports whether file is provably another catalogue
+// book's: its normalised title is exactly a rival's and not the wanted one
+// (wanted and rivalNorms are already normalised). Only an exact title counts.
+// A scored rule (any rival within the margin) was tried and withdrew real
+// matches: "Project Hail Mary A Novel.epub" for "Project Hail Mary" against a
+// "Proyecto Hail Mary" row, or "Mistborn.epub" for "Mistborn: The Final
+// Empire" against the rest of the series, leaving an owned book to be
+// downloaded again. A file in a numbered book folder never belongs to a
+// rival here, because the folder has already settled the volume (#2810).
+func fileBelongsToRival(file *libraryEntry, wanted string, rivalNorms map[string]bool) bool {
+	if carriesVolumeNumber(file.layoutTitle) {
+		return false
 	}
 	fileNorm := normalizeTitle(file.title)
-	if fileNorm == normalizeTitle(title) {
-		return true
-	}
-	for _, rival := range rivals {
-		if normalizeTitle(rival) == fileNorm {
-			slog.Debug("library: existing file is titled exactly as another book of the author, not binding it",
-				"title", title, "rival", rival, "path", file.path)
-			return false
-		}
-	}
-	return true
+	return fileNorm != wanted && rivalNorms[fileNorm]
 }
 
 // clearLead is the #2941 decision between a leader and one competitor: an

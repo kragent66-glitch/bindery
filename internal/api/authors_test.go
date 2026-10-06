@@ -7540,6 +7540,59 @@ func TestHandleNewWantedBook_ExcludedRowDoesNotBlockBind(t *testing.T) {
 	}
 }
 
+// TestHandleNewWantedBook_RivalFileStepsAside is the add path half of the
+// rival drop: "The Way of Kings Prime.epub" belongs to the catalogue book of
+// that title, so "The Way of Kings" must still find its own file beside it
+// rather than nothing.
+func TestHandleNewWantedBook_RivalFileStepsAside(t *testing.T) {
+	database, err := db.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	authorRepo := db.NewAuthorRepo(database)
+	bookRepo := db.NewBookRepo(database)
+	ctx := context.Background()
+
+	libDir := t.TempDir()
+	dir := filepath.Join(libDir, "Brandon Sanderson")
+	own := filepath.Join(dir, "Stormlight Archive The Way of Kings - Brandon Sanderson.epub")
+	for _, p := range []string{own, filepath.Join(dir, "The Way of Kings Prime - Brandon Sanderson.epub")} {
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, bytes.Repeat([]byte("x"), int(importer.MinPlausibleEbookBytes)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	author := &models.Author{ForeignID: "OL930A", Name: "Brandon Sanderson", SortName: "Sanderson, Brandon"}
+	if err := authorRepo.Create(ctx, author); err != nil {
+		t.Fatal(err)
+	}
+	prime := &models.Book{ForeignID: "OL931W", AuthorID: author.ID, Title: "The Way of Kings Prime",
+		Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, prime); err != nil {
+		t.Fatal(err)
+	}
+	book := &models.Book{ForeignID: "OL932W", AuthorID: author.ID, Title: "The Way of Kings",
+		Status: models.BookStatusWanted, MediaType: models.MediaTypeEbook, Genres: []string{}}
+	if err := bookRepo.Create(ctx, book); err != nil {
+		t.Fatal(err)
+	}
+
+	if !handleNewWantedBook(ctx, bookRepo, nil, importer.NewLibrarySnapshot(libDir, ""), *book, author.Name) {
+		t.Fatalf("%q was not bound to its own file %q", book.Title, own)
+	}
+	got, err := bookRepo.GetByID(ctx, book.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FilePath != own {
+		t.Errorf("file path = %q, want %q", got.FilePath, own)
+	}
+}
+
 // intPtr is strPtr's counterpart (queue_test.go) for the *int fields on
 // models.Edition.
 func intPtr(v int) *int { return &v }
