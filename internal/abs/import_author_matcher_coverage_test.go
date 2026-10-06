@@ -165,8 +165,10 @@ func TestCovImpAuthorMatcher_NormalizedAndFuzzyAliasTiers(t *testing.T) {
 	if err != nil || ambiguous || got == nil || got.ID != author.ID {
 		t.Fatalf("normalized alias = %+v by %q ambiguous=%v err=%v", got, by, ambiguous, err)
 	}
-	if by != "normalized_alias" && by != "alias" {
-		t.Fatalf("matchedBy = %q, want an alias tier", by)
+	// "Le Guin, Ursula K." only equals the alias after name normalisation,
+	// so the match comes from the normalized alias tier, not the exact one.
+	if by != "normalized_alias" {
+		t.Fatalf("matchedBy = %q, want normalized_alias", by)
 	}
 	if !shouldRecordAuthorVariantAlias("normalized_alias") || shouldRecordAuthorVariantAlias("alias") {
 		t.Fatal("shouldRecordAuthorVariantAlias disagrees with the tier contract")
