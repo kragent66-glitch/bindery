@@ -1,10 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router'
 import SeriesPage from './SeriesPage'
 import { api } from '../api/client'
 import type { Book, Series, SeriesHardcoverLink, SeriesHardcoverSearchResult, SystemStatus } from '../api/client'
-import '../i18n'
+import i18n from '../i18n'
 import { acceptConfirm } from '../test-utils'
 
 vi.mock('../api/client', async importOriginal => {
@@ -68,7 +68,7 @@ describe('SeriesPage', () => {
     ])
 
     expect(await screen.findByRole('heading', { name: 'The Stormlight Archive' })).toBeInTheDocument()
-    const search = screen.getByRole('searchbox', { name: 'Search series...' })
+    const search = screen.getByRole('searchbox', { name: 'Search series…' })
     fireEvent.change(search, { target: { value: '  CAFE  ' } })
     expect(screen.getByRole('heading', { name: 'Café Chronicles' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'The Stormlight Archive' })).not.toBeInTheDocument()
@@ -171,7 +171,7 @@ describe('SeriesPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Set genre' }))
 
       await waitFor(() => expect(api.applySeriesGenres).toHaveBeenCalledWith(12, ['Fantasy', 'Epic']))
-      expect(await screen.findByText('Genres set on 0 book(s)')).toBeInTheDocument()
+      expect(await screen.findByText('Genres set on 0 books')).toBeInTheDocument()
     } finally {
       promptSpy.mockRestore()
     }
@@ -1292,7 +1292,7 @@ describe('SeriesPage filters', () => {
   it('combines the filter with the title search', async () => {
     renderAt(library, enhancedOff, '/series?filter=complete')
     expect(await screen.findByRole('heading', { name: 'Finished' })).toBeInTheDocument()
-    const search = screen.getByRole('searchbox', { name: 'Search series...' })
+    const search = screen.getByRole('searchbox', { name: 'Search series…' })
 
     fireEvent.change(search, { target: { value: 'excluded' } })
     expect(headings()).toEqual(['Excluded Tail'])
@@ -1305,5 +1305,44 @@ describe('SeriesPage filters', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Shortlisted' }))
     fireEvent.click(screen.getByRole('button', { name: 'Missing books' }))
     expect(headings()).toEqual(['Gappy'])
+  })
+})
+
+// The heading, count, buttons and card labels were hardcoded English, so a
+// translated locale still showed them in English (found translating #2994).
+describe('SeriesPage translations', () => {
+  afterEach(async () => {
+    await act(async () => { await i18n.changeLanguage('en') })
+  })
+
+  it('renders its labels from the active locale', async () => {
+    i18n.addResourceBundle('de', 'translation', {
+      series: {
+        title: 'Serien',
+        count_one: '{{count}} Serie',
+        count_other: '{{count}} Serien',
+        addSeries: 'Serie hinzufügen',
+        rename: 'Umbenennen',
+        bookCount_one: '{{count}} Buch',
+        bookCount_other: '{{count}} Bücher',
+        shortlist: { off: 'Nicht vorgemerkt' },
+      },
+    }, true, true)
+    await act(async () => { await i18n.changeLanguage('de') })
+    renderSeriesPage([
+      { id: 1, foreignSeriesId: 'series-1', title: 'Dune', description: '', monitored: false, books: [] },
+      { id: 2, foreignSeriesId: 'series-2', title: 'Foundation', description: '', monitored: false, books: [] },
+    ], { version: 'dev', commit: 'unknown', buildDate: '', enhancedHardcoverApi: false, hardcoverTokenConfigured: false })
+
+    // The page heading renders before the list loads; wait for the cards.
+    expect(await screen.findByRole('heading', { name: 'Dune' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 2, name: 'Serien' })).toBeInTheDocument()
+    expect(screen.getByText('2 Serien')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Serie hinzufügen' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Umbenennen' })).toHaveLength(2)
+    expect(screen.getAllByText('0 Bücher')).toHaveLength(2)
+    expect(screen.getAllByText('Nicht vorgemerkt')).toHaveLength(2)
+    expect(document.title).toBe('Serien · Bindery')
+    expect(screen.queryByRole('heading', { level: 2, name: 'Series' })).not.toBeInTheDocument()
   })
 })

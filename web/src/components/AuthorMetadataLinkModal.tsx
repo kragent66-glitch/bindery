@@ -112,7 +112,7 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
               value={query}
               onChange={event => setQuery(event.target.value)}
               className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
-              placeholder={t('authorMetadataLink.searchPlaceholder', 'Search by author name...')}
+              placeholder={t('authorMetadataLink.searchPlaceholder', 'Search by author name…')}
               autoFocus
             />
             <button
@@ -120,7 +120,7 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
               disabled={searching || !query.trim()}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-md text-sm font-medium"
             >
-              {searching ? t('authorMetadataLink.searching', 'Searching...') : t('authorMetadataLink.search', 'Search')}
+              {searching ? t('authorMetadataLink.searching', 'Searching…') : t('authorMetadataLink.search', 'Search')}
             </button>
           </form>
 
@@ -204,7 +204,7 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
                   disabled={linking !== null}
                   className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded text-xs font-medium flex-shrink-0"
                 >
-                  {linking === candidate.foreignAuthorId ? t('authorMetadataLink.linking', 'Linking...') : t('authorMetadataLink.link', 'Link')}
+                  {linking === candidate.foreignAuthorId ? t('authorMetadataLink.linking', 'Linking…') : t('authorMetadataLink.link', 'Link')}
                 </button>
               </div>
             ))}

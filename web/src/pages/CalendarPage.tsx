@@ -11,16 +11,27 @@ function getFirstDayOfMonth(year: number, month: number) {
   return new Date(year, month, 1).getDay()
 }
 
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-]
+// Month and weekday names come from Intl in the active UI language, so the
+// calendar follows the language switcher instead of always reading English.
+// Dates are built in UTC and formatted in UTC so no local offset can move a
+// label onto the neighbouring day or month.
+function monthLabel(lang: string | undefined, year: number, month: number, opts: Intl.DateTimeFormatOptions) {
+  return new Intl.DateTimeFormat(lang, { ...opts, timeZone: 'UTC' }).format(new Date(Date.UTC(year, month, 1)))
+}
 
-const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-const DAY_NAMES_SHORT = ['S', 'M', 'T', 'W', 'T', 'F', 'S']
+function dayOfMonthLabel(lang: string | undefined, year: number, month: number, day: number) {
+  return new Intl.DateTimeFormat(lang, { month: 'short', day: 'numeric', timeZone: 'UTC' }).format(new Date(Date.UTC(year, month, day)))
+}
+
+// Sunday first, matching getFirstDayOfMonth. 2023-01-01 was a Sunday.
+function weekdayNames(lang: string | undefined, weekday: 'short' | 'narrow') {
+  const fmt = new Intl.DateTimeFormat(lang, { weekday, timeZone: 'UTC' })
+  return Array.from({ length: 7 }, (_, i) => fmt.format(new Date(Date.UTC(2023, 0, 1 + i))))
+}
 
 export default function CalendarPage() {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const lang = i18n.resolvedLanguage ?? i18n.language
   const [books, setBooks] = useState<Book[]>([])
   const [loading, setLoading] = useState(true)
   const today = new Date()
@@ -48,9 +59,9 @@ export default function CalendarPage() {
   }, [viewYear, viewMonth])
 
   useEffect(() => {
-    document.title = 'Calendar · Bindery'
+    document.title = `${t('calendar.title')} · Bindery`
     return () => { document.title = 'Bindery' }
-  }, [])
+  }, [t])
 
   const prevMonth = () => {
     if (viewMonth === 0) { setViewMonth(11); setViewYear(y => y - 1) }
@@ -82,6 +93,8 @@ export default function CalendarPage() {
   while (cells.length % 7 !== 0) cells.push(null)
 
   const hasReleases = Object.keys(booksByDay).length > 0
+  const dayNames = weekdayNames(lang, 'short')
+  const dayNamesNarrow = weekdayNames(lang, 'narrow')
 
   return (
     <div>
@@ -104,7 +117,7 @@ export default function CalendarPage() {
             ‹
           </button>
           <span className="text-sm font-medium w-28 sm:w-36 text-center">
-            {MONTH_NAMES[viewMonth]} {viewYear}
+            {monthLabel(lang, viewYear, viewMonth, { month: 'long', year: 'numeric' })}
           </span>
           <button
             onClick={nextMonth}
@@ -124,8 +137,8 @@ export default function CalendarPage() {
           <div className="hidden sm:block border border-slate-200 dark:border-zinc-800 rounded-lg overflow-hidden">
             {/* Day headers */}
             <div className="grid grid-cols-7 bg-slate-100 dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
-              {DAY_NAMES.map(d => (
-                <div key={d} className="py-2 text-center text-xs font-medium text-slate-600 dark:text-zinc-500 uppercase tracking-wider">
+              {dayNames.map((d, i) => (
+                <div key={i} className="py-2 text-center text-xs font-medium text-slate-600 dark:text-zinc-500 uppercase tracking-wider">
                   {d}
                 </div>
               ))}
@@ -172,7 +185,7 @@ export default function CalendarPage() {
           {/* Compact grid for mobile — shown below sm */}
           <div className="sm:hidden border border-slate-200 dark:border-zinc-800 rounded-lg overflow-hidden mb-4">
             <div className="grid grid-cols-7 bg-slate-100 dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
-              {DAY_NAMES_SHORT.map((d, i) => (
+              {dayNamesNarrow.map((d, i) => (
                 <div key={i} className="py-2 text-center text-xs font-medium text-slate-600 dark:text-zinc-500">
                   {d}
                 </div>
@@ -212,7 +225,7 @@ export default function CalendarPage() {
             <div className="mt-4 border border-slate-200 dark:border-zinc-800 rounded-lg overflow-hidden">
               <div className="px-4 py-2 bg-slate-100 dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
                 <p className="text-xs text-slate-600 dark:text-zinc-400 font-medium">
-                  {t('calendar.releasingIn', { month: MONTH_NAMES[viewMonth], year: viewYear })}
+                  {t('calendar.releasingIn', { month: monthLabel(lang, viewYear, viewMonth, { month: 'long' }), year: viewYear })}
                 </p>
               </div>
               <div className="divide-y divide-slate-200 dark:divide-zinc-800">
@@ -222,7 +235,7 @@ export default function CalendarPage() {
                     dayBooks.map(book => (
                       <div key={book.id} className="flex items-center gap-3 px-4 py-3">
                         <span className="text-xs text-slate-600 dark:text-zinc-500 w-12 flex-shrink-0">
-                          {MONTH_NAMES[viewMonth].slice(0, 3)} {day}
+                          {dayOfMonthLabel(lang, viewYear, viewMonth, Number(day))}
                         </span>
                         {book.imageUrl && (
                           <img src={book.imageUrl} alt="" className="w-8 h-10 object-cover rounded flex-shrink-0" />

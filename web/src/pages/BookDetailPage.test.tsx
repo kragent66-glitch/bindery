@@ -1674,7 +1674,7 @@ describe('BookDetailPage — Previous/Next navigation (#2548, book side)', () =>
 
     fireEvent.click(screen.getByLabelText('Next book'))
 
-    expect(await screen.findByText('Loading...')).toBeInTheDocument()
+    expect(await screen.findByText('Loading…')).toBeInTheDocument()
     expect(screen.getByText('← Books')).toBeInTheDocument()
     expect(screen.getByLabelText('Previous book')).toBeInTheDocument()
     expect(screen.getByLabelText('Next book')).toBeInTheDocument()

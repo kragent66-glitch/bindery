@@ -82,9 +82,9 @@ export default function SeriesPage() {
   }, [location.state])
 
   useEffect(() => {
-    document.title = 'Series · Bindery'
+    document.title = `${t('series.title')} · Bindery`
     return () => { document.title = 'Bindery' }
-  }, [])
+  }, [t])
 
   const refreshSeriesList = async () => {
     const list = await api.listSeries()
@@ -117,7 +117,7 @@ export default function SeriesPage() {
   const applySeriesGenres = async (series: Series) => {
     const current = series.genreOverride ?? []
     const input = prompt(
-      `Set genres for every book in "${series.title}" (comma-separated). Genres are locked against metadata refresh and applied to books added later. Leave empty to remove the override.`,
+      t('series.genre.prompt', { title: series.title }),
       current.join(', '),
     )
     if (input === null) return
@@ -129,15 +129,15 @@ export default function SeriesPage() {
         await api.clearSeriesGenres(series.id)
         setSeriesList(prev => prev.map(s =>
           s.id === series.id ? { ...s, genreOverride: undefined, genreOverrideSet: false } : s))
-        setLinkResult(prev => ({ ...prev, [series.id]: 'Genre override removed' }))
+        setLinkResult(prev => ({ ...prev, [series.id]: t('series.genre.removed') }))
         return
       }
       const { updated } = await api.applySeriesGenres(series.id, genres)
       setSeriesList(prev => prev.map(s =>
         s.id === series.id ? { ...s, genreOverride: genres, genreOverrideSet: true } : s))
-      setLinkResult(prev => ({ ...prev, [series.id]: `Genres set on ${updated} book(s)` }))
+      setLinkResult(prev => ({ ...prev, [series.id]: t('series.genre.applied', { count: updated }) }))
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Genre apply failed')
+      alert(err instanceof Error ? err.message : t('series.genre.failed'))
     } finally {
       setApplyingGenres(null)
     }
@@ -183,7 +183,7 @@ export default function SeriesPage() {
       const diff = await api.getSeriesHardcoverDiff(series.id)
       setDiffs(prev => ({ ...prev, [series.id]: diff }))
     } catch (err) {
-      setDiffErrors(prev => ({ ...prev, [series.id]: err instanceof Error ? err.message : 'Failed to load Hardcover diff' }))
+      setDiffErrors(prev => ({ ...prev, [series.id]: err instanceof Error ? err.message : t('series.hardcover.diffFailed') }))
     } finally {
       setDiffLoading(prev => ({ ...prev, [series.id]: false }))
     }
@@ -214,14 +214,14 @@ export default function SeriesPage() {
             ...(mediaType ? { mediaType } : {}),
           })
         : await api.fillSeriesAll(series.id, mediaType)
-      setFillResult(prev => ({ ...prev, [series.id]: r.queued === 0 ? 'Nothing to fill' : `${r.queued} book${r.queued === 1 ? '' : 's'} queued` }))
+      setFillResult(prev => ({ ...prev, [series.id]: r.queued === 0 ? t('series.fill.nothing') : t('series.fill.queued', { count: r.queued }) }))
       const list = await refreshSeriesList()
       const updated = list.find(s => s.id === series.id)
       if (enhancedHardcoverApi && updated?.hardcoverLink) {
         await loadHardcoverDiff(updated, true)
       }
     } catch {
-      setFillResult(prev => ({ ...prev, [series.id]: 'Failed' }))
+      setFillResult(prev => ({ ...prev, [series.id]: t('series.fill.failed') }))
     } finally {
       setFilling(null)
     }
@@ -255,7 +255,7 @@ export default function SeriesPage() {
         setLinkResult(prev => ({ ...prev, [series.id]: reason }))
       }
     } catch (err) {
-      setLinkResult(prev => ({ ...prev, [series.id]: err instanceof Error ? err.message : 'Failed to search Hardcover' }))
+      setLinkResult(prev => ({ ...prev, [series.id]: err instanceof Error ? err.message : t('series.hardcover.searchFailed') }))
     } finally {
       setLinking(null)
     }
@@ -318,16 +318,16 @@ export default function SeriesPage() {
     <div>
       {confirmDialog}
       <div className="flex items-center justify-between gap-3 flex-wrap mb-6">
-        <h2 className="text-2xl font-bold">Series</h2>
+        <h2 className="text-2xl font-bold">{t('series.title')}</h2>
         <div className="flex items-center gap-3">
           <span className="text-sm text-slate-600 dark:text-zinc-500">
-            {filter === 'all' ? `${seriesList.length} series` : t('series.countFiltered', { shown: filteredSeries.length, total: seriesList.length })}
+            {filter === 'all' ? t('series.count', { count: seriesList.length }) : t('series.countFiltered', { shown: filteredSeries.length, total: seriesList.length })}
           </span>
           <button
             onClick={() => setShowAddSeries(true)}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 rounded-md text-sm font-medium transition-colors"
           >
-            Add Series
+            {t('series.addSeries')}
           </button>
         </div>
       </div>
@@ -358,11 +358,11 @@ export default function SeriesPage() {
       </div>
 
       {loading ? (
-        <div className="text-slate-600 dark:text-zinc-500">Loading...</div>
+        <div className="text-slate-600 dark:text-zinc-500">{t('common.loading')}</div>
       ) : seriesList.length === 0 ? (
         <div className="text-center py-16 text-slate-600 dark:text-zinc-500">
-          <p className="text-lg mb-2">No series found</p>
-          <p className="text-sm">Series are populated automatically from your monitored authors' books</p>
+          <p className="text-lg mb-2">{t('series.emptyTitle')}</p>
+          <p className="text-sm">{t('series.emptyHint')}</p>
         </div>
       ) : filteredSeries.length === 0 ? (
         <div className="text-center py-16 text-slate-600 dark:text-zinc-500" role="status">
@@ -408,11 +408,11 @@ export default function SeriesPage() {
                     <div className="flex-shrink-0 flex items-center gap-2">
                       {displayMissingCount > 0 && (
                         <span className="text-xs text-amber-600 dark:text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded-full">
-                          {displayMissingCount} missing
+                          {t('series.missingBadge', { count: displayMissingCount })}
                         </span>
                       )}
                       <span className="text-xs text-slate-600 dark:text-zinc-500 bg-slate-200 dark:bg-zinc-800 px-2 py-0.5 rounded-full">
-                        {bookCount} {bookCount === 1 ? 'book' : 'books'}
+                        {t('series.bookCount', { count: bookCount })}
                       </span>
                       <span className="text-slate-500 dark:text-zinc-600 text-xs">{isOpen ? '▲' : '▼'}</span>
                     </div>
@@ -430,10 +430,10 @@ export default function SeriesPage() {
                   <Switch
                     checked={series.monitored}
                     onChange={() => toggleMonitor(series)}
-                    label={series.monitored ? 'Remove from shortlist' : 'Add to shortlist'}
-                    title="Marks the series so you can find it again. Bindery does not yet check a shortlisted series for new books on its own; use Fill gaps."
+                    label={series.monitored ? t('series.shortlist.remove') : t('series.shortlist.add')}
+                    title={t('series.shortlist.hint')}
                   >
-                    {series.monitored ? 'Shortlisted' : 'Not shortlisted'}
+                    {series.monitored ? t('series.shortlist.on') : t('series.shortlist.off')}
                   </Switch>
                   {enhancedHardcoverApi && (
                     <button
@@ -444,23 +444,27 @@ export default function SeriesPage() {
                           ? 'border-sky-500/40 bg-sky-500/10 text-sky-700 dark:text-sky-300'
                           : 'border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300'
                       }`}
-                      title={series.hardcoverLink ? `Linked to ${series.hardcoverLink.hardcoverTitle}` : 'Search Hardcover series'}
+                      title={series.hardcoverLink ? t('series.hardcover.linkedTo', { title: series.hardcoverLink.hardcoverTitle }) : t('series.hardcover.searchTitle')}
                     >
-                      {linking === series.id ? 'Searching...' : series.hardcoverLink ? `${series.hardcoverLink.linkedBy === 'auto' ? 'Auto' : 'Manual'} link` : 'Search'}
+                      {linking === series.id
+                        ? t('series.hardcover.searching')
+                        : series.hardcoverLink
+                          ? (series.hardcoverLink.linkedBy === 'auto' ? t('series.hardcover.autoLink') : t('series.hardcover.manualLink'))
+                          : t('series.hardcover.search')}
                     </button>
                   )}
                   <button
                     onClick={() => setEditingSeries(series)}
                     className="text-xs px-2.5 py-1 rounded font-medium bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700"
                   >
-                    Rename
+                    {t('series.rename')}
                   </button>
                   {isOpen && (
                     <button
                       onClick={() => setBookModalSeries(series)}
                       className="text-xs px-2.5 py-1 rounded font-medium bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700"
                     >
-                      Add Book
+                      {t('series.addBook')}
                     </button>
                   )}
                   {isOpen && (
@@ -469,19 +473,21 @@ export default function SeriesPage() {
                       disabled={applyingGenres === series.id}
                       className="text-xs px-2.5 py-1 rounded font-medium bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 disabled:opacity-50"
                       title={series.genreOverrideSet
-                        ? `Genre override active${series.genreOverride?.length ? `: ${series.genreOverride.join(', ')}` : ' (no genres)'}. Books added later inherit it. Click to edit or clear.`
-                        : 'Set the same genres on every book in this series and lock them against metadata refresh'}
+                        ? (series.genreOverride?.length
+                          ? t('series.genre.activeHint', { genres: series.genreOverride.join(', ') })
+                          : t('series.genre.activeHintEmpty'))
+                        : t('series.genre.setHint')}
                     >
                       {applyingGenres === series.id
                         ? '…'
-                        : series.genreOverrideSet ? 'Genre ✓' : 'Set genre'}
+                        : series.genreOverrideSet ? t('series.genre.active') : t('series.genre.set')}
                     </button>
                   )}
                   <button
                     onClick={() => deleteSeries(series)}
                     className={`${btn.danger} ${btnSize.sm}`}
                   >
-                    Delete
+                    {t('common.delete')}
                   </button>
                   {fillNeeded && (
                     <button
@@ -489,7 +495,7 @@ export default function SeriesPage() {
                       disabled={filling === series.id}
                       className="ml-auto text-xs px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded font-medium"
                     >
-                      {filling === series.id ? 'Queuing…' : 'Fill gaps'}
+                      {filling === series.id ? t('series.fill.queuing') : t('series.fill.button')}
                     </button>
                   )}
                   {fillResult[series.id] && (
@@ -522,7 +528,7 @@ export default function SeriesPage() {
                         )}
                         <div className="min-w-0">
                           <p className="text-sm font-medium truncate">
-                            {entry.book?.title ?? `Book ${entry.bookId}`}
+                            {entry.book?.title ?? t('series.bookFallback', { id: entry.bookId })}
                           </p>
                           {entry.book?.releaseDate && (
                             <p className="text-xs text-slate-600 dark:text-zinc-500">
@@ -539,12 +545,12 @@ export default function SeriesPage() {
                                 ? 'bg-amber-500/20 text-amber-400'
                                 : 'bg-slate-300 dark:bg-zinc-700 text-slate-600 dark:text-zinc-400'
                             }`}>
-                              {entry.book.status}
+                              {t(`bookStatus.${entry.book.status}`, { defaultValue: entry.book.status })}
                             </span>
                           )}
                           {entry.book?.excluded && (
                             <span className="text-xs px-2 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-400">
-                              Excluded
+                              {t('series.excluded')}
                             </span>
                           )}
                         </span>
@@ -555,7 +561,7 @@ export default function SeriesPage() {
 
                 {isOpen && bookCount === 0 && (
                   <div className="border-t border-slate-200 dark:border-zinc-800 px-4 py-3 text-sm text-slate-600 dark:text-zinc-500">
-                    No books in this series yet
+                    {t('series.noBooks')}
                   </div>
                 )}
 
@@ -563,9 +569,9 @@ export default function SeriesPage() {
                   <div className="border-t border-slate-200 dark:border-zinc-800 bg-slate-100/80 dark:bg-zinc-900/80">
                     <div className="px-4 py-3 flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="text-sm font-medium truncate">Hardcover: {series.hardcoverLink.hardcoverTitle}</p>
+                        <p className="text-sm font-medium truncate">{t('series.hardcover.heading', { title: series.hardcoverLink.hardcoverTitle })}</p>
                         <p className="text-xs text-slate-600 dark:text-zinc-500">
-                          {diff ? `${diff.presentCount} matched · ${diff.missingCount} missing` : 'Checking Hardcover catalog...'}
+                          {diff ? t('series.hardcover.diffSummary', { present: diff.presentCount, missing: diff.missingCount }) : t('series.hardcover.checking')}
                         </p>
                         {/* Way back to the record this series is linked to
                             (#1708). Absent until the slug is known, because
@@ -579,36 +585,36 @@ export default function SeriesPage() {
                             onClick={e => e.stopPropagation()}
                             className="text-xs text-sky-700 dark:text-sky-300 hover:underline mt-0.5 inline-block"
                           >
-                            View on Hardcover ↗
+                            {t('common.viewOnSource', { source: 'Hardcover' })}
                           </a>
                         )}
                       </div>
                       {(diff?.missingCount ?? 0) > 0 && (
                         <div className="flex items-center gap-2 flex-shrink-0">
                           <select
-                            aria-label="Format to add"
+                            aria-label={t('series.hardcover.formatLabel')}
                             value={fillMediaType[series.id] ?? 'ebook'}
                             onChange={e => setFillMediaType(prev => ({ ...prev, [series.id]: e.target.value as MediaType }))}
                             disabled={filling === series.id}
                             className="text-xs bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-2 py-1 focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600 disabled:opacity-50"
-                            title="Choose which format to add"
+                            title={t('series.hardcover.formatTitle')}
                           >
-                            <option value="ebook">📖 Ebook</option>
-                            <option value="audiobook">🎧 Audiobook</option>
-                            <option value="both">📖🎧 Both</option>
+                            <option value="ebook">📖 {t('common.ebook')}</option>
+                            <option value="audiobook">🎧 {t('common.audiobook')}</option>
+                            <option value="both">📖🎧 {t('common.both')}</option>
                           </select>
                           <button
                             onClick={() => fillGaps(series, undefined, fillMediaType[series.id] ?? 'ebook')}
                             disabled={filling === series.id}
                             className="text-xs px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded font-medium"
                           >
-                            {filling === series.id ? 'Queuing...' : 'add all'}
+                            {filling === series.id ? t('series.fill.queuing') : t('series.hardcover.addAll')}
                           </button>
                         </div>
                       )}
                     </div>
                     {diffLoading[series.id] && (
-                      <div className="px-4 pb-3 text-sm text-slate-600 dark:text-zinc-500">Loading Hardcover books...</div>
+                      <div className="px-4 pb-3 text-sm text-slate-600 dark:text-zinc-500">{t('series.hardcover.loadingBooks')}</div>
                     )}
                     {diffErrors[series.id] && (
                       <div className="px-4 pb-3 text-sm text-rose-600 dark:text-rose-400">{diffErrors[series.id]}</div>
@@ -653,15 +659,15 @@ export default function SeriesPage() {
                                 onClick={() => fillGaps(series, book, fillMediaType[series.id] ?? 'ebook')}
                                 disabled={filling === series.id}
                                 className="ml-auto text-xs px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded font-medium flex-shrink-0"
-                                title="Add this missing Hardcover book and search indexers"
+                                title={t('series.hardcover.addTitle')}
                               >
-                                {filling === series.id ? '...' : 'add'}
+                                {filling === series.id ? '…' : t('series.hardcover.add')}
                               </button>
                             </div>
                           )
                         })}
                         {diff.missing.length > 8 && (
-                          <p className="text-xs text-slate-600 dark:text-zinc-500 px-1">{diff.missing.length - 8} more missing books</p>
+                          <p className="text-xs text-slate-600 dark:text-zinc-500 px-1">{t('series.hardcover.moreMissing', { count: diff.missing.length - 8 })}</p>
                         )}
                       </div>
                     )}
@@ -674,17 +680,17 @@ export default function SeriesPage() {
       )}
       {showAddSeries && (
         <SeriesNameModal
-          title="Add Series"
-          submitLabel="Add Series"
+          title={t('series.addSeries')}
+          submitLabel={t('series.addSeries')}
           onClose={() => setShowAddSeries(false)}
           onSubmit={handleCreateSeries}
         />
       )}
       {editingSeries && (
         <SeriesNameModal
-          title="Rename Series"
+          title={t('series.renameSeries')}
           initialName={editingSeries.title}
-          submitLabel="Save"
+          submitLabel={t('common.save')}
           onClose={() => setEditingSeries(null)}
           onSubmit={handleRenameSeries}
         />

@@ -171,7 +171,7 @@ export default function EditAuthorModal({ author, onClose, onSaved }: Props) {
 
         <div className="p-4 flex-1 overflow-y-auto">
           {loading ? (
-            <p className="text-sm text-slate-600 dark:text-zinc-500">{t('common.loading', 'Loading...')}</p>
+            <p className="text-sm text-slate-600 dark:text-zinc-500">{t('common.loading', 'Loading…')}</p>
           ) : (
             <>
               {qualityProfiles.length > 0 && (
@@ -262,7 +262,7 @@ export default function EditAuthorModal({ author, onClose, onSaved }: Props) {
                 <div className="mb-3">
                   <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">{t('editAuthorModal.monitoredSeries', 'Monitored series')}</label>
                   {!seriesLoaded ? (
-                    <p className="text-xs text-slate-500 dark:text-zinc-500">{t('common.loading', 'Loading...')}</p>
+                    <p className="text-xs text-slate-500 dark:text-zinc-500">{t('common.loading', 'Loading…')}</p>
                   ) : authorSeries.length === 0 ? (
                     <p className="text-xs text-slate-500 dark:text-zinc-500">
                       {t('editAuthorModal.monitoredSeriesEmpty', 'No series found for this author yet. Refresh the author to pull series data first.')}
@@ -376,7 +376,7 @@ export default function EditAuthorModal({ author, onClose, onSaved }: Props) {
             disabled={loading || saving}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-md text-sm font-medium text-white"
           >
-            {saving ? t('common.saving', 'Saving...') : t('common.save', 'Save')}
+            {saving ? t('common.saving', 'Saving…') : t('common.save', 'Save')}
           </button>
         </div>
       </div>

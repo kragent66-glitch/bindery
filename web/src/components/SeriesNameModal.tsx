@@ -1,4 +1,5 @@
 import { FormEvent, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 
 interface Props {
   title: string
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export default function SeriesNameModal({ title, initialName = '', submitLabel, onClose, onSubmit }: Props) {
+  const { t } = useTranslation()
   const [name, setName] = useState(initialName)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -17,7 +19,7 @@ export default function SeriesNameModal({ title, initialName = '', submitLabel, 
     event.preventDefault()
     const trimmed = name.trim()
     if (!trimmed) {
-      setError('Series name is required')
+      setError(t('series.nameModal.required'))
       return
     }
     setSaving(true)
@@ -25,7 +27,7 @@ export default function SeriesNameModal({ title, initialName = '', submitLabel, 
     try {
       await onSubmit(trimmed)
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save series')
+      setError(err instanceof Error ? err.message : t('series.nameModal.failed'))
     } finally {
       setSaving(false)
     }
@@ -46,14 +48,14 @@ export default function SeriesNameModal({ title, initialName = '', submitLabel, 
         </div>
         <div className="p-4 space-y-3">
           <label className="block text-sm font-medium text-slate-700 dark:text-zinc-300" htmlFor="series-name">
-            Name
+            {t('series.nameModal.name')}
           </label>
           <input
             id="series-name"
             type="text"
             value={name}
             onChange={e => setName(e.target.value)}
-            placeholder="Series name"
+            placeholder={t('series.nameModal.placeholder')}
             className="w-full bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
             autoFocus
           />
@@ -65,14 +67,14 @@ export default function SeriesNameModal({ title, initialName = '', submitLabel, 
             onClick={onClose}
             className="px-4 py-2 text-sm text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white"
           >
-            Cancel
+            {t('common.cancel')}
           </button>
           <button
             type="submit"
             disabled={saving || !name.trim()}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 rounded-md text-sm font-medium"
           >
-            {saving ? 'Saving...' : submitLabel}
+            {saving ? t('common.saving') : submitLabel}
           </button>
         </div>
       </form>

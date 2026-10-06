@@ -417,7 +417,7 @@ export default function AuthorsPage() {
             onClick={() => setShowAddSeries(true)}
             className="px-4 py-2 bg-slate-200 dark:bg-zinc-800 hover:bg-slate-300 dark:hover:bg-zinc-700 rounded-md text-sm font-medium transition-colors"
           >
-            Add Series
+            {t('series.addSeries')}
           </button>
           {/* Below `sm` the five buttons wrap and the primary action used to
               land on the second row, under Refresh all metadata, Merge and Add
@@ -828,7 +828,7 @@ export default function AuthorsPage() {
                 disabled={bulkBusy}
                 className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-md text-sm font-medium text-white transition-colors"
               >
-                {bulkBusy ? t('common.saving', 'Saving...') : t('authors.bulkSetMonitorModeApply', 'Apply monitor mode')}
+                {bulkBusy ? t('common.saving', 'Saving…') : t('authors.bulkSetMonitorModeApply', 'Apply monitor mode')}
               </button>
             </div>
           </div>
@@ -844,8 +844,8 @@ export default function AuthorsPage() {
       )}
       {showAddSeries && (
         <SeriesNameModal
-          title="Add Series"
-          submitLabel="Add Series"
+          title={t('series.addSeries')}
+          submitLabel={t('series.addSeries')}
           onClose={() => setShowAddSeries(false)}
           onSubmit={handleCreateSeries}
         />
