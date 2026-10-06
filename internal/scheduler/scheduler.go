@@ -1903,13 +1903,22 @@ func (s *Scheduler) handleStalledDownload(ctx context.Context, dl *models.Downlo
 // A removal failure is logged and swallowed: the blocklist and the re-search
 // below are the recovery, and they must not be skipped because the client was
 // unreachable for a moment.
+//
+// While another download row still uses the torrent, the client is left alone
+// (downloader.ClientJobShared). This row is marked failed straight after, and
+// failed rows do not count as users, so the last row of a shared stalled
+// torrent is the one whose pass removes it.
 func (s *Scheduler) removeStalledFromClient(ctx context.Context, dl *models.Download, client *models.DownloadClient, deleteFiles bool) {
 	if client == nil {
 		return
 	}
-	if err := downloader.RemoveDownload(ctx, client, dl, deleteFiles, s.downloadPathRemap); err != nil {
+	removed, err := downloader.RemoveDownloadUnlessShared(ctx, s.downloads, client, dl, deleteFiles, s.downloadPathRemap, "stall")
+	if err != nil {
 		slog.Warn("stall: failed to remove the stalled release from the download client",
 			"download_id", dl.ID, "title", dl.Title, "client", client.Name, "error", err)
+		return
+	}
+	if !removed {
 		return
 	}
 	slog.Info("stall: removed the stalled release from the download client",

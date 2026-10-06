@@ -116,6 +116,31 @@ func (r *DownloadRepo) GetByTorrentID(ctx context.Context, torrentID string) (*m
 	return &dl[0], nil
 }
 
+// ListByClientTorrentID returns every download on download client clientID
+// whose torrent_id is torrentID, across all owners. A torrent client adopts a
+// torrent it already holds when a grab sends the same info hash again, so
+// several rows can name one torrent; callers use this to find out whether
+// anything else still depends on it before removing it from the client.
+// torrent_id is written lower case (SetTorrentID), but the comparison folds
+// case anyway so a row written by an older path still matches.
+func (r *DownloadRepo) ListByClientTorrentID(ctx context.Context, clientID int64, torrentID string) ([]models.Download, error) {
+	torrentID = strings.ToLower(strings.TrimSpace(torrentID))
+	if torrentID == "" {
+		return nil, nil
+	}
+	return r.query(ctx, "SELECT "+downloadSelectColumns+" FROM downloads WHERE download_client_id=? AND LOWER(TRIM(torrent_id))=?", clientID, torrentID)
+}
+
+// ListByClientNzoID is ListByClientTorrentID for the usenet clients, keyed on
+// sabnzbd_nzo_id (SABnzbd's nzo id, or NZBGet's numeric NZBID as text).
+func (r *DownloadRepo) ListByClientNzoID(ctx context.Context, clientID int64, nzoID string) ([]models.Download, error) {
+	nzoID = strings.TrimSpace(nzoID)
+	if nzoID == "" {
+		return nil, nil
+	}
+	return r.query(ctx, "SELECT "+downloadSelectColumns+" FROM downloads WHERE download_client_id=? AND TRIM(sabnzbd_nzo_id)=?", clientID, nzoID)
+}
+
 // downloadOwnerArg maps 0 to NULL so unowned downloads keep the legacy
 // NULL-owner representation (matching CreateForUser's ownerArg idiom).
 func downloadOwnerArg(ownerUserID int64) any {

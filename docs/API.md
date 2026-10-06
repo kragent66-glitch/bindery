@@ -446,8 +446,9 @@ POST   /api/v1/queue/grab                         submit a search result to the 
 POST   /api/v1/queue/{id}/retry-import           retry an importFailed/importBlocked item without re-downloading
 POST   /api/v1/queue/{id}/retry                   re-send a failed item's release to the download client (no re-search)
 POST   /api/v1/queue/bulk-retry                   retry many; {"ids":[..]}; per id {"ok":true,"action":"import"|"resend"}
-DELETE /api/v1/queue/{id}                         remove (also from the download client)
-       ?deleteFiles=true                          have the client destroy the data too
+DELETE /api/v1/queue/{id}                         remove (also from the download client, unless another queue item
+                                                  still uses the same torrent/NZB: then only this row goes)
+       ?deleteFiles=true                          have the client destroy the data too (same exception)
        ?removeFromClient=false                    forget Bindery's row only, leave the torrent/NZB in the client
 POST   /api/v1/queue/bulk-delete                  remove many; {"ids":[..],"deleteFiles":false,"unmonitorBooks":false,"removeFromClient":true}
 
