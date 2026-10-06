@@ -408,15 +408,23 @@ func (s *Scanner) allowedFormat(ctx context.Context, author *models.Author, form
 }
 
 // blocklistRejectedRelease records a release rejected for its format (#1782)
-// or its language (#2998) so the next search does not grab the same file again.
+// or its language (#2998), or one the download client reported as broken
+// (#3024), so the next search does not grab the same file again.
 //
 // Without this the rejection is a loop: the book stays wanted, the next scan
 // finds the same release, grabs it, downloads it, and rejects it again. The
 // blocklist is the only thing that makes a rejection stick, and it is also why
 // this must stay narrow: it fires on a format or language the user explicitly
-// disallowed, never on a transient import failure.
+// disallowed, or on a client status that is about the release's content, never
+// on a transient import or transport failure.
+//
+// A release already on the blocklist is not added twice: a manual grab can
+// send a blocklisted release again, and its second failure says nothing new.
 func (s *Scanner) blocklistRejectedRelease(ctx context.Context, dl *models.Download, reason string) {
 	if s.blocklist == nil || dl == nil || strings.TrimSpace(dl.GUID) == "" {
+		return
+	}
+	if blocked, err := s.blocklist.IsBlocked(ctx, dl.GUID); err == nil && blocked {
 		return
 	}
 	entry := &models.BlocklistEntry{

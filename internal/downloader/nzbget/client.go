@@ -464,6 +464,36 @@ func IsFailure(status string) bool {
 		(len(status) >= 6 && status[:6] == "SCRIPT")
 }
 
+// IsContentFailure reports whether a NZBGet history status says the release
+// itself is broken, so sending the same NZB again would fail the same way
+// (#3024). The strings are the ones NzbInfo::MakeTextStatus produces.
+//
+//   - FAILURE/PAR: the par set could not repair the download.
+//   - FAILURE/UNPACK: the archive would not extract (corrupt, missing volumes).
+//   - FAILURE/HEALTH: the health check found too many missing articles, either
+//     at the end or when HealthCheck=Delete aborted it early. Current NZBGet
+//     reports a health check delete this way; it has no DELETED/HEALTH.
+//   - FAILURE/SCAN: NZBGet could not parse the NZB. Bindery only ever uploads
+//     a body that nzbfetch.ValidateNZB accepted as an NZB, so an indexer error
+//     page never reaches NZBGet and this is the file itself.
+//   - FAILURE/BAD: someone marked the job bad, the user through "Mark as bad"
+//     or a queue or post processing script such as a fake detector. Either is
+//     an explicit verdict on this release, and mark as bad exists precisely
+//     to tell an automation to move on to another one.
+//
+// Everything else is left to the #2710 cooldown: FAILURE/MOVE is the disk or
+// permissions on the client, FAILURE/FETCH a URL fetch, DELETED/MANUAL a
+// person deleting the job for reasons NZBGet does not know, DELETED/DUPE
+// NZBGet's own duplicate handling, and FAILURE/INTERNAL_ERROR says nothing
+// about the release.
+func IsContentFailure(status string) bool {
+	switch status {
+	case "FAILURE/PAR", "FAILURE/UNPACK", "FAILURE/HEALTH", "FAILURE/SCAN", "FAILURE/BAD":
+		return true
+	}
+	return false
+}
+
 func (c *Client) call(ctx context.Context, method string, params []any, target any) error {
 	if params == nil {
 		params = []any{}

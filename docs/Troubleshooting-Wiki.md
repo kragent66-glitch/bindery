@@ -121,7 +121,16 @@ Clicking **Grab** on a release you already have a Queue entry for is refused wit
 
 Automatic search applies a narrower rule than the Grab button. A Queue row stops the sweep from grabbing that release again when it is in flight, when it is imported into a book you still have, or when it is `importBlocked`. A `failed` row does not: six hours after it failed, the next sweep grabs the release again and reuses the same Queue row, with the old error message, import path and client id cleared.
 
-The six hour wait counts from the failure itself, not from when the download was added or started. A torrent grabbed at noon that your client gives up on at ten in the evening is retried from ten in the evening. The wait is there because a release that fails at the download client usually fails again the moment it is re-sent, and nothing blocklists it automatically, so without the wait a bad release would be re-grabbed on every sweep. Clicking **Grab**, or **Retry download** on the row (below), has no wait and retries straight away.
+The six hour wait counts from the failure itself, not from when the download was added or started. A torrent grabbed at noon that your client gives up on at ten in the evening is retried from ten in the evening. The wait is there because a release that fails at the download client often fails again the moment it is re-sent, so without the wait a bad release would be re-grabbed on every sweep. Clicking **Grab**, or **Retry download** on the row (below), has no wait and retries straight away.
+
+When the download client says the release itself is broken, Bindery does not wait at all: it adds the release to the Blocklist, and the next search picks a different one. The Blocklist entry's reason names the client's verdict, for example `downloadFailed: FAILURE/PAR`. That covers these failures:
+
+| Client | Blocklisted |
+|---|---|
+| NZBGet | `FAILURE/PAR`, `FAILURE/UNPACK`, `FAILURE/HEALTH`, `FAILURE/SCAN`, and `FAILURE/BAD` (marked bad by you or by a script) |
+| SABnzbd | Missing articles (*Aborted, cannot be completed*, *Not on your server(s)*, *Download might fail*), a failed repair, an unpack that failed with a CRC error, a missing volume or a password, a corrupt or unusable RAR, failed verification, and a job aborted for encryption or an unwanted extension |
+
+Everything else keeps the six hour retry, because it says nothing about the release: a full disk, a failed move, a job you deleted by hand, NZBGet's duplicate handling, a script error, or a grab that never reached the client. SABnzbd's messages are matched in English; with SABnzbd set to another language its failures all keep the retry. Remove an entry under **Settings → Blocklist** to let that release be grabbed again.
 
 `importBlocked` is deliberately left to you. Those files downloaded fine and are still on disk; what failed was the import. The sweep cannot tell whether they are still there, and re-downloading them would fetch bytes you already have and leave the old torrent in your client with nothing tracking it, so a blocked row is only ever re-grabbed when you ask for it. Use **Retry import** if the files are still in place, and **Grab** if they are gone.
 
@@ -129,7 +138,7 @@ Earlier releases let a failed row block the release permanently, and the skip wa
 
 ### Retrying a download that failed
 
-A Queue row in `failed` never produced a file: the grab did not reach the download client, or the client gave up on it. There is nothing to import, so **Retry import** does not apply and is not offered. Use **Retry download** on the row instead. It sends the same release to your download client again, which is the right move when the cause was transient (the client was down, the indexer answered 429 or 500). It deliberately does not search for a different release; when the release itself is gone, search the book and grab another one, or blocklist this one first.
+A Queue row in `failed` never produced a file: the grab did not reach the download client, or the client gave up on it. There is nothing to import, so **Retry import** does not apply and is not offered. Use **Retry download** on the row instead. It sends the same release to your download client again, which is the right move when the cause was transient (the client was down, the indexer answered 429 or 500). It deliberately does not search for a different release; when the release itself is gone, search the book and grab another one, or blocklist this one first. A release NZBGet or SABnzbd failed as broken is already on the Blocklist (see above), so a search moves past it on its own; **Retry download** still sends it if you ask.
 
 To retry in bulk, tick the rows and use **Retry selected**, or use **Retry all failed** above the list, which covers both stages: an import failure has its import re-armed, a failed download has its release re-sent. Both ask for confirmation when a re-send is in the batch, because that hands work back to your download client.
 

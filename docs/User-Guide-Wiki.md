@@ -472,7 +472,10 @@ per-row error detail. Tick rows for **Retry selected**, or use **Retry all
 failed** to cover every failed row at once. If a download client does not answer
 in time the page says so above the list, so a short Queue is never mistaken for
 lost downloads. History records every grab/import/failure and can
-blocklist a bad release in one click. Blocked releases are listed under
+blocklist a bad release in one click. A release NZBGet or SABnzbd fails as
+broken (missing articles, a failed repair or unpack, a corrupt archive) is
+blocklisted for you, with the client's verdict as the reason, so the next
+search picks a different one. Blocked releases are listed under
 Settings → Blocklist, where you can remove one to let it be grabbed again.
 
 Bindery does not chase format upgrades on its own: the sweep only searches
