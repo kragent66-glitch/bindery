@@ -430,8 +430,10 @@ been.
 - **The release holds EPUBs in both allowed and disallowed languages**: the
   allowed ones are imported and the others are left out, the same way a
   disallowed format inside a release is left out. An EPUB that declares no
-  language, or `und` or `mul`, counts as allowed here, so it is imported and
-  the disallowed one left out.
+  language, or `und` or `mul`, is imported alongside them. Next to a
+  disallowed EPUB with nothing in an allowed language, though, it does not
+  save the release: it is most likely the same edition with its metadata
+  stripped, so the release is rejected as below.
 - **Every file is in a language the profile does not allow**: the release is
   treated as the wrong release. Nothing is placed, the Queue row is blocked
   with a message naming both languages ("file declares Swedish (swe), but the

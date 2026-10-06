@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -529,25 +528,53 @@ func TestLanguageEnforcement_TwoLetterCodesOutsideTheOldTable(t *testing.T) {
 	}
 }
 
-// TestLanguageEnforcement_UndeclaredFileBesideDisallowedImports: a release
-// carrying an EPUB that declares no specific language and a Swedish one is not
-// the wrong release. A lone undeclared EPUB imports, so the undeclared one here
-// counts as acceptable too: it is imported and the Swedish one skipped, the way
-// the format gate keeps the files it can take. It used to be rejected whole.
-func TestLanguageEnforcement_UndeclaredFileBesideDisallowedImports(t *testing.T) {
+// TestLanguageEnforcement_UndeclaredFileBesideDisallowedBlocks: an EPUB that
+// declares no specific language is no evidence the release is right. Beside a
+// Swedish EPUB it is most likely the same Swedish edition with its metadata
+// stripped, so importing it would mark the book done with Swedish content, the
+// #2998 symptom again. The release is blocked, as with the Swedish file alone.
+// (A lone undeclared EPUB still imports: TestLanguageEnforcement_UndeclaredOrUnknownImports.)
+func TestLanguageEnforcement_UndeclaredFileBesideDisallowedBlocks(t *testing.T) {
 	for _, declared := range [][]string{nil, {"und"}, {"mul"}} {
 		t.Run("declared="+strings.Join(declared, ","), func(t *testing.T) {
 			f := newLangEnforceFixture(t, langEnforceOpts{allowed: "eng", bookLang: "eng"})
 			f.writeEpubDeclaring(t, "A.epub", "sv")
 			f.writeEpubDeclaring(t, "B.epub", declared...)
 			f.importDownload(t)
+			dl, book := f.reload(t)
+			if dl.Status != models.StateImportBlocked {
+				t.Fatalf("download status = %q, want %q", dl.Status, models.StateImportBlocked)
+			}
+			if !f.blocked(t) {
+				t.Error("release was not blocklisted")
+			}
+			if files := f.bookFiles(t); len(files) != 0 {
+				t.Errorf("placed %v, want nothing", files)
+			}
+			if book.Language != "eng" {
+				t.Errorf("book language = %q, want eng", book.Language)
+			}
+		})
+	}
+}
+
+// TestLanguageEnforcement_UndeclaredFileBesideAllowedImports: once a file in
+// the release declares an allowed language the release is the right one, and
+// an undeclared EPUB in it is imported rather than skipped; the Swedish one is
+// still skipped. A release places one EPUB per book (one destination path), so
+// the undeclared file is named first here to show it is the one taken.
+func TestLanguageEnforcement_UndeclaredFileBesideAllowedImports(t *testing.T) {
+	for _, declared := range [][]string{nil, {"und"}} {
+		t.Run("declared="+strings.Join(declared, ","), func(t *testing.T) {
+			f := newLangEnforceFixture(t, langEnforceOpts{allowed: "eng", bookLang: "eng"})
+			f.writeEpubDeclaring(t, "A.epub", declared...)
+			f.writeEpubDeclaring(t, "B.epub", "en")
+			f.writeEpubDeclaring(t, "C.epub", "sv")
+			f.importDownload(t)
 			f.assertImported(t)
 			placed := f.placedLanguages(t)
-			if len(placed) != 1 {
-				t.Fatalf("placed %d files declaring %v, want only the undeclared one", len(placed), placed)
-			}
-			if slices.Contains(placed[0], "swe") {
-				t.Errorf("the Swedish file was placed: %v", placed)
+			if len(placed) != 1 || len(definiteLanguages(placed[0])) != 0 {
+				t.Fatalf("placed files declare %v, want the one undeclared file", placed)
 			}
 		})
 	}
