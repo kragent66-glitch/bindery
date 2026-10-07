@@ -498,8 +498,9 @@ POST   /api/v1/queue/grab                         submit a search result to the 
 POST   /api/v1/queue/{id}/retry-import           retry an importFailed/importBlocked item without re-downloading
 POST   /api/v1/queue/{id}/retry                   re-send a failed item's release to the download client (no re-search)
 POST   /api/v1/queue/bulk-retry                   retry many; {"ids":[..]}; per id {"ok":true,"action":"import"|"resend"}
-DELETE /api/v1/queue/{id}                         remove (also from the download client)
-       ?deleteFiles=true                          have the client destroy the data too
+DELETE /api/v1/queue/{id}                         remove (also from the download client, unless another queue item
+                                                  still uses the same torrent/NZB: then only this row goes)
+       ?deleteFiles=true                          have the client destroy the data too (same exception)
        ?removeFromClient=false                    forget Bindery's row only, leave the torrent/NZB in the client
 POST   /api/v1/queue/bulk-delete                  remove many; {"ids":[..],"deleteFiles":false,"unmonitorBooks":false,"removeFromClient":true}
 
@@ -653,9 +654,10 @@ only, never a path, and it runs only when called.
 
 * `code` is stable: `config`, `connect`, `category`, `client_path`, `remap`, `local_path`, `hardlinks`, `indexer_reach`. `message` and `fix` are English sentences.
 * `status` is `pass`, `warn`, `fail`, `skipped` or `unknown`. Every check after a `fail` is `skipped` without running, except `indexer_reach`, which is always `unknown` because Bindery cannot test the client's own route to indexers.
-* The folder checked is where a grab actually lands, worked out the way the grab itself is sent: the save path Bindery sends (rTorrent always, qBittorrent without a category, Transmission with an absolute category), the category save path (qBittorrent, with an empty one meaning the default save path plus the category name), the category folder (SABnzbd), the category DestDir or DestDir plus the category name when `AppendCategoryDir` is on (NZBGet), a Deluge label's move completed path, or the client default. `source` names which. The category is used exactly as a grab sends it: a category with spaces around it, or a Deluge category with capital letters (the Label plugin only accepts lowercase labels, so such grabs are not labelled), gives `client_path: warn`.
+* The folder checked is where a grab actually lands, worked out the way the grab itself is sent: the save path Bindery sends (rTorrent always, qBittorrent without a category, Transmission with an absolute category), the category save path (qBittorrent, with an empty one meaning the default save path plus the category name), the category folder (SABnzbd), the category DestDir or DestDir plus the category name when `AppendCategoryDir` is on (NZBGet), a Deluge label's move completed path, or the client default. `source` names which. The category is used exactly as a grab sends it: a category with spaces around it gives `client_path: warn`. A Deluge category is sent lowercased, because the Label plugin stores labels in lowercase and only accepts that form when labelling a torrent, so `Books` uses the `books` label's move completed path.
+* For Deluge, `category` compares the configured categories, lowercased, with the labels the Label plugin lists, and says when it lowercases one. When the plugin is off it cannot list labels and `category` is `unknown`.
 * Ebook and audiobook grabs are checked separately, because each resolves its own category and download folder. When both land in the same folder there is one `paths` row and the `client_path`, `remap` and `local_path` checks have no `mediaType`; otherwise each carries `mediaType` `ebook` or `audiobook`.
-* `remapRule` is `client` (this client's path remap changed the path), `global` (`BINDERY_DOWNLOAD_PATH_REMAP` did) or `none`. A Windows drive path fails for a missing remap only when Bindery itself is not running on Windows. When no remap applies and the client's folder is not under any folder Bindery uses, `remap` is `warn` and `local_path` carries the failure and the fix. When Bindery sends the save path itself (rTorrent, qBittorrent without a category) and only the global remap is set, `remap` is `warn`: sending does not apply the global remap, so the client is given Bindery's own folder path and the round trip proves nothing.
+* `remapRule` is `client` (this client's path remap changed the path), `global` (`BINDERY_DOWNLOAD_PATH_REMAP` did) or `none`. A Windows drive path fails for a missing remap only when Bindery itself is not running on Windows. When no remap applies and the client's folder is not under any folder Bindery uses, `remap` is `warn` and `local_path` carries the failure and the fix. When Bindery sends the save path itself (rTorrent, qBittorrent without a category) it runs its download folder through the same remaps in reverse, the client's own first and `BINDERY_DOWNLOAD_PATH_REMAP` as the fallback, so `clientPath` is the folder the client is actually given. A client remap rule that covers the folder wins even when it maps the folder to itself (`/downloads:/downloads`), which is how a client opts out of a global remap meant for others. When the global remap produced the sent folder but the client's own default save folder is an absolute path on Bindery's own folder (that folder, inside it or above it) rather than on the sent one, `client_path` is `warn` and the fix names that identity remap. A relative default such as rTorrent's stock `./` is not checked.
 * `hardlinks` has one row per download folder and library root pair, `{mediaType, downloadPath, root, result, linkable, reason}`. Every pair gets a real link probe, because two bind mounts of one filesystem share a device ID yet refuse links across them. `result` is `yes`, `no`, `unknown` (Bindery could not write a test file in the download folder) or `missing` (the library folder does not exist and was not probed).
 * `primaryFix` is the fix of the first failure, or of the first warning when nothing failed.
 
@@ -1047,8 +1049,28 @@ GET    /api/v1/settings/descriptors               describe every key Bindery kno
 ```
 
 Secrets (`*.api_key`, `*.api_token`, `auth.*`, and the rest of
-`isSecretSetting`) never appear in a list or a read, and settings whose value is
-a server filesystem path are returned to admins only.
+`isSecretSetting`) never appear in a list or a read, not even for an admin.
+
+Every other key is returned to admins only, with a short allowlist of keys a
+non admin screen reads (#2361). A non admin caller gets exactly these, and any
+other key is left out of the list and answers `404` from a read, the same as an
+unset key:
+
+| Key | Read by |
+|-----|---------|
+| `recommendations.enabled` | Discover page |
+| `metadata.primary_provider` | add to library dialog |
+| `library.defaultRootFolderId` | add author dialog |
+| `library.defaultAudiobookRootFolderId` | add author dialog |
+| `default.media_type` | add author dialog |
+| `author.default_monitor_mode` | add author dialog |
+| `author.default_monitor_latest_count` | add author dialog |
+
+Requests authenticated with the API key are treated as admin, so a script or a
+third party client using the key still reads every non secret setting. A client
+signed in as a `user` account that read other keys should switch to the API
+key. `adminOnly` in the descriptors below says which side of the line a key is
+on.
 
 **`PUT` refuses a key Bindery does not know**, with `400` and the key named.
 Before this, an unrecognised key was stored and then read by nothing, so a typo

@@ -317,10 +317,13 @@ func (h *QueueHandler) WithStoragePaths(downloadDir, audiobookDownloadDir string
 
 // WithDownloadPathRemap attaches the global BINDERY_DOWNLOAD_PATH_REMAP.
 //
-// Only "remove with data" on an rTorrent client reads it — rTorrent has no
-// delete-with-data command, so Bindery deletes the payload itself and has to
-// translate rTorrent's path the same way the importer does. Leaving it unset
-// simply falls back to the client's own PathRemap.
+// Two things read it. A manual grab runs the save path it sends to
+// qBittorrent or rTorrent through it when the client's own PathRemap does not
+// cover the download folder (#2665). "Remove with data" on an rTorrent client
+// uses it too: rTorrent has no delete-with-data command, so Bindery deletes
+// the payload itself and has to translate rTorrent's path the same way the
+// importer does. Leaving it unset simply falls back to the client's own
+// PathRemap.
 func (h *QueueHandler) WithDownloadPathRemap(remap string) *QueueHandler {
 	h.downloadPathRemap = remap
 	return h
@@ -1428,6 +1431,7 @@ func (h *QueueHandler) grab(ctx context.Context, req grabRequest) (*models.Downl
 		MediaType:            req.MediaType,
 		DownloadDir:          h.downloadDir,
 		AudiobookDownloadDir: h.audiobookDownloadDir,
+		GlobalRemap:          h.downloadPathRemap,
 	}.WithSeedLimits(h.resolveSeedLimits(ctx, indexerID)))
 	if err != nil {
 		slog.Error("failed to send download", "client_type", client.Type, "error", err, "title", req.Title)
@@ -1618,11 +1622,26 @@ func (o queueRemoveOptions) validate() error {
 // Everything other than the client call runs either way: the point of
 // RemoveFromClient=false is to forget the download, not to pretend it never
 // happened.
+//
+// The client call is skipped, deleteFiles included, while another download
+// row still uses the same torrent or job (downloader.ClientJobShared): a
+// torrent client adopts a torrent it already holds, so two grabs of one
+// release, by one user or two, can share it, and removing it for one row would
+// take it, and with deleteFiles its data, from the other. Only this row goes.
+//
+// The row is deleted BEFORE that check. A bulk remove runs items concurrently,
+// and two rows sharing a torrent would otherwise each see the other, both skip
+// the client, and leave the torrent behind with nothing tracking it. Deleting
+// first means whichever check runs last sees no other row and removes it.
 func (h *QueueHandler) removeQueueItem(ctx context.Context, target *models.Download, opts queueRemoveOptions) error {
+	if err := h.downloads.Delete(ctx, target.ID); err != nil {
+		return err
+	}
+
 	if opts.RemoveFromClient && target.DownloadClientID != nil {
 		client, err := h.clients.GetByID(ctx, *target.DownloadClientID)
 		if err == nil && client != nil {
-			if err := downloader.RemoveDownload(ctx, client, target, opts.DeleteFiles, h.downloadPathRemap); err != nil {
+			if _, err := downloader.RemoveDownloadUnlessShared(ctx, h.downloads, client, target, opts.DeleteFiles, h.downloadPathRemap, "queue remove"); err != nil {
 				slog.Warn("failed to remove download from client", "download_id", target.ID, "client_id", client.ID, "error", err)
 			}
 		} else if err != nil {
@@ -1646,7 +1665,7 @@ func (h *QueueHandler) removeQueueItem(ctx context.Context, target *models.Downl
 		}
 	}
 
-	return h.downloads.Delete(ctx, target.ID)
+	return nil
 }
 
 // bulkDeleteConcurrency bounds how many queue items a single bulk-remove fans

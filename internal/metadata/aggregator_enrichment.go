@@ -2,6 +2,9 @@ package metadata
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -278,19 +281,63 @@ func enrichBookCacheKey(book *models.Book) string {
 	return "enrich-title:" + title + "|" + author
 }
 
+// A snapshot contains post-enrichment values, so it is reusable only for the
+// same input. Raw metadata may expire or change accounts before this entry.
+// Include matching and cover-lookup inputs as well as every retained field.
+func enrichmentInputKey(book *models.Book) string {
+	author := ""
+	if book.Author != nil {
+		author = book.Author.Name
+	}
+	var isbns []string
+	for _, edition := range book.Editions {
+		isbn := ""
+		if edition.ISBN13 != nil && *edition.ISBN13 != "" {
+			isbn = *edition.ISBN13
+		} else if edition.ISBN10 != nil {
+			isbn = *edition.ISBN10
+		}
+		isbns = append(isbns, isbn)
+	}
+	input := fmt.Sprintf("%q|%q|%q|%q|%g|%d|%q|%q", book.Title, author,
+		book.Description, book.ImageURL, book.AverageRating, book.RatingsCount, book.Genres, isbns)
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(input)))
+}
+
 func (a *Aggregator) enrichBook(ctx context.Context, book *models.Book) {
+	ctx, scope := a.bindCacheProviders(ctx)
 	cacheKey := enrichBookCacheKey(book)
 	if cacheKey != "" {
+		cacheKey += ":" + scope + ":" + enrichmentInputKey(book)
+	}
+	// Bind live configuration once for both the snapshot key and its fetches.
+	enrichers := make([]Provider, len(a.enrichers))
+	scopes := make([]string, len(a.enrichers))
+	for i, p := range a.enrichers {
+		enrichers[i], scopes[i] = resolveCacheProvider(ctx, p)
+
+	}
+	if cacheKey != "" {
 		if cached, ok := a.cache.get(cacheKey); ok {
-			snap := cached.(enrichmentSnapshot)
-			applyEnrichmentSnapshot(book, snap)
+			applyEnrichmentSnapshot(book, cached.(enrichmentSnapshot))
+			return
+		}
+		if cached, ok := a.requests.shortCache().get(cacheKey); ok {
+			applyEnrichmentSnapshot(book, cached.(enrichmentSnapshot))
 			return
 		}
 	}
 
-	for _, enricher := range a.enrichers {
-		enriched, err := enricher.SearchBooks(ctx, book.Title)
+	cacheable := true
+	for i, enricher := range enrichers {
+		enriched, err := a.searchBoundProviderBooks(ctx, enricher, scopes[i], book.Title)
 		if err != nil {
+			// An enricher with no credentials (Hardcover without a token is
+			// registered on every install) never answers, so it must not keep
+			// the snapshot out of the cache the way a real failure does.
+			if !errors.Is(err, ErrProviderNotConfigured) {
+				cacheable = false
+			}
 			slog.Debug("enrichment failed", "provider", enricher.Name(), "error", err)
 			continue
 		}
@@ -356,14 +403,24 @@ func (a *Aggregator) enrichBook(ctx context.Context, book *models.Book) {
 	// book rather than hand one user's hand written text to another's library
 	// (#2767). A locked book is rare, so this costs one extra enricher round
 	// trip in a case that barely happens; every unlocked book caches as before.
-	if cacheKey != "" && book.CanWrite(models.BookFieldDescription) && book.CanWrite(models.BookFieldGenres) {
-		a.cache.set(cacheKey, enrichmentSnapshot{
+	if cacheKey != "" && ctx.Err() == nil &&
+		book.CanWrite(models.BookFieldDescription) && book.CanWrite(models.BookFieldGenres) {
+		snap := enrichmentSnapshot{
 			description:   book.Description,
 			imageURL:      book.ImageURL,
 			averageRating: book.AverageRating,
 			ratingsCount:  book.RatingsCount,
 			genres:        slices.Clone(book.Genres),
-		})
+		}
+		if cacheable {
+			a.cache.set(cacheKey, snap)
+		} else {
+			// An enricher failed, so this snapshot is incomplete and must stay
+			// retryable, but not on every cache hit: GetBook enriches each
+			// hit, and a failing or rate limited enricher would otherwise be
+			// asked once per call. The five minute cache bounds that.
+			a.requests.shortCache().set(cacheKey, snap)
+		}
 	}
 }
 
@@ -509,6 +566,7 @@ func pickEnrichmentMatch(candidates []models.Book, target *models.Book) *models.
 // provider (e.g. DNB) returns no cover URL in its bibliographic data.
 func (a *Aggregator) fillCoverFromCoverProviders(ctx context.Context, book *models.Book) {
 	for _, p := range a.providers() {
+		p, _ = resolveCacheProvider(ctx, p)
 		cp, ok := p.(CoverProvider)
 		if !ok {
 			continue

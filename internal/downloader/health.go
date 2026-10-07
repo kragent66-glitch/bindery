@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -43,13 +44,94 @@ const notifierEventHealth = "health"
 
 // HealthStore keeps non-persistent download-client health diagnostics.
 type HealthStore struct {
-	mu    sync.RWMutex
-	byID  map[int64]models.DownloadClientHealth
-	notif eventNotifier
+	mu   sync.RWMutex
+	byID map[int64]models.DownloadClientHealth
+	// advisory holds problems found outside the path probe, by source: the
+	// importer pausing automatic blocklisting (AdvisoryBlocklist) and NZBGet
+	// missing UnRAR (AdvisoryUnpackers), both #3024. They live apart from
+	// byID because the 15 minute probe rewrites byID wholesale and would
+	// otherwise erase them.
+	advisory map[int64]map[string]models.DownloadClientHealth
+	notif    eventNotifier
+
+	// unpackers caches what NZBGet's sysinfo said (see NZBGetUnpackers).
+	unpackersMu sync.Mutex
+	unpackers   map[int64]*unpackerEntry
+	// sysinfo and now are test seams; nil means the real NZBGet call and
+	// time.Now.
+	sysinfo func(ctx context.Context, client *models.DownloadClient) ([]string, error)
+	now     func() time.Time
 }
 
+// Advisory sources.
+const (
+	AdvisoryBlocklist = "blocklist"
+	AdvisoryUnpackers = "unpackers"
+)
+
 func NewHealthStore() *HealthStore {
-	return &HealthStore{byID: make(map[int64]models.DownloadClientHealth)}
+	return &HealthStore{
+		byID:      make(map[int64]models.DownloadClientHealth),
+		advisory:  make(map[int64]map[string]models.DownloadClientHealth),
+		unpackers: make(map[int64]*unpackerEntry),
+	}
+}
+
+// SetAdvisory records a problem for the client from one source. It is shown
+// in place of a passing path check, or after a failing one, until
+// ClearAdvisory. The first advisory from a source publishes the health
+// event, like an entry into HealthError does in Set.
+func (s *HealthStore) SetAdvisory(id int64, source string, health models.DownloadClientHealth) {
+	if s == nil || id == 0 {
+		return
+	}
+	s.mu.Lock()
+	bySource := s.advisory[id]
+	if bySource == nil {
+		bySource = make(map[string]models.DownloadClientHealth)
+		s.advisory[id] = bySource
+	}
+	_, had := bySource[source]
+	bySource[source] = health
+	notif := s.notif
+	s.mu.Unlock()
+	if had || notif == nil {
+		return
+	}
+	notif.Send(context.Background(), notifierEventHealth, map[string]interface{}{
+		"clientId": id,
+		"status":   health.Status,
+		"message":  health.Message,
+	})
+}
+
+// ClearAdvisory removes one source's advisory, if any.
+func (s *HealthStore) ClearAdvisory(id int64, source string) {
+	if s == nil || id == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if bySource := s.advisory[id]; bySource != nil {
+		delete(bySource, source)
+		if len(bySource) == 0 {
+			delete(s.advisory, id)
+		}
+	}
+}
+
+// ForgetClient drops every advisory and the cached unpacker check for a
+// client that was disabled or deleted.
+func (s *HealthStore) ForgetClient(id int64) {
+	if s == nil || id == 0 {
+		return
+	}
+	s.mu.Lock()
+	delete(s.advisory, id)
+	s.mu.Unlock()
+	s.unpackersMu.Lock()
+	delete(s.unpackers, id)
+	s.unpackersMu.Unlock()
 }
 
 // WithNotifier attaches a webhook event notifier so transitions into
@@ -116,10 +198,26 @@ func (s *HealthStore) Get(id int64) *models.DownloadClientHealth {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	health, ok := s.byID[id]
-	if !ok {
-		return nil
+	bySource := s.advisory[id]
+	if len(bySource) == 0 {
+		if !ok {
+			return nil
+		}
+		return &health
 	}
-	return &health
+	sources := make([]string, 0, len(bySource))
+	for src := range bySource {
+		sources = append(sources, src)
+	}
+	sort.Strings(sources)
+	msgs := make([]string, 0, len(sources)+1)
+	if ok && health.Status == HealthError {
+		msgs = append(msgs, strings.TrimRight(health.Message, ". "))
+	}
+	for _, src := range sources {
+		msgs = append(msgs, strings.TrimRight(bySource[src].Message, ". "))
+	}
+	return &models.DownloadClientHealth{Status: HealthError, Message: strings.Join(msgs, ". ")}
 }
 
 func (s *HealthStore) Attach(client *models.DownloadClient) {
@@ -195,9 +293,14 @@ func CheckDownloadClientHealth(ctx context.Context, client *models.DownloadClien
 		return models.DownloadClientHealth{Status: HealthError, Message: err.Error()}
 	}
 	if client.Type == "qbittorrent" {
-		return checkQbittorrentCategoryPath(ctx, client, downloadDir, audiobookDownloadDir)
+		return checkQbittorrentCategoryPath(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
 	}
+	return checkCompletedPath(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
+}
 
+// checkCompletedPath is the shared visibility check for every client type
+// but qBittorrent.
+func checkCompletedPath(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir, globalRemap string) models.DownloadClientHealth {
 	vis := CheckCompletedPathVisibility(ctx, client, downloadDir, audiobookDownloadDir, globalRemap)
 	switch vis.Status {
 	case PathVisible:
@@ -242,7 +345,7 @@ func TargetDownloadDir(mediaType, downloadDir, audiobookDownloadDir string) stri
 	return strings.TrimSpace(downloadDir)
 }
 
-func checkQbittorrentCategoryPath(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir string) models.DownloadClientHealth {
+func checkQbittorrentCategoryPath(ctx context.Context, client *models.DownloadClient, downloadDir, audiobookDownloadDir, globalRemap string) models.DownloadClientHealth {
 	category := strings.TrimSpace(client.Category)
 	if category == "" {
 		return healthError("qBittorrent category is empty; configure a category with a save path")
@@ -260,14 +363,14 @@ func checkQbittorrentCategoryPath(ctx context.Context, client *models.DownloadCl
 	// Validate the ebook category first; if it fails, return immediately.
 	// When CategoryAudiobook is set, validate it against audiobookDownloadDir
 	// as well — both must be healthy for the client to be healthy (#700).
-	if h := validateQbittorrentCategorySavePath(ctx, qb, client, category, expected, categories); h.Status != HealthOK {
+	if h := validateQbittorrentCategorySavePath(ctx, qb, client, category, expected, globalRemap, categories); h.Status != HealthOK {
 		return h
 	}
 
 	audioCategory := strings.TrimSpace(client.CategoryAudiobook)
 	if audioCategory != "" && audioCategory != category {
 		expectedAudio := cleanConfiguredDir(ExpectedDownloadDirForClient(client, models.MediaTypeAudiobook, downloadDir, audiobookDownloadDir))
-		if h := validateQbittorrentCategorySavePath(ctx, qb, client, audioCategory, expectedAudio, categories); h.Status != HealthOK {
+		if h := validateQbittorrentCategorySavePath(ctx, qb, client, audioCategory, expectedAudio, globalRemap, categories); h.Status != HealthOK {
 			return h
 		}
 	}
@@ -302,7 +405,7 @@ func cleanConfiguredDir(dir string) string {
 
 // validateQbittorrentCategorySavePath checks that a single qBittorrent category
 // exists and that its (path-remapped) save path falls at or under expected.
-func validateQbittorrentCategorySavePath(ctx context.Context, qb *qbittorrent.Client, client *models.DownloadClient, category, expected string, categories map[string]qbittorrent.Category) models.DownloadClientHealth {
+func validateQbittorrentCategorySavePath(ctx context.Context, qb *qbittorrent.Client, client *models.DownloadClient, category, expected, globalRemap string, categories map[string]qbittorrent.Category) models.DownloadClientHealth {
 	qbCategory, ok := categories[category]
 	if !ok {
 		if expected == "" {
@@ -324,8 +427,9 @@ func validateQbittorrentCategorySavePath(ctx context.Context, qb *qbittorrent.Cl
 	}
 
 	// The remap runs on the save path exactly as qBittorrent reports it; only
-	// its result is a path on this host.
-	localPath := filepath.Clean(pathmap.Parse(client.PathRemap).Apply(savePath))
+	// its result is a path on this host. Same precedence as the importer:
+	// the client's remap, then the global one.
+	localPath := filepath.Clean(remapClientPath(client, savePath, globalRemap))
 	// With no download directory configured there is nothing to be under, and
 	// the stat below is the whole check (#2902).
 	if expected != "" && !pathIsAtOrUnder(localPath, expected) {

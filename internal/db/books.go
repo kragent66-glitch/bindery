@@ -720,10 +720,30 @@ func (r *BookRepo) Create(ctx context.Context, b *models.Book) error {
 }
 
 func (r *BookRepo) Update(ctx context.Context, b *models.Book) error {
+	_, err := r.update(ctx, b, "")
+	return err
+}
+
+// UpdateIfUnchanged is Update guarded on the row not having changed since b
+// was read: expectedUpdatedAt is the snapshot's UpdatedAtRaw, compared as
+// stored text like UpdateHydratedMetadata. It reports false, without writing
+// or reloading b, when a concurrent write got there first. For callers that must
+// write the whole row after a provider call, such as an ASIN metadata map
+// that changes the book's identity (#2926).
+func (r *BookRepo) UpdateIfUnchanged(ctx context.Context, b *models.Book, expectedUpdatedAt string) (bool, error) {
+	if b == nil || b.ID == 0 || expectedUpdatedAt == "" {
+		return false, fmt.Errorf("update book: invalid book snapshot")
+	}
+	return r.update(ctx, b, expectedUpdatedAt)
+}
+
+// update writes every column of b. A non-empty expectedUpdatedAt adds the
+// stored-text updated_at precondition.
+func (r *BookRepo) update(ctx context.Context, b *models.Book, expectedUpdatedAt string) (bool, error) {
 	now := time.Now().UTC()
 	genresJSON, err := json.Marshal(b.Genres)
 	if err != nil {
-		return fmt.Errorf("marshal book genres: %w", err)
+		return false, fmt.Errorf("marshal book genres: %w", err)
 	}
 
 	mediaType := b.MediaType
@@ -738,10 +758,10 @@ func (r *BookRepo) Update(ctx context.Context, b *models.Book) error {
 
 	lockedJSON, err := json.Marshal(lockedOrEmpty(b.LockedFields))
 	if err != nil {
-		return fmt.Errorf("marshal book locked_fields: %w", err)
+		return false, fmt.Errorf("marshal book locked_fields: %w", err)
 	}
 
-	_, err = r.exec.ExecContext(ctx, `
+	query := `
 		UPDATE books SET foreign_id=?, author_id=?, title=?, sort_title=?, original_title=?, description=?, image_url=?,
 		                 release_date=?, genres=?, average_rating=?, ratings_count=?,
 		                 monitored=?, status=?, any_edition_ok=?, selected_edition_id=?,
@@ -749,20 +769,36 @@ func (r *BookRepo) Update(ctx context.Context, b *models.Book) error {
 		                 metadata_provider=?, dedup_key=?, sort_key=?, search_key=?,
 		                 locked_fields=?, last_metadata_refresh_at=?, updated_at=?,
 		                 ebook_file_path=?, audiobook_file_path=?
-		WHERE id=?`,
+		WHERE id=?`
+	args := []any{
 		b.ForeignID, b.AuthorID, b.Title, b.SortTitle, b.OriginalTitle, b.Description, b.ImageURL,
 		timeArg(b.ReleaseDate), string(genresJSON), b.AverageRating, b.RatingsCount,
 		b.Monitored, b.Status, b.AnyEditionOK, b.SelectedEditionID,
 		b.FilePath, b.Language, mediaType, b.Narrator, b.DurationSeconds, b.ASIN,
 		b.MetadataProvider, b.DedupKey, bookSortKey(b.SortTitle, b.Title), textutil.FoldForSearch(b.Title),
 		string(lockedJSON), timeArg(b.LastMetadataRefreshAt), timeValueArg(now),
-		b.EbookFilePath, b.AudiobookFilePath, b.ID)
+		b.EbookFilePath, b.AudiobookFilePath, b.ID,
+	}
+	if expectedUpdatedAt != "" {
+		query += ` AND CAST(updated_at AS TEXT)=?`
+		args = append(args, expectedUpdatedAt)
+	}
+	res, err := r.exec.ExecContext(ctx, query, args...)
 	if err != nil {
-		return fmt.Errorf("update book %d: %w", b.ID, err)
+		return false, fmt.Errorf("update book %d: %w", b.ID, err)
+	}
+	if expectedUpdatedAt != "" {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("check update for book %d: %w", b.ID, err)
+		}
+		if n == 0 {
+			return false, nil
+		}
 	}
 	b.UpdatedAt = now
 	b.UpdatedAtRaw = timeValueText(now)
-	return nil
+	return true, nil
 }
 
 // UpdateHydratedMetadata persists only the fields written by edition hydration
@@ -981,6 +1017,13 @@ func (r *BookRepo) UntrackFilePath(ctx context.Context, path string) (int64, err
 // BookFileRepo.PathOwnedByOtherBook (#1368).
 func (r *BookRepo) PathOwnedByOtherBook(ctx context.Context, path string, excludeBookID int64) (bool, error) {
 	return r.files.PathOwnedByOtherBook(ctx, path, excludeBookID)
+}
+
+// PathOwnedByLiveOtherBook is PathOwnedByOtherBook ignoring a row left by a
+// deleted book. For pre-checks of a write that takes such a row over, never
+// for a delete guard. See BookFileRepo.PathOwnedByLiveOtherBook.
+func (r *BookRepo) PathOwnedByLiveOtherBook(ctx context.Context, path string, excludeBookID int64) (bool, error) {
+	return r.files.PathOwnedByLiveOtherBook(ctx, path, excludeBookID)
 }
 
 // ListAllBookFilePaths returns every path in book_files.

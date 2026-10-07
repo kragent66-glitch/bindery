@@ -23,6 +23,7 @@ import (
 	"github.com/vavallee/bindery/internal/calibre"
 	"github.com/vavallee/bindery/internal/db"
 	"github.com/vavallee/bindery/internal/decision"
+	"github.com/vavallee/bindery/internal/downloader"
 	"github.com/vavallee/bindery/internal/importer/formatsniff"
 	"github.com/vavallee/bindery/internal/indexer"
 	"github.com/vavallee/bindery/internal/jobs"
@@ -141,6 +142,12 @@ type Scanner struct {
 	// either created its folder, and split one audiobook's tracks across
 	// "Title" and "Title (2)".
 	manualBookLocks sync.Map
+
+	// contentBreaker stops blocklisting on a download client's content
+	// verdict when the client itself looks broken (#3024), and clientHealth,
+	// when set, is where that is reported. Nil clientHealth reports nothing.
+	contentBreaker contentFailureBreaker
+	clientHealth   *downloader.HealthStore
 }
 
 // NewScanner creates an import scanner. downloadPathRemap is an optional
@@ -408,15 +415,25 @@ func (s *Scanner) allowedFormat(ctx context.Context, author *models.Author, form
 }
 
 // blocklistRejectedRelease records a release rejected for its format (#1782)
-// or its language (#2998) so the next search does not grab the same file again.
+// or its language (#2998), or one the download client reported as broken
+// (#3024), so the next search does not grab the same file again.
 //
 // Without this the rejection is a loop: the book stays wanted, the next scan
 // finds the same release, grabs it, downloads it, and rejects it again. The
 // blocklist is the only thing that makes a rejection stick, and it is also why
 // this must stay narrow: it fires on a format or language the user explicitly
-// disallowed, never on a transient import failure.
+// disallowed, or on a client status that is about the release's content, never
+// on a transient import or transport failure.
+//
+// A release already on the blocklist for the same book is not added twice: a
+// manual grab can send a blocklisted release again, and its second failure
+// says nothing new. A row under another book does not count, because deleting
+// that book deletes its rows.
 func (s *Scanner) blocklistRejectedRelease(ctx context.Context, dl *models.Download, reason string) {
 	if s.blocklist == nil || dl == nil || strings.TrimSpace(dl.GUID) == "" {
+		return
+	}
+	if blocked, err := s.blocklist.IsBlockedForBook(ctx, dl.GUID, dl.BookID); err == nil && blocked {
 		return
 	}
 	entry := &models.BlocklistEntry{
@@ -2764,7 +2781,8 @@ func largestFileIsVideo(downloadPath string, explicitFiles []string) bool {
 // walked: MediaTypeEbook restricts to libraryDir, MediaTypeAudiobook restricts
 // to audiobookDir (falling back to libraryDir when audiobookDir is unset), and
 // MediaTypeBoth or an empty/unknown value walks both with libraryDir first.
-// Returns the first matching file path, or "" if none is found. Intended to be
+// Returns the best matching file path, or "" when none matches or two files
+// of different titles are too close to call (#2941). Intended to be
 // called before auto-searching so books the user already owns are not
 // re-downloaded.
 func (s *Scanner) FindExisting(ctx context.Context, title, authorName, mediaType string) string {
@@ -3267,6 +3285,32 @@ func (s *Scanner) ScanLibrary(ctx context.Context) {
 	s.scanLibrary(ctx)
 }
 
+// walkRoot is filepath.Walk for a configured library or audiobook root that
+// may itself be a symlink (/books -> /mnt/storage/books, or a container
+// volume path that is a link). filepath.Walk Lstats its root, so a linked
+// root is reported once as a link and never entered, and a scan of it found
+// nothing. walkRoot resolves the root first and walks the target, then hands
+// fn every path rewritten under the configured root, so what a caller
+// reports, compares or stores is in the same form as the book_files rows
+// imports write and the root the serving containment checks resolve.
+//
+// Only the root is resolved. Entries inside it are still Lstat'ed and a
+// linked folder inside the library is reported, not entered, exactly as
+// filepath.Walk does. A root that cannot be resolved (missing, unreadable)
+// is walked as given, so fn sees the same error it always did.
+func walkRoot(root string, fn filepath.WalkFunc) error {
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil || resolved == filepath.Clean(root) {
+		return filepath.Walk(root, fn)
+	}
+	return filepath.Walk(resolved, func(path string, info os.FileInfo, err error) error {
+		if rel, relErr := filepath.Rel(resolved, path); relErr == nil {
+			path = filepath.Join(root, rel)
+		}
+		return fn(path, info, err)
+	})
+}
+
 // scanLibrary walks the library directory (and the separate audiobook directory
 // when configured) for book files not yet tracked in the database and reconciles
 // found files with existing "wanted" book records. Callers must hold the
@@ -3291,7 +3335,9 @@ func (s *Scanner) scanLibrary(ctx context.Context) {
 	walked := make(map[string]walkedFile)
 	walkDir := func(root string) []string {
 		var files []string
-		if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		// walkRoot enters a root that is itself a symlink and reports paths
+		// under the configured root; links inside it are still not followed.
+		if err := walkRoot(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil || info.IsDir() {
 				return nil
 			}

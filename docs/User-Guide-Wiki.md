@@ -424,10 +424,16 @@ been.
   French and English is allowed under an English profile. Region tags are
   ignored, so `en-US` and `en_GB` count as English, Bokmål and Nynorsk (`nb`,
   `nob`, `nn`, `nno`) count as Norwegian, and `cmn` and `yue` count as
-  Chinese. Every two letter ISO 639-1 code is recognised.
+  Chinese. Every two letter ISO 639-1 code is recognised, including the
+  withdrawn `iw`, `in` and `ji`, which count as Hebrew, Indonesian and
+  Yiddish.
 - **The release holds EPUBs in both allowed and disallowed languages**: the
   allowed ones are imported and the others are left out, the same way a
-  disallowed format inside a release is left out.
+  disallowed format inside a release is left out. An EPUB that declares no
+  language, or `und` or `mul`, is imported alongside them. Next to a
+  disallowed EPUB with nothing in an allowed language, though, it does not
+  save the release: it is most likely the same edition with its metadata
+  stripped, so the release is rejected as below.
 - **Every file is in a language the profile does not allow**: the release is
   treated as the wrong release. Nothing is placed, the Queue row is blocked
   with a message naming both languages ("file declares Swedish (swe), but the
@@ -466,7 +472,10 @@ per-row error detail. Tick rows for **Retry selected**, or use **Retry all
 failed** to cover every failed row at once. If a download client does not answer
 in time the page says so above the list, so a short Queue is never mistaken for
 lost downloads. History records every grab/import/failure and can
-blocklist a bad release in one click. Blocked releases are listed under
+blocklist a bad release in one click. A release NZBGet or SABnzbd fails as
+broken (missing articles, a failed repair or unpack, a corrupt archive) is
+blocklisted for you, with the client's verdict as the reason, so the next
+search picks a different one. Blocked releases are listed under
 Settings → Blocklist, where you can remove one to let it be grabbed again.
 
 Bindery does not chase format upgrades on its own: the sweep only searches
@@ -555,8 +564,9 @@ to the records. Things worth knowing before you judge the results:
   its id. Nothing is recorded or overwritten, and the book you imported for
   stays Wanted. If the file really belongs to the book you imported it for,
   open the book it is attached to and use **Fix match** to move it (#2937).
-  When the book holding the path has since been deleted, a download or manual
-  import takes it over automatically; adoption still refuses it.
+  When the book holding the path has since been deleted, a download, a manual
+  import, adopting the file on the Import page, or adding its author takes it
+  over automatically.
 - A folder holding both an ebook and an audiobook for the same book attaches
   both in a single scan — one file per format, so a second scan is not needed.
 - A PDF, TXT, RTF, CBZ or CBR sitting in a folder that also holds audio is treated as
@@ -621,7 +631,9 @@ How to work through the list:
   `Author - Title 1`, `Author - Title 2` and so on. Artist, Album Artist and
   Composer are all checked, so a narrator in Artist beside the author in Album
   Artist is not a conflict, and neither are credits such as Various Artists,
-  Unknown or Full Cast. Such files are also never attached by the scan to the
+  Unknown Author(s), Anonymous, Full Cast, or an audiobook publisher such as
+  Brilliance Audio, Recorded Books or Tantor Audio, however they are
+  punctuated. Such files are also never attached by the scan to the
   book their folder is named after. The row is named after the
   book the files name (the album tag, or the title in those track names), and
   suggestions come from the files' author first, scored on that title. Books
@@ -801,6 +813,28 @@ and ASIN values before searching and retains provider series links during ingest
 This refresh also runs when the edition fetch is empty, unchanged, or fails.
 If a book is rebound while editions are being fetched, later edition writes for
 the old book identity are skipped.
+
+Audnex enrichment follows the same rule. When an Audiobookshelf import or a
+Hardcover list sync enriches a book you edited while the Audnex lookup was in
+flight, your edit is kept and that enrichment is skipped. The **Enrich** button
+on the book page retries once on top of your edit; if the book keeps changing
+it asks you to try again. **Rebind** does the same when the book changes while
+the new record is being fetched.
+
+The same goes for the other writes that follow a provider lookup. When an
+Audiobookshelf import merges a book or an author with its upstream record and
+you edit it during the lookup, the merge is applied on top of your edit; if
+the row keeps changing, the merge waits for the next import. That protects the
+fields the merge does not take from upstream, such as monitoring, the narrator,
+the format and the quality, metadata and root folder profiles. The fields it
+does take from upstream follow the usual metadata conflict rules even when you
+just changed them: for a book the description, cover, original title, release
+date, language and ratings, and for an author the name, description, image,
+disambiguation and sort name. A **Refresh Metadata** on
+an author re-reads each book it matched by title just before updating it, so
+edits made while the refresh runs are kept. The scheduled author metadata
+refresh skips an author you edited while its profile was being fetched and
+picks it up on the next run.
 
 Which of those a given book actually came from is on the book page, under
 **Metadata source**. It names the provider, shows the identifier the book is
@@ -1120,10 +1154,11 @@ Knowing the edges saves time:
   linked to another disk (`/books/Author -> /mnt/disk2/Author`), is written
   through on import and followed when serving a book, including when it
   points outside your library folders, because only you can create one.
-  Library Scan is the exception: it does not descend into any linked folder,
-  including a library folder that is itself a symlink, so books under a linked
-  author folder (or a linked library root) are not found by a scan. A bind
-  mount is not a link and scans normally. A linked *file* is
+  Library Scan follows a library or audiobook folder that is itself a symlink
+  and records the books under the path you configured, but it does not
+  descend into a linked folder *inside* it, so books under a linked author
+  folder are not found by a scan. A bind mount is not a link and scans
+  normally. A linked *file* is
   not a book file: imports place regular files only (a symlink inside a
   download never lands in your library, and a download folder that is itself
   a symlink is refused in every import mode, including the drop folder

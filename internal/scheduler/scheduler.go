@@ -217,6 +217,8 @@ type Scheduler struct {
 	audiobookDownloadDir string
 	// downloadHealth and downloadPathRemap back the periodic client-health
 	// probe (#2029). nil store means the job is not registered.
+	// downloadPathRemap is also the global remap automatic grabs send their
+	// save path through (#2665) and rTorrent removals resolve data with.
 	downloadHealth    *downloader.HealthStore
 	downloadPathRemap string
 }
@@ -319,7 +321,8 @@ func (s *Scheduler) WithEditions(editions *db.EditionRepo) {
 
 // WithDownloadClientHealth attaches the health store and the global path remap
 // so client health can be re-probed on a schedule (#2029). Without it the
-// periodic job is not registered and health stays what it was at boot.
+// periodic job is not registered and health stays what it was at boot. The
+// remap is also what automatic grabs and rTorrent removals fall back to.
 func (s *Scheduler) WithDownloadClientHealth(store *downloader.HealthStore, globalRemap string) {
 	s.downloadHealth = store
 	s.downloadPathRemap = globalRemap
@@ -1244,6 +1247,7 @@ func (s *Scheduler) searchAndGrabFormat(ctx context.Context, book models.Book, m
 		MediaType:            mediaType,
 		DownloadDir:          s.downloadDir,
 		AudiobookDownloadDir: s.audiobookDownloadDir,
+		GlobalRemap:          s.downloadPathRemap,
 	}.WithSeedLimits(s.resolveSeedLimits(ctx, best.IndexerID)))
 	if err != nil {
 		slog.Error("SearchAndGrabBook: failed to send to downloader", "client", client.Type, "title", best.Title, "error", err)
@@ -1593,16 +1597,30 @@ func (s *Scheduler) refreshMetadata() {
 		return
 	}
 
-	for _, author := range authors {
-		if !author.Monitored {
+	for _, listed := range authors {
+		if !listed.Monitored {
 			continue
 		}
 
 		// Calibre-imported authors have synthetic "calibre:author:N" IDs with
 		// no counterpart in OL/Hardcover; skip to avoid noisy 404 errors.
-		if strings.HasPrefix(author.ForeignID, "calibre:") {
+		if strings.HasPrefix(listed.ForeignID, "calibre:") {
 			continue
 		}
+
+		// Re-read the row rather than writing back the snapshot listed at
+		// the start of the run: earlier authors' lookups take a while, and an
+		// edit saved meanwhile must neither be overwritten nor cost this
+		// author its refresh (#2926).
+		current, err := s.authors.GetByID(ctx, listed.ID)
+		if err != nil {
+			slog.Warn("failed to reload author for refresh", "author", listed.Name, "error", err)
+			continue
+		}
+		if current == nil || !current.Monitored || strings.HasPrefix(current.ForeignID, "calibre:") {
+			continue
+		}
+		author := *current
 
 		updated, err := s.meta.GetAuthor(ctx, author.ForeignID)
 		if err != nil {
@@ -1636,8 +1654,17 @@ func (s *Scheduler) refreshMetadata() {
 		if updated.RatingsCount != 0 {
 			author.RatingsCount = updated.RatingsCount
 		}
-		if err := s.authors.Update(ctx, &author); err != nil {
+		// Guarded on the row as read before the provider call, so an edit
+		// saved during the call wins. The refresh is dropped, not retried:
+		// this job runs again on schedule.
+		written, err := s.authors.UpdateIfUnchanged(ctx, &author, current.UpdatedAtRaw)
+		if err != nil {
 			slog.Warn("failed to persist refreshed author", "author", author.Name, "error", err)
+			continue
+		}
+		if !written {
+			slog.Info("author refresh skipped: the author changed while its metadata was being fetched; the next refresh retries it",
+				"author", author.Name, "authorId", author.ID)
 			continue
 		}
 
@@ -1876,13 +1903,22 @@ func (s *Scheduler) handleStalledDownload(ctx context.Context, dl *models.Downlo
 // A removal failure is logged and swallowed: the blocklist and the re-search
 // below are the recovery, and they must not be skipped because the client was
 // unreachable for a moment.
+//
+// While another download row still uses the torrent, the client is left alone
+// (downloader.ClientJobShared). This row is marked failed straight after, and
+// failed rows do not count as users, so the last row of a shared stalled
+// torrent is the one whose pass removes it.
 func (s *Scheduler) removeStalledFromClient(ctx context.Context, dl *models.Download, client *models.DownloadClient, deleteFiles bool) {
 	if client == nil {
 		return
 	}
-	if err := downloader.RemoveDownload(ctx, client, dl, deleteFiles, s.downloadPathRemap); err != nil {
+	removed, err := downloader.RemoveDownloadUnlessShared(ctx, s.downloads, client, dl, deleteFiles, s.downloadPathRemap, "stall")
+	if err != nil {
 		slog.Warn("stall: failed to remove the stalled release from the download client",
 			"download_id", dl.ID, "title", dl.Title, "client", client.Name, "error", err)
+		return
+	}
+	if !removed {
 		return
 	}
 	slog.Info("stall: removed the stalled release from the download client",
