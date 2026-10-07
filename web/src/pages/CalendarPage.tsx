@@ -238,7 +238,7 @@ export default function CalendarPage() {
                           {dayOfMonthLabel(lang, viewYear, viewMonth, Number(day))}
                         </span>
                         {book.imageUrl && (
-                          <img src={book.imageUrl} alt="" className="w-8 h-10 object-cover rounded flex-shrink-0" />
+                          <img loading="lazy" decoding="async" src={book.imageUrl} alt="" className="w-8 h-10 object-cover rounded flex-shrink-0" />
                         )}
                         <span className="text-sm text-slate-800 dark:text-zinc-200 min-w-0 truncate">{book.title}</span>
                         {book.author && (

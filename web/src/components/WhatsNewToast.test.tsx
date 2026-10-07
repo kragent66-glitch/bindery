@@ -74,9 +74,10 @@ describe('WhatsNewToast', () => {
     localStorage.setItem(KEY, '1.29.1')
     render(<WhatsNewToast version="1.30.0" />)
     const cls = screen.getByRole('status').className
-    expect(cls).toContain('left-4')
+    expect(cls).toContain('left-safe-4')
     expect(cls).toContain('sm:left-auto')
-    expect(cls).toContain('right-4')
+    expect(cls).toContain('right-safe-4')
+    expect(cls).toContain('bottom-safe-4')
     expect(cls).toContain('ml-auto')
   })
 })

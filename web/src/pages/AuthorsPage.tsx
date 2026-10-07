@@ -11,6 +11,7 @@ import FilterPopover, { FilterGroup } from '../components/FilterPopover'
 import MoreMenu from '../components/MoreMenu'
 import Pagination from '../components/Pagination'
 import { useServerPagination } from '../components/usePagination'
+import { oneOf, useListParams, useUrlSearchInput } from '../components/useListParams'
 import ViewToggle from '../components/ViewToggle'
 import BulkNotice from '../components/BulkNotice'
 import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
@@ -29,6 +30,13 @@ type SortMode =
   | 'rating-asc' | 'rating-desc'
   | 'monitored-asc' | 'monitored-desc'
 type MonitoredFilter = '' | 'monitored' | 'unmonitored'
+
+const SORT_MODES: readonly SortMode[] = [
+  'az', 'za', 'name-az', 'name-za', 'recent', 'books-asc', 'books-desc',
+  'rating-asc', 'rating-desc', 'monitored-asc', 'monitored-desc',
+]
+// Query-string keys and their defaults; defaults stay out of the URL.
+const LIST_DEFAULTS = { q: '', sort: 'az' }
 
 export default function AuthorsPage() {
   const { t } = useTranslation()
@@ -59,16 +67,28 @@ export default function AuthorsPage() {
   // did before it could write the field at all (#2065).
   const [bulkMonitorNewItems, setBulkMonitorNewItems] = useState<MonitorNewItems | ''>('')
   const [bulkMonitorModeError, setBulkMonitorModeError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [sort, setSort] = useState<SortMode>('az')
-  const [monitoredFilter, setMonitoredFilter] = useState<MonitoredFilter>(() => {
+  // Page, search and sort live in the URL so going back from an author lands
+  // on the same page of the same list (#3052). The monitored filter, view and
+  // page size stay in localStorage as preferences that already survive it.
+  const list = useListParams(LIST_DEFAULTS)
+  const sort = oneOf(list.values.sort, SORT_MODES, 'az')
+  const debouncedSearch = list.values.q
+  const updateList = list.update
+  const setSort = (next: SortMode) => updateList({ sort: next, page: null })
+  // Keystroke-level changes replace the history entry instead of pushing one.
+  const commitSearch = useCallback((q: string) => updateList({ q, page: null }, { replace: true }), [updateList])
+  const [search, setSearch] = useUrlSearchInput(debouncedSearch, commitSearch)
+  const [monitoredFilter, setMonitoredFilterState] = useState<MonitoredFilter>(() => {
     try {
       const v = localStorage.getItem('bindery.filter.authors.monitored')
       if (v === 'monitored' || v === 'unmonitored') return v
     } catch { /* ignore */ }
     return ''
   })
+  const setMonitoredFilter = (next: MonitoredFilter) => {
+    setMonitoredFilterState(next)
+    updateList({ page: null })
+  }
   const [view, setView] = useView('authors', 'grid')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -83,13 +103,23 @@ export default function AuthorsPage() {
   const [refreshing, setRefreshing] = useState(false)
 
   const monitoredParam = monitoredFilter === 'monitored' ? true : monitoredFilter === 'unmonitored' ? false : undefined
-  const { page, pageSize, paginationProps, reset } = useServerPagination(total, 50, 'authors')
+  // The query a total belongs to, minus the page; see BooksPage. The snap
+  // back to the last page only trusts a total fetched for this query.
+  const queryKey = JSON.stringify([debouncedSearch, sort, monitoredFilter])
+  const [totalKey, setTotalKey] = useState<string | null>(null)
+  const loadRequestRef = useRef(0)
+  const { page, pageSize, paginationProps } = useServerPagination(total, 50, 'authors', {
+    page: list.page,
+    setPage: list.setPage,
+    ready: !loading && totalKey === queryKey,
+  })
 
   // Server-side list: page, page size, search, sort, and the monitored filter
   // are all applied by the API, so libraries with >100 authors are fully
   // reachable (issue #1010). load() refetches the current page; the mutation
   // handlers below call it to refresh.
   const load = useCallback(() => {
+    const request = ++loadRequestRef.current
     setLoading(true)
     api.listAuthors({
       limit: pageSize,
@@ -97,21 +127,26 @@ export default function AuthorsPage() {
       search: debouncedSearch || undefined,
       sort,
       monitored: monitoredParam,
-    }).then(({ items, total }) => { setAuthors(items); setTotal(total) })
-      .catch(console.error)
+    }).then(({ items, total }) => {
+      setAuthors(items)
+      setTotal(total)
+      if (request === loadRequestRef.current) setTotalKey(queryKey)
+    })
+      .catch(err => {
+        if (request === loadRequestRef.current) setTotalKey(null)
+        console.error(err)
+      })
       .finally(() => setLoading(false))
-  }, [page, pageSize, debouncedSearch, sort, monitoredParam])
+  }, [page, pageSize, debouncedSearch, sort, monitoredParam, queryKey])
+
+  // A selection only means something on the page it was made on.
+  useEffect(() => { setSelectedIds(new Set()) }, [page, queryKey])
 
   useEffect(() => { load() }, [load])
 
-  // Debounce the search box so typing does not fire a request per keystroke.
-  useEffect(() => {
-    const id = setTimeout(() => setDebouncedSearch(search.trim()), 300)
-    return () => clearTimeout(id)
-  }, [search])
-
-  // Jump back to page 1 whenever the query changes.
-  useEffect(() => { reset() }, [debouncedSearch, sort, monitoredFilter, pageSize, reset])
+  // The search box is debounced into the URL (useUrlSearchInput). Every query
+  // change drops the page param in the same update, which is the jump back to
+  // page 1; an effect would also fire on mount and lose the page from the URL.
 
   // Restore the last-known refresh status on mount so the banner survives a
   // page reload. If a job is still "running", resume polling.
@@ -343,7 +378,7 @@ export default function AuthorsPage() {
   // click on the same column flips to descending. Both keys are whitelisted
   // server-side, so an unknown value can only ever fall back to the name sort.
   const toggleSort = (asc: SortMode, desc: SortMode) =>
-    setSort(prev => (prev === asc ? desc : asc))
+    setSort(sort === asc ? desc : asc)
 
   const SortableHeader = ({ label, asc, desc }: { label: string; asc: SortMode; desc: SortMode }) => {
     const active = sort === asc || sort === desc
@@ -568,7 +603,7 @@ export default function AuthorsPage() {
                     <td className="px-3 py-2">
                       <Link to={`/author/${author.id}`} state={authorNavState(i)} className="flex items-center gap-2">
                         {author.imageUrl ? (
-                          <img src={author.imageUrl} alt="" className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
+                          <img loading="lazy" decoding="async" src={author.imageUrl} alt="" className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
                         ) : (
                           <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center text-xs font-bold text-slate-500 dark:text-zinc-600 flex-shrink-0">
                             {author.authorName.charAt(0)}
@@ -624,7 +659,7 @@ export default function AuthorsPage() {
                 />
                 <Link to={`/author/${author.id}`} state={authorNavState(i)} className="flex gap-3 p-4 hover:bg-slate-200/40 dark:hover:bg-zinc-800/40 transition-colors">
                   {author.imageUrl ? (
-                    <img src={author.imageUrl} alt={author.authorName} className="w-16 h-16 rounded-full object-cover flex-shrink-0" />
+                    <img loading="lazy" decoding="async" src={author.imageUrl} alt={author.authorName} className="w-16 h-16 rounded-full object-cover flex-shrink-0" />
                   ) : (
                     <div className="w-16 h-16 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center flex-shrink-0 text-xl font-bold text-slate-500 dark:text-zinc-600">
                       {author.authorName.charAt(0)}

@@ -15,6 +15,7 @@ import { api, BINDERY_BASE, Book, MediaType } from '../api/client'
 import BulkActionBar from '../components/BulkActionBar'
 import Pagination from '../components/Pagination'
 import { useServerPagination } from '../components/usePagination'
+import { oneOf, useListParams, useUrlSearchInput } from '../components/useListParams'
 import AddToLibraryModal from '../components/AddToLibraryModal'
 
 type SortMode =
@@ -24,6 +25,18 @@ type SortMode =
   | 'type-az' | 'type-za'
   | 'status-az' | 'status-za'
 type MonitoredFilter = '' | 'monitored' | 'unmonitored'
+type StatusFilter = '' | 'wanted' | 'imported' | 'skipped'
+type MediaFilter = '' | 'ebook' | 'audiobook' | 'both'
+
+const SORT_MODES: readonly SortMode[] = [
+  'title-az', 'title-za', 'date-new', 'date-old', 'author-az', 'author-za',
+  'type-az', 'type-za', 'status-az', 'status-za',
+]
+const STATUS_FILTERS: readonly StatusFilter[] = ['', 'wanted', 'imported', 'skipped']
+const MEDIA_FILTERS: readonly MediaFilter[] = ['', 'ebook', 'audiobook', 'both']
+// Query-string keys and their defaults. A value equal to its default is left
+// out of the URL, so an untouched list stays at a clean /books.
+const LIST_DEFAULTS = { q: '', status: '', media: '', sort: 'title-az' }
 
 
 // statusLabel is populated at render time from t() — see BooksPage
@@ -40,18 +53,33 @@ export default function BooksPage() {
   const [books, setBooks] = useState<Book[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState('')
-  const [mediaFilter, setMediaFilter] = useState<'' | 'ebook' | 'audiobook' | 'both'>('')
-  const [monitoredFilter, setMonitoredFilter] = useState<MonitoredFilter>(() => {
+  // Page, search, status, media type and sort live in the URL so going back
+  // from a book lands on the same page of the same list (#3052). The monitored
+  // filter, view and page size stay in localStorage: they are preferences that
+  // already survive navigation.
+  const list = useListParams(LIST_DEFAULTS)
+  const statusFilter = oneOf(list.values.status, STATUS_FILTERS, '')
+  const mediaFilter = oneOf(list.values.media, MEDIA_FILTERS, '')
+  const sort = oneOf(list.values.sort, SORT_MODES, 'title-az')
+  const debouncedSearch = list.values.q
+  const updateList = list.update
+  const setStatusFilter = (status: StatusFilter) => updateList({ status, page: null })
+  const setMediaFilter = (media: MediaFilter) => updateList({ media, page: null })
+  const setSort = (next: SortMode) => updateList({ sort: next, page: null })
+  // Keystroke-level changes replace the history entry instead of pushing one.
+  const commitSearch = useCallback((q: string) => updateList({ q, page: null }, { replace: true }), [updateList])
+  const [search, setSearch] = useUrlSearchInput(debouncedSearch, commitSearch)
+  const [monitoredFilter, setMonitoredFilterState] = useState<MonitoredFilter>(() => {
     try {
       const v = localStorage.getItem('bindery.filter.books.monitored')
       if (v === 'monitored' || v === 'unmonitored') return v
     } catch { /* ignore */ }
     return ''
   })
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [sort, setSort] = useState<SortMode>('title-az')
+  const setMonitoredFilter = (next: MonitoredFilter) => {
+    setMonitoredFilterState(next)
+    updateList({ page: null })
+  }
   const [view, setView] = useView('books', 'grid')
   const { needsIndexer, needsClient, needsAny } = useNeedsSetup()
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -70,7 +98,17 @@ export default function BooksPage() {
   // Shown on the Filters trigger so an applied filter is visible without
   // opening it. Status is not counted: it has its own row and is never hidden.
   const activeFilterCount = [mediaFilter, monitoredFilter].filter(Boolean).length
-  const { page, pageSize, paginationProps, reset } = useServerPagination(total, 50, 'books')
+  // The query a total belongs to, minus the page. The snap back to the last
+  // page may only use a total fetched for the query on screen: going back
+  // across a filter change would otherwise clamp with the other query's total
+  // before the refetch starts, and a failed fetch (total 0) would reset it.
+  const queryKey = JSON.stringify([debouncedSearch, statusFilter, mediaFilter, monitoredFilter, sort])
+  const [totalKey, setTotalKey] = useState<string | null>(null)
+  const { page, pageSize, paginationProps } = useServerPagination(total, 50, 'books', {
+    page: list.page,
+    setPage: list.setPage,
+    ready: !loading && totalKey === queryKey,
+  })
 
   // Server-side list: page, page size, search, status, media type, monitored,
   // and sort are all applied by the API so a library with >100 books is fully
@@ -90,23 +128,26 @@ export default function BooksPage() {
       if (request !== loadRequestRef.current) return
       setBooks(items)
       setTotal(total)
+      setTotalKey(queryKey)
     })
-      .catch(console.error)
+      .catch(err => {
+        if (request === loadRequestRef.current) setTotalKey(null)
+        console.error(err)
+      })
       .finally(() => {
         if (request === loadRequestRef.current) setLoading(false)
       })
-  }, [page, pageSize, debouncedSearch, statusFilter, mediaFilter, monitoredParam, sort])
+  }, [page, pageSize, debouncedSearch, statusFilter, mediaFilter, monitoredParam, sort, queryKey])
+
+  // A selection only means something on the page it was made on.
+  useEffect(() => { setSelectedIds(new Set()) }, [page, queryKey])
 
   useEffect(() => { load() }, [load])
 
-  // Debounce the search box so typing does not fire a request per keystroke.
-  useEffect(() => {
-    const id = setTimeout(() => setDebouncedSearch(search.trim()), 300)
-    return () => clearTimeout(id)
-  }, [search])
-
-  // Jump back to page 1 whenever the query changes.
-  useEffect(() => { reset() }, [debouncedSearch, statusFilter, mediaFilter, monitoredFilter, sort, pageSize, reset])
+  // The search box is debounced into the URL (useUrlSearchInput) so typing
+  // does not fire a request per keystroke. Every query change drops the page
+  // param in the same update, which is the jump back to page 1; doing it in
+  // an effect instead would also fire on mount and lose the page from the URL.
 
   // Persist the monitored filter so it survives a reload, mirroring AuthorsPage.
   useEffect(() => {
@@ -178,7 +219,7 @@ export default function BooksPage() {
   // second click on the same column flips to descending (mirrors the sort
   // buttons, which use the same whitelisted keys the backend accepts).
   const toggleSort = (asc: SortMode, desc: SortMode) =>
-    setSort(prev => (prev === asc ? desc : asc))
+    setSort(sort === asc ? desc : asc)
 
   // SortableHeader renders a clickable <th> with an ▲/▼ affordance when its
   // column is the active sort. asc/desc are the whitelisted keys for the column.
@@ -407,7 +448,7 @@ export default function BooksPage() {
                     <td className="px-3 py-2">
                       <Link to={`/book/${book.id}`} state={bookNavState(i)} className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                         {book.imageUrl ? (
-                          <img src={book.imageUrl} alt="" className="w-6 h-9 object-cover rounded flex-shrink-0" />
+                          <img loading="lazy" decoding="async" src={book.imageUrl} alt="" className="w-6 h-9 object-cover rounded flex-shrink-0" />
                         ) : (
                           <div className="w-6 h-9 bg-slate-200 dark:bg-zinc-800 rounded flex-shrink-0" />
                         )}
@@ -467,7 +508,7 @@ export default function BooksPage() {
                 />
                 <Link to={`/book/${book.id}`} state={bookNavState(i)} className="block w-full h-full">
                   {book.imageUrl ? (
-                    <img src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />
+                    <img loading="lazy" decoding="async" src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 p-3 text-center">
                       <svg className="w-8 h-8 text-slate-400 dark:text-zinc-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} aria-hidden="true">

@@ -6,6 +6,7 @@ import BulkActionBar from '../components/BulkActionBar'
 import ImportHints from '../components/ImportHints'
 import Pagination from '../components/Pagination'
 import { usePagination } from '../components/usePagination'
+import { useListParams, useUrlSearchInput } from '../components/useListParams'
 import { foldedIncludes } from '../util/foldForSearch'
 import { usePolling } from '../components/usePolling'
 import { safeHref } from '../util/safeHref'
@@ -25,6 +26,9 @@ const ROW_GRID = 'grid grid-cols-[1.5rem_2rem_minmax(0,1fr)] sm:grid-cols-[1.5re
 // drop back into their own grid columns.
 const ROW_CONTROLS = 'col-start-2 col-span-2 flex flex-wrap items-center gap-2 sm:contents'
 
+// Query-string keys and their defaults; defaults stay out of the URL.
+const LIST_DEFAULTS = { q: '', excluded: '' }
+
 export default function WantedPage() {
   const { t } = useTranslation()
 
@@ -33,13 +37,21 @@ export default function WantedPage() {
   const [searchingId, setSearchingId] = useState<number | null>(null)
   const [results, setResults] = useState<SearchResult[]>([])
   const [showResults, setShowResults] = useState<number | null>(null)
-  const [search, setSearch] = useState('')
+  // Page, search and the excluded toggle live in the URL so going back from a
+  // book lands on the same page of the same list (#3052).
+  const list = useListParams(LIST_DEFAULTS)
+  const updateList = list.update
+  // The list filters on every keystroke; the URL catches up once typing
+  // pauses, replacing the entry rather than pushing one per keystroke.
+  const commitSearch = useCallback((q: string) => updateList({ q, page: null }, { replace: true }), [updateList])
+  const [search, setSearch] = useUrlSearchInput(list.values.q, commitSearch)
   const [grabbingGuid, setGrabbingGuid] = useState<string | null>(null)
   const [grabbedGuid, setGrabbedGuid] = useState<string | null>(null)
   const [unmonitoringId, setUnmonitoringId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
-  const [showExcluded, setShowExcluded] = useState(false)
+  const showExcluded = list.values.excluded === '1'
+  const setShowExcluded = (next: boolean) => updateList({ excluded: next ? '1' : null })
   const [toast, setToast] = useState<string | null>(null)
   const selectAllRef = useRef<HTMLInputElement>(null)
 
@@ -163,7 +175,7 @@ export default function WantedPage() {
     }
   }
 
-  const { pageItems, paginationProps, reset } = usePagination(filtered, 50, 'wanted')
+  const { pageItems, paginationProps } = usePagination(filtered, 50, 'wanted', { page: list.page, setPage: list.setPage })
 
   // This page's loaded ids, in order — handed to BookDetailPage as router
   // state (#2548) for Previous/Next; see BookNavState there. Scoped to
@@ -172,7 +184,8 @@ export default function WantedPage() {
   // rule used by BooksPage/AuthorDetailPage.
   const pageItemIds = pageItems.map(b => b.id)
 
-  useEffect(() => { reset() }, [search, reset])
+  // A selection only means something on the page it was made on.
+  useEffect(() => { setSelectedIds(new Set()) }, [list.page, list.values.q, showExcluded])
 
   // Keep the select-all checkbox indeterminate state in sync.
   const allPageSelected = pageItems.length > 0 && pageItems.every(b => selectedIds.has(b.id))
@@ -224,7 +237,7 @@ export default function WantedPage() {
   return (
     <div className={selectedIds.size > 0 ? 'pb-16' : ''}>
       {toast && (
-        <div className="fixed bottom-6 right-6 z-50 px-4 py-2.5 bg-red-600 text-white rounded-lg shadow-lg text-sm font-medium animate-fade-in">
+        <div className="fixed bottom-safe-6 right-safe-6 z-50 px-4 py-2.5 bg-red-600 text-white rounded-lg shadow-lg text-sm font-medium animate-fade-in">
           {toast}
         </div>
       )}
@@ -308,7 +321,7 @@ export default function WantedPage() {
 
                   {/* uniform cover slot */}
                   {book.imageUrl ? (
-                    <img
+                    <img loading="lazy" decoding="async"
                       src={book.imageUrl}
                       alt=""
                       className="w-8 h-11 object-cover rounded bg-slate-200 dark:bg-zinc-800"

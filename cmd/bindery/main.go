@@ -1345,24 +1345,7 @@ func main() {
 		_, _ = w.Write(baseScript)
 	})
 
-	fileServer := http.FileServer(http.FS(distFS))
-	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path[1:]
-		if path == "" || path == "index.html" {
-			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-			_, _ = w.Write(indexHTML)
-			return
-		}
-		if _, err := fs.Stat(distFS, path); err == nil {
-			fileServer.ServeHTTP(w, r)
-			return
-		}
-		// SPA fallback — unknown paths render the app shell.
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		_, _ = w.Write(indexHTML)
-	})
+	r.Get("/*", spaHandler(distFS, indexHTML))
 
 	// If BINDERY_URL_BASE is set, mount the entire router under that prefix.
 	// chi.Mount strips the prefix before dispatching so all inner routes and

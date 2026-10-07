@@ -17,6 +17,7 @@ import WhatsNewToast from './components/WhatsNewToast'
 import { useUnmatchedCount } from './components/useUnmatchedCount'
 import { REQUESTS_CHANGED_EVENT } from './pages/requests/requestLabels'
 import { useTheme } from './theme'
+import ScrollRestoration from './components/ScrollRestoration'
 
 // Route-scoped error boundary: a render crash in one page shows an inline error
 // inside the content area (the nav/header stay usable) instead of bubbling to
@@ -180,7 +181,7 @@ function Shell() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-zinc-950 text-slate-900 dark:text-zinc-100">
-      <header className="border-b border-slate-200 dark:border-zinc-800 sticky top-0 z-40 bg-slate-50 dark:bg-zinc-950">
+      <header className="border-b border-slate-200 dark:border-zinc-800 sticky top-0 z-40 pt-safe bg-slate-50 dark:bg-zinc-950">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between gap-4 h-16">
             <Link to="/" className="flex items-center gap-2 flex-shrink-0 group" onClick={() => setMenuOpen(false)}>
@@ -277,11 +278,12 @@ function Shell() {
         {menuOpen && (
           // The header is sticky, so a menu taller than the screen (the admin
           // one runs to about 840px) could never scroll into view with the
-          // page. Cap it at the viewport below the 4rem header row and its 1px
-          // border, and scroll it on its own.
+          // page. Cap it at the viewport below the 4rem header row, its 1px
+          // border and the header's top safe area inset, and scroll it on its
+          // own.
           <div
             id="mobile-menu"
-            className="xl:hidden border-t border-slate-200 dark:border-zinc-800 max-h-[calc(100dvh-4rem-1px)] overflow-y-auto overscroll-contain"
+            className="xl:hidden border-t border-slate-200 dark:border-zinc-800 max-h-[calc(100dvh-4rem-1px-env(safe-area-inset-top))] overflow-y-auto overscroll-contain"
           >
             {/* From lg up the search, the icons and the account menu stay in
                 the header row, so the menu only carries the nav links. */}
@@ -434,6 +436,7 @@ const binderyBase: string =
 function App() {
   return (
     <BrowserRouter basename={binderyBase}>
+      <ScrollRestoration />
       <AuthProvider>
         <Suspense fallback={<PageLoadingFallback />}>
           <Routes>

@@ -695,7 +695,7 @@ export default function AuthorDetailPage() {
             }}
           >
             {book.imageUrl ? (
-              <img src={book.imageUrl} alt="" className="w-6 h-9 object-cover rounded flex-shrink-0" />
+              <img loading="lazy" decoding="async" src={book.imageUrl} alt="" className="w-6 h-9 object-cover rounded flex-shrink-0" />
             ) : (
               <CoverPlaceholder
                 id={book.id}
@@ -814,7 +814,7 @@ export default function AuthorDetailPage() {
           >
             <div className="aspect-[2/3] bg-slate-200 dark:bg-zinc-800 relative">
               {book.imageUrl ? (
-                <img src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />
+                <img loading="lazy" decoding="async" src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />
               ) : (
                 <CoverPlaceholder id={book.id} title={book.title} size="sm" className="w-full h-full" />
               )}

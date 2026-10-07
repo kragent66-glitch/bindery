@@ -348,7 +348,7 @@ describe('Shell — mobile navigation', () => {
     renderShell()
     fireEvent.click(screen.getByRole('button', { name: /toggle menu/i }))
     const panel = document.querySelector('div.xl\\:hidden > nav')!.parentElement!
-    expect(panel.className).toContain('max-h-[calc(100dvh-4rem-1px)]')
+    expect(panel.className).toContain('max-h-[calc(100dvh-4rem-1px-env(safe-area-inset-top))]')
     expect(panel.className).toContain('overflow-y-auto')
     expect(panel.className).toContain('overscroll-contain')
   })

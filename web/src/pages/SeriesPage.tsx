@@ -519,7 +519,7 @@ export default function SeriesPage() {
                           #{entry.positionInSeries || '?'}
                         </span>
                         {entry.book?.imageUrl ? (
-                          <img
+                          <img loading="lazy" decoding="async"
                             src={entry.book.imageUrl}
                             alt={entry.book.title}
                             className="w-8 h-10 object-cover rounded flex-shrink-0"
@@ -630,7 +630,7 @@ export default function SeriesPage() {
                                 #{book.position || '?'}
                               </span>
                               {book.imageUrl ? (
-                                <img src={book.imageUrl} alt={book.title} className="w-8 h-10 object-cover rounded flex-shrink-0" />
+                                <img loading="lazy" decoding="async" src={book.imageUrl} alt={book.title} className="w-8 h-10 object-cover rounded flex-shrink-0" />
                               ) : (
                                 <div className="w-8 h-10 bg-slate-200 dark:bg-zinc-800 rounded flex-shrink-0" />
                               )}
