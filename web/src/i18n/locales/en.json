@@ -3,6 +3,7 @@
     "loading": "Loading…",
     "serverUnavailable": "Bindery is not answering right now.",
     "retry": "Retry",
+    "retrying": "Retrying…",
     "viewOnSource": "View on {{source}} ↗",
     "links": "Links",
     "gridView": "Grid view",

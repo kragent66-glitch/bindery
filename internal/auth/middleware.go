@@ -492,6 +492,12 @@ func Middleware(p Provider) func(http.Handler) http.Handler {
 						// database fault and touches nothing shared: the cookie,
 						// the user row and other requests on the same session are
 						// unaffected. Log it quietly.
+						//
+						// This treats a done context as "the client left". That
+						// holds only while no server side request timeout (a
+						// context deadline or http.TimeoutHandler) sits in front
+						// of this middleware. If one is added, a deadline here is
+						// a server fault and must be logged and answered as one.
 						if ctx.Err() != nil {
 							slog.Debug("session lookup abandoned by client", "user_id", uid, "error", lookupErr)
 						} else {
@@ -618,6 +624,8 @@ func Middleware(p Provider) func(http.Handler) http.Handler {
 			if epochLookupFailed {
 				if r.Context().Err() != nil {
 					// The client is gone; answer for the access log only.
+					// 499 assumes no server side request timeout sits in
+					// front of auth; see the lookup comment above.
 					w.WriteHeader(StatusClientClosedRequest)
 					return
 				}
