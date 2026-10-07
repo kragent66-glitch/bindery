@@ -30,6 +30,10 @@ const HARDCOVER_SYNC_INTERVAL_PRESETS = ['1h', '3h', '6h', '12h', '24h', '48h', 
 // option appended, the same as the Hardcover picker.
 const DISCOVERY_INTERVAL_PRESETS = ['off', '24h', '168h', '720h']
 
+// How long the General tab waits for the auth config before it renders
+// without the Security section (see the fetch in GeneralTab).
+const AUTH_CONFIG_WAIT_MS = 2500
+
 export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
   const { t } = useTranslation()
   const { isAdmin } = useAuth()
@@ -75,9 +79,15 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
   // section below it down by its own height. Since phones got the tab select
   // (#3065) that content sits on screen, and the jump was most of the page's
   // layout shift (CLS 0.05 to 0.52 on a throttled Pixel 7).
+  //
+  // The wait for the auth config is capped: a request that hangs must not
+  // keep the whole tab on Loading. Past AUTH_CONFIG_WAIT_MS the tab renders
+  // without Security, which then appears whenever the config arrives. That
+  // late shift is the rare case, traded for a tab that always opens.
   const [authCfg, setAuthCfg] = useState<AuthConfig | null>(null)
 
   useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined
     const settingsLoaded = api.listSettings()
       .then(list => {
         const map: Record<string, string> = {}
@@ -86,8 +96,16 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
       })
       .catch(console.error)
     const authCfgLoaded = api.authConfig().then(setAuthCfg).catch(console.error)
-    Promise.all([settingsLoaded, authCfgLoaded]).finally(() => setLoading(false))
+    const authCfgCapped = Promise.race([
+      authCfgLoaded,
+      new Promise<void>(resolve => { timer = setTimeout(resolve, AUTH_CONFIG_WAIT_MS) }),
+    ])
+    Promise.all([settingsLoaded, authCfgCapped]).finally(() => {
+      clearTimeout(timer)
+      setLoading(false)
+    })
     api.getStorage().then(setStorage).catch(console.error)
+    return () => clearTimeout(timer)
   }, [])
 
   // The last scan summary names the library roots and the absolute path of
@@ -251,7 +269,9 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
 
       {/* Security — visible to all authenticated users for their own password
           change; admin-only sub-controls are gated inside the component. */}
-      <SecuritySection initialCfg={authCfg} />
+      {/* Mounted with its config, so a config that arrives after the cap
+          still shows the section rather than an empty one. */}
+      {authCfg && <SecuritySection initialCfg={authCfg} />}
 
       {isAdmin && (<>
       {/* Naming */}
@@ -876,7 +896,7 @@ function StorageHealthBadge({ status, loading }: { status: StorageDirStatus | un
   )
 }
 
-function SecuritySection({ initialCfg }: { initialCfg: AuthConfig | null }) {
+function SecuritySection({ initialCfg }: { initialCfg: AuthConfig }) {
   const { t } = useTranslation()
   const { confirm, confirmDialog } = useConfirmDialog()
   const { status, refresh, isAdmin } = useAuth()

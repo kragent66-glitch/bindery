@@ -71,6 +71,30 @@ describe('GeneralTab Security section and layout shift', () => {
     expect(api.authConfig).toHaveBeenCalledTimes(1)
   })
 
+  it('stops waiting for a hung auth config after 2.5s, then adds Security when it arrives', async () => {
+    vi.useFakeTimers()
+    try {
+      let resolveCfg: (c: AuthConfig) => void = () => {}
+      vi.mocked(api.authConfig).mockReturnValue(new Promise<AuthConfig>(r => { resolveCfg = r }))
+      render(<GeneralTab />)
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(2400) })
+      expect(screen.queryByRole('heading', { name: 'settings.general.fileNaming' })).toBeNull()
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(200) })
+      expect(screen.getByRole('heading', { name: 'settings.general.fileNaming' })).toBeInTheDocument()
+      expect(screen.queryByRole('heading', { name: 'Security' })).toBeNull()
+
+      await act(async () => { resolveCfg(cfg) })
+      const security = screen.getByRole('heading', { name: 'Security' })
+      const naming = screen.getByRole('heading', { name: 'settings.general.fileNaming' })
+      expect(security.compareDocumentPosition(naming) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(screen.getByDisplayValue('Enabled')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('still renders the rest of the tab when the auth config fails', async () => {
     vi.mocked(api.authConfig).mockRejectedValue(new Error('forbidden'))
     render(<GeneralTab />)
