@@ -93,6 +93,17 @@ describe('small controls get a 44px hit area on touch screens', () => {
     expect(src('pages/SeriesPage.tsx')).toMatch(/className=\{`touch-target px-3 py-1 rounded-md text-xs font-medium/)
   })
 
+  // A chip is 24px tall, so its 44px hit area overhangs 10px above and below.
+  // With the 4px gap of a wrapped row, the second row's chips took taps aimed
+  // at the bottom of the first row's. On touch the rows sit 20px apart.
+  it.each([
+    ['pages/BooksPage.tsx', '<div className="flex gap-1 pointer-coarse:gap-y-5 flex-wrap">'],
+    ['pages/SeriesPage.tsx', `aria-label={t('series.filterLabel')} className="flex gap-1 pointer-coarse:gap-y-5 flex-wrap items-center"`],
+    ['pages/import/AdoptionFacets.tsx', `aria-label={t('adoption.stateLabel', 'Show')} className="flex gap-1 pointer-coarse:gap-y-5 flex-wrap items-center"`],
+  ])('%s wrapped chip rows leave room for the hit areas', (file, row) => {
+    expect(src(file)).toContain(row)
+  })
+
   it('the Library tab strip, with padding because the strip scrolls', () => {
     expect(src('components/NavTabs.tsx')).toContain('pointer-coarse:py-3')
   })

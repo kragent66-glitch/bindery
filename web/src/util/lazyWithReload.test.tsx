@@ -11,8 +11,8 @@ function Page() {
   return <p>page loaded</p>
 }
 
-function mount(factory: () => Promise<{ default: ComponentType }>) {
-  const Lazy = lazyWithReload(factory)
+function mount(factory: () => Promise<{ default: ComponentType }>, key = './pages/BooksPage') {
+  const Lazy = lazyWithReload(factory, key)
   return render(
     <ErrorBoundary>
       <Suspense fallback={<p>loading</p>}>
@@ -51,7 +51,7 @@ describe('lazyWithReload', () => {
   })
 
   it('shows the error page instead of reloading again when the chunk still fails after the reload', async () => {
-    sessionStorage.setItem(CHUNK_RELOAD_KEY, '1')
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, JSON.stringify({ './pages/BooksPage': 1 }))
     mount(() => Promise.reject(chunkError()))
     expect(await screen.findByRole('alert')).toBeInTheDocument()
     expect(reload).not.toHaveBeenCalled()
@@ -64,11 +64,51 @@ describe('lazyWithReload', () => {
   })
 
   it('clears the guard after a chunk loads, so a later upgrade can reload again', async () => {
-    sessionStorage.setItem(CHUNK_RELOAD_KEY, '1')
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, JSON.stringify({ './pages/BooksPage': 1 }))
     mount(() => Promise.resolve({ default: Page }))
     expect(await screen.findByText('page loaded')).toBeInTheDocument()
     expect(sessionStorage.getItem(CHUNK_RELOAD_KEY)).toBeNull()
     expect(reload).not.toHaveBeenCalled()
+  })
+
+  it('keeps the guard of a chunk when a different chunk loads', async () => {
+    sessionStorage.setItem(CHUNK_RELOAD_KEY, JSON.stringify({ './settings/GeneralTab': 1 }))
+    mount(() => Promise.resolve({ default: Page }), './pages/SettingsPage')
+    expect(await screen.findByText('page loaded')).toBeInTheDocument()
+    expect(JSON.parse(sessionStorage.getItem(CHUNK_RELOAD_KEY) ?? '{}')).toHaveProperty(['./settings/GeneralTab'])
+  })
+
+  // A settings tab is a lazy chunk inside the lazy Settings page chunk, and the
+  // tab is in the URL, so after the reload the page loads the same tab again.
+  // A guard cleared by any chunk loading let the page chunk clear it before the
+  // tab failed again, and the tab reloaded forever.
+  it('stops after one reload when a nested chunk keeps failing under a parent that loads', async () => {
+    const renderPage = () => {
+      const Tab = lazyWithReload<ComponentType>(() => Promise.reject(chunkError()), './settings/GeneralTab')
+      const Settings = lazyWithReload<ComponentType>(
+        () => Promise.resolve({ default: () => <Suspense fallback={<p>tab loading</p>}><Tab /></Suspense> }),
+        './pages/SettingsPage',
+      )
+      return render(
+        <ErrorBoundary>
+          <Suspense fallback={<p>loading</p>}>
+            <Settings />
+          </Suspense>
+        </ErrorBoundary>,
+      )
+    }
+
+    // First visit: the tab chunk is gone, so the page reloads once.
+    const first = renderPage()
+    await waitFor(() => expect(reload).toHaveBeenCalledTimes(1))
+    first.unmount()
+
+    // After the reload (fresh lazy components, same session): the Settings
+    // chunk loads, the tab still fails, and the error shows instead of a
+    // second reload.
+    renderPage()
+    expect(await screen.findByRole('alert')).toBeInTheDocument()
+    expect(reload).toHaveBeenCalledTimes(1)
   })
 
   it('recognises the chunk error messages of each browser', () => {
@@ -94,5 +134,9 @@ describe('lazy routes', () => {
     const src = sources[file]
     expect(src).toMatch(/lazyWithReload\(\(\) => import\(/)
     expect(src).not.toMatch(/\blazy\(\(\) => import\(/)
+    // Each chunk is keyed by its own import path, so no two share a guard.
+    const calls = src.match(/lazyWithReload\(\(\) => import\(/g) ?? []
+    const keyed = src.match(/lazyWithReload\(\(\) => import\('([^']+)'\), '\1'\)/g) ?? []
+    expect(keyed.length).toBe(calls.length)
   })
 })
