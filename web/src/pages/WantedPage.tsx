@@ -6,6 +6,7 @@ import BulkActionBar from '../components/BulkActionBar'
 import ImportHints from '../components/ImportHints'
 import Pagination from '../components/Pagination'
 import { usePagination } from '../components/usePagination'
+import { useListParams, useUrlSearchInput } from '../components/useListParams'
 import { foldedIncludes } from '../util/foldForSearch'
 import { usePolling } from '../components/usePolling'
 import { safeHref } from '../util/safeHref'
@@ -16,6 +17,9 @@ import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 // columns: checkbox · cover · title+author · format · actions
 const ROW_GRID = 'grid grid-cols-[1.5rem_2rem_1fr_6rem_8.5rem] items-center gap-3'
 
+// Query-string keys and their defaults; defaults stay out of the URL.
+const LIST_DEFAULTS = { q: '', excluded: '' }
+
 export default function WantedPage() {
   const { t } = useTranslation()
 
@@ -24,13 +28,21 @@ export default function WantedPage() {
   const [searchingId, setSearchingId] = useState<number | null>(null)
   const [results, setResults] = useState<SearchResult[]>([])
   const [showResults, setShowResults] = useState<number | null>(null)
-  const [search, setSearch] = useState('')
+  // Page, search and the excluded toggle live in the URL so going back from a
+  // book lands on the same page of the same list (#3052).
+  const list = useListParams(LIST_DEFAULTS)
+  const updateList = list.update
+  // The list filters on every keystroke; the URL catches up once typing
+  // pauses, replacing the entry rather than pushing one per keystroke.
+  const commitSearch = useCallback((q: string) => updateList({ q, page: null }, { replace: true }), [updateList])
+  const [search, setSearch] = useUrlSearchInput(list.values.q, commitSearch)
   const [grabbingGuid, setGrabbingGuid] = useState<string | null>(null)
   const [grabbedGuid, setGrabbedGuid] = useState<string | null>(null)
   const [unmonitoringId, setUnmonitoringId] = useState<number | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
-  const [showExcluded, setShowExcluded] = useState(false)
+  const showExcluded = list.values.excluded === '1'
+  const setShowExcluded = (next: boolean) => updateList({ excluded: next ? '1' : null })
   const [toast, setToast] = useState<string | null>(null)
   const selectAllRef = useRef<HTMLInputElement>(null)
 
@@ -154,7 +166,7 @@ export default function WantedPage() {
     }
   }
 
-  const { pageItems, paginationProps, reset } = usePagination(filtered, 50, 'wanted')
+  const { pageItems, paginationProps } = usePagination(filtered, 50, 'wanted', { page: list.page, setPage: list.setPage })
 
   // This page's loaded ids, in order — handed to BookDetailPage as router
   // state (#2548) for Previous/Next; see BookNavState there. Scoped to
@@ -162,8 +174,6 @@ export default function WantedPage() {
   // filtered list — matches the "only as far as what's currently loaded"
   // rule used by BooksPage/AuthorDetailPage.
   const pageItemIds = pageItems.map(b => b.id)
-
-  useEffect(() => { reset() }, [search, reset])
 
   // Keep the select-all checkbox indeterminate state in sync.
   const allPageSelected = pageItems.length > 0 && pageItems.every(b => selectedIds.has(b.id))

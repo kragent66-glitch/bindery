@@ -17,6 +17,7 @@ import WhatsNewToast from './components/WhatsNewToast'
 import { useUnmatchedCount } from './components/useUnmatchedCount'
 import { REQUESTS_CHANGED_EVENT } from './pages/requests/requestLabels'
 import { useTheme } from './theme'
+import ScrollRestoration from './components/ScrollRestoration'
 
 // Route-scoped error boundary: a render crash in one page shows an inline error
 // inside the content area (the nav/header stay usable) instead of bubbling to
@@ -423,6 +424,7 @@ const binderyBase: string =
 function App() {
   return (
     <BrowserRouter basename={binderyBase}>
+      <ScrollRestoration />
       <AuthProvider>
         <Suspense fallback={<PageLoadingFallback />}>
           <Routes>

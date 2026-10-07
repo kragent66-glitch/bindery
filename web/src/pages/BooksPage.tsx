@@ -15,6 +15,7 @@ import { api, BINDERY_BASE, Book, MediaType } from '../api/client'
 import BulkActionBar from '../components/BulkActionBar'
 import Pagination from '../components/Pagination'
 import { useServerPagination } from '../components/usePagination'
+import { oneOf, useListParams, useUrlSearchInput } from '../components/useListParams'
 import AddToLibraryModal from '../components/AddToLibraryModal'
 
 type SortMode =
@@ -24,6 +25,18 @@ type SortMode =
   | 'type-az' | 'type-za'
   | 'status-az' | 'status-za'
 type MonitoredFilter = '' | 'monitored' | 'unmonitored'
+type StatusFilter = '' | 'wanted' | 'imported' | 'skipped'
+type MediaFilter = '' | 'ebook' | 'audiobook' | 'both'
+
+const SORT_MODES: readonly SortMode[] = [
+  'title-az', 'title-za', 'date-new', 'date-old', 'author-az', 'author-za',
+  'type-az', 'type-za', 'status-az', 'status-za',
+]
+const STATUS_FILTERS: readonly StatusFilter[] = ['', 'wanted', 'imported', 'skipped']
+const MEDIA_FILTERS: readonly MediaFilter[] = ['', 'ebook', 'audiobook', 'both']
+// Query-string keys and their defaults. A value equal to its default is left
+// out of the URL, so an untouched list stays at a clean /books.
+const LIST_DEFAULTS = { q: '', status: '', media: '', sort: 'title-az' }
 
 
 // statusLabel is populated at render time from t() — see BooksPage
@@ -40,18 +53,33 @@ export default function BooksPage() {
   const [books, setBooks] = useState<Book[]>([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
-  const [statusFilter, setStatusFilter] = useState('')
-  const [mediaFilter, setMediaFilter] = useState<'' | 'ebook' | 'audiobook' | 'both'>('')
-  const [monitoredFilter, setMonitoredFilter] = useState<MonitoredFilter>(() => {
+  // Page, search, status, media type and sort live in the URL so going back
+  // from a book lands on the same page of the same list (#3052). The monitored
+  // filter, view and page size stay in localStorage: they are preferences that
+  // already survive navigation.
+  const list = useListParams(LIST_DEFAULTS)
+  const statusFilter = oneOf(list.values.status, STATUS_FILTERS, '')
+  const mediaFilter = oneOf(list.values.media, MEDIA_FILTERS, '')
+  const sort = oneOf(list.values.sort, SORT_MODES, 'title-az')
+  const debouncedSearch = list.values.q
+  const updateList = list.update
+  const setStatusFilter = (status: StatusFilter) => updateList({ status, page: null })
+  const setMediaFilter = (media: MediaFilter) => updateList({ media, page: null })
+  const setSort = (next: SortMode) => updateList({ sort: next, page: null })
+  // Keystroke-level changes replace the history entry instead of pushing one.
+  const commitSearch = useCallback((q: string) => updateList({ q, page: null }, { replace: true }), [updateList])
+  const [search, setSearch] = useUrlSearchInput(debouncedSearch, commitSearch)
+  const [monitoredFilter, setMonitoredFilterState] = useState<MonitoredFilter>(() => {
     try {
       const v = localStorage.getItem('bindery.filter.books.monitored')
       if (v === 'monitored' || v === 'unmonitored') return v
     } catch { /* ignore */ }
     return ''
   })
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
-  const [sort, setSort] = useState<SortMode>('title-az')
+  const setMonitoredFilter = (next: MonitoredFilter) => {
+    setMonitoredFilterState(next)
+    updateList({ page: null })
+  }
   const [view, setView] = useView('books', 'grid')
   const { needsIndexer, needsClient, needsAny } = useNeedsSetup()
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
@@ -70,7 +98,11 @@ export default function BooksPage() {
   // Shown on the Filters trigger so an applied filter is visible without
   // opening it. Status is not counted: it has its own row and is never hidden.
   const activeFilterCount = [mediaFilter, monitoredFilter].filter(Boolean).length
-  const { page, pageSize, paginationProps, reset } = useServerPagination(total, 50, 'books')
+  const { page, pageSize, paginationProps } = useServerPagination(total, 50, 'books', {
+    page: list.page,
+    setPage: list.setPage,
+    ready: !loading,
+  })
 
   // Server-side list: page, page size, search, status, media type, monitored,
   // and sort are all applied by the API so a library with >100 books is fully
@@ -99,14 +131,10 @@ export default function BooksPage() {
 
   useEffect(() => { load() }, [load])
 
-  // Debounce the search box so typing does not fire a request per keystroke.
-  useEffect(() => {
-    const id = setTimeout(() => setDebouncedSearch(search.trim()), 300)
-    return () => clearTimeout(id)
-  }, [search])
-
-  // Jump back to page 1 whenever the query changes.
-  useEffect(() => { reset() }, [debouncedSearch, statusFilter, mediaFilter, monitoredFilter, sort, pageSize, reset])
+  // The search box is debounced into the URL (useUrlSearchInput) so typing
+  // does not fire a request per keystroke. Every query change drops the page
+  // param in the same update, which is the jump back to page 1; doing it in
+  // an effect instead would also fire on mount and lose the page from the URL.
 
   // Persist the monitored filter so it survives a reload, mirroring AuthorsPage.
   useEffect(() => {
@@ -178,7 +206,7 @@ export default function BooksPage() {
   // second click on the same column flips to descending (mirrors the sort
   // buttons, which use the same whitelisted keys the backend accepts).
   const toggleSort = (asc: SortMode, desc: SortMode) =>
-    setSort(prev => (prev === asc ? desc : asc))
+    setSort(sort === asc ? desc : asc)
 
   // SortableHeader renders a clickable <th> with an ▲/▼ affordance when its
   // column is the active sort. asc/desc are the whitelisted keys for the column.
