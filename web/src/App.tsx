@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, NavLink, Link, Navigate, useLocation, useParams } from 'react-router'
-import { Fragment, lazy, Suspense, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, Suspense, useEffect, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api } from './api/client'
 import { AuthProvider, useAuth } from './auth/AuthContext'
@@ -19,6 +19,7 @@ import { useUnmatchedCount } from './components/useUnmatchedCount'
 import { REQUESTS_CHANGED_EVENT } from './pages/requests/requestLabels'
 import { useTheme } from './theme'
 import ScrollRestoration from './components/ScrollRestoration'
+import { lazyWithReload } from './util/lazyWithReload'
 
 // Route-scoped error boundary: a render crash in one page shows an inline error
 // inside the content area (the nav/header stay usable) instead of bubbling to
@@ -33,27 +34,27 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
   )
 }
 
-const LoginPage = lazy(() => import('./pages/LoginPage'))
-const SetupPage = lazy(() => import('./pages/SetupPage'))
-const AuthorsPage = lazy(() => import('./pages/AuthorsPage'))
-const AuthorDetailPage = lazy(() => import('./pages/AuthorDetailPage'))
-const BooksPage = lazy(() => import('./pages/BooksPage'))
-const BookDetailPage = lazy(() => import('./pages/BookDetailPage'))
-const DuplicatesPage = lazy(() => import('./pages/DuplicatesPage'))
-const WantedPage = lazy(() => import('./pages/WantedPage'))
-const QueuePage = lazy(() => import('./pages/QueuePage'))
-const ImportPage = lazy(() => import('./pages/import/ImportPage'))
-const SettingsPage = lazy(() => import('./pages/SettingsPage'))
-const UsersPage = lazy(() => import('./pages/UsersPage'))
-const HistoryPage = lazy(() => import('./pages/HistoryPage'))
-const SeriesPage = lazy(() => import('./pages/SeriesPage'))
-const CalendarPage = lazy(() => import('./pages/CalendarPage'))
-const DiscoverPage = lazy(() => import('./pages/DiscoverPage'))
-const SearchPage = lazy(() => import('./pages/SearchPage'))
-const RequesterLibraryPage = lazy(() => import('./pages/requests/RequesterLibraryPage'))
-const RequestSearchPage = lazy(() => import('./pages/requests/RequestSearchPage'))
-const MyRequestsPage = lazy(() => import('./pages/requests/MyRequestsPage'))
-const RequestsPage = lazy(() => import('./pages/requests/RequestsPage'))
+const LoginPage = lazyWithReload(() => import('./pages/LoginPage'), './pages/LoginPage')
+const SetupPage = lazyWithReload(() => import('./pages/SetupPage'), './pages/SetupPage')
+const AuthorsPage = lazyWithReload(() => import('./pages/AuthorsPage'), './pages/AuthorsPage')
+const AuthorDetailPage = lazyWithReload(() => import('./pages/AuthorDetailPage'), './pages/AuthorDetailPage')
+const BooksPage = lazyWithReload(() => import('./pages/BooksPage'), './pages/BooksPage')
+const BookDetailPage = lazyWithReload(() => import('./pages/BookDetailPage'), './pages/BookDetailPage')
+const DuplicatesPage = lazyWithReload(() => import('./pages/DuplicatesPage'), './pages/DuplicatesPage')
+const WantedPage = lazyWithReload(() => import('./pages/WantedPage'), './pages/WantedPage')
+const QueuePage = lazyWithReload(() => import('./pages/QueuePage'), './pages/QueuePage')
+const ImportPage = lazyWithReload(() => import('./pages/import/ImportPage'), './pages/import/ImportPage')
+const SettingsPage = lazyWithReload(() => import('./pages/SettingsPage'), './pages/SettingsPage')
+const UsersPage = lazyWithReload(() => import('./pages/UsersPage'), './pages/UsersPage')
+const HistoryPage = lazyWithReload(() => import('./pages/HistoryPage'), './pages/HistoryPage')
+const SeriesPage = lazyWithReload(() => import('./pages/SeriesPage'), './pages/SeriesPage')
+const CalendarPage = lazyWithReload(() => import('./pages/CalendarPage'), './pages/CalendarPage')
+const DiscoverPage = lazyWithReload(() => import('./pages/DiscoverPage'), './pages/DiscoverPage')
+const SearchPage = lazyWithReload(() => import('./pages/SearchPage'), './pages/SearchPage')
+const RequesterLibraryPage = lazyWithReload(() => import('./pages/requests/RequesterLibraryPage'), './pages/requests/RequesterLibraryPage')
+const RequestSearchPage = lazyWithReload(() => import('./pages/requests/RequestSearchPage'), './pages/requests/RequestSearchPage')
+const MyRequestsPage = lazyWithReload(() => import('./pages/requests/MyRequestsPage'), './pages/requests/MyRequestsPage')
+const RequestsPage = lazyWithReload(() => import('./pages/requests/RequestsPage'), './pages/requests/RequestsPage')
 
 // The admin nav badge: pending requests, read once on load and again after
 // each approve or decline. No polling.
@@ -349,7 +350,7 @@ function Shell() {
               {signedIn && (
                 <button
                   onClick={logout}
-                  className="text-xs text-fg-muted hover:text-slate-900 dark:hover:text-white transition-colors"
+                  className="touch-target text-xs text-fg-muted hover:text-slate-900 dark:hover:text-white transition-colors"
                 >
                   {t('login.signOut')}
                 </button>

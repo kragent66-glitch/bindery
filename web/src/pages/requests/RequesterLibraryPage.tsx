@@ -74,10 +74,10 @@ export default function RequesterLibraryPage() {
             ) : (
               <div aria-hidden="true" className="w-full aspect-[2/3] rounded-md bg-slate-200 dark:bg-zinc-800" />
             )}
-            <div className="mt-2 text-sm font-medium leading-snug break-words">{b.title}</div>
-            <div className="text-xs text-fg-muted">{b.authorName}</div>
+            <div className="mt-2 text-sm font-medium leading-snug [overflow-wrap:anywhere]">{b.title}</div>
+            <div className="text-xs text-fg-muted [overflow-wrap:anywhere]">{b.authorName}</div>
             {b.series && (
-              <div className="text-xs text-fg-muted">
+              <div className="text-xs text-fg-muted [overflow-wrap:anywhere]">
                 {b.seriesPosition ? t('requests.library.seriesWithPosition', { series: b.series, position: b.seriesPosition }) : b.series}
               </div>
             )}

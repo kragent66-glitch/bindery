@@ -91,6 +91,46 @@
   textarea {
     font-size: 16px;
   }
+
+  /* At 16px the select text outgrows the room the px-* utilities leave for
+     the arrow the forms plugin draws (1.5em wide, 0.5rem from the edge), so
+     the value ran under it. Reserve the arrow's width here; desktop keeps
+     the compact padding. */
+  select:not([multiple]):not([size]) {
+    padding-right: 2.5rem;
+  }
+}
+
+/* Native controls (select popups, date pickers, scrollbars) follow
+   color-scheme, not the page colours, so the dark theme still opened white
+   pickers. Tracks the .dark class rather than the OS setting because the
+   theme can be overridden in the app. */
+@layer base {
+  html:not(.dark) { color-scheme: light; }
+  html.dark { color-scheme: dark; }
+}
+
+/* A 44px hit area for small controls on touch screens without changing how
+   they look: the invisible ::before is centred on the control, and a tap on
+   it lands on the control. In the components layer so a positioning utility
+   such as `absolute` on the same element wins over the relative here. Not for
+   controls inside a scroll container, which would scroll to the overhang;
+   those get pointer-coarse padding instead. */
+@layer components {
+  @media (pointer: coarse) {
+    .touch-target {
+      position: relative;
+    }
+    .touch-target::before {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: max(100%, 44px);
+      height: max(100%, 44px);
+      transform: translate(-50%, -50%);
+    }
+  }
 }
 
 /* Safe area insets. index.html sets viewport-fit=cover (paired with these,

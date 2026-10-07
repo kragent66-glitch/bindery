@@ -37,6 +37,9 @@ export default function CalendarPage() {
   const today = new Date()
   const [viewYear, setViewYear] = useState(today.getFullYear())
   const [viewMonth, setViewMonth] = useState(today.getMonth())
+  // The day tapped in the phone grid, whose releases the agenda then lists on
+  // their own. Kept with its month so paging away drops it without an effect.
+  const [picked, setPicked] = useState<{ year: number; month: number; day: number } | null>(null)
 
   // Fetch only the visible month's releases (a scoped server query) rather than
   // pulling the whole library and filtering client-side. Re-fetches when the
@@ -93,6 +96,11 @@ export default function CalendarPage() {
   while (cells.length % 7 !== 0) cells.push(null)
 
   const hasReleases = Object.keys(booksByDay).length > 0
+  const selectedDay = picked && picked.year === viewYear && picked.month === viewMonth && booksByDay[picked.day]
+    ? picked.day
+    : null
+  const toggleDay = (day: number) =>
+    setPicked(selectedDay === day ? null : { year: viewYear, month: viewMonth, day })
   const dayNames = weekdayNames(lang, 'short')
   const dayNamesNarrow = weekdayNames(lang, 'narrow')
 
@@ -194,13 +202,37 @@ export default function CalendarPage() {
             <div className="grid grid-cols-7">
               {cells.map((day, idx) => {
                 const isToday = isCurrentMonth && day === today.getDate()
-                const hasBooks = day ? (booksByDay[day]?.length ?? 0) > 0 : false
+                const count = day ? (booksByDay[day]?.length ?? 0) : 0
+                const hasBooks = count > 0
+                const isSelected = day !== null && day === selectedDay
+                const cellCls = `aspect-square flex flex-col items-center justify-center border-b border-r border-slate-200 dark:border-zinc-800 text-xs ${
+                  idx % 7 === 6 ? 'border-r-0' : ''
+                } ${isSelected ? 'bg-emerald-500/15' : day ? 'bg-slate-100/50 dark:bg-zinc-900/50' : 'bg-slate-100/20 dark:bg-zinc-900/20'}`
+                // A day with releases is a button: its dot used to be the only
+                // sign of them, and there was nothing to tap to see which.
+                if (day && hasBooks) {
+                  return (
+                    <button
+                      key={idx}
+                      type="button"
+                      onClick={() => toggleDay(day)}
+                      aria-pressed={isSelected}
+                      aria-label={t('calendar.dayReleases', { date: dayOfMonthLabel(lang, viewYear, viewMonth, day), count })}
+                      className={`${cellCls} touch-manipulation`}
+                    >
+                      <span className={`w-6 h-6 flex items-center justify-center rounded-full text-xs ${
+                        isToday ? 'bg-emerald-600 text-white' : 'text-slate-600 dark:text-zinc-400'
+                      }`}>
+                        {day}
+                      </span>
+                      <span aria-hidden className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-0.5" />
+                    </button>
+                  )
+                }
                 return (
                   <div
                     key={idx}
-                    className={`aspect-square flex flex-col items-center justify-center border-b border-r border-slate-200 dark:border-zinc-800 text-xs ${
-                      idx % 7 === 6 ? 'border-r-0' : ''
-                    } ${day ? 'bg-slate-100/50 dark:bg-zinc-900/50' : 'bg-slate-100/20 dark:bg-zinc-900/20'}`}
+                    className={cellCls}
                   >
                     {day && (
                       <>
@@ -209,9 +241,6 @@ export default function CalendarPage() {
                         }`}>
                           {day}
                         </span>
-                        {hasBooks && (
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 mt-0.5" />
-                        )}
                       </>
                     )}
                   </div>
@@ -223,13 +252,25 @@ export default function CalendarPage() {
           {/* Agenda list — always visible, primary view on mobile */}
           {hasReleases ? (
             <div className="mt-4 border border-slate-200 dark:border-zinc-800 rounded-lg overflow-hidden">
-              <div className="px-4 py-2 bg-slate-100 dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
-                <p className="text-xs text-slate-600 dark:text-zinc-400 font-medium">
-                  {t('calendar.releasingIn', { month: monthLabel(lang, viewYear, viewMonth, { month: 'long' }), year: viewYear })}
+              <div className="flex items-center justify-between gap-3 px-4 py-2 bg-slate-100 dark:bg-zinc-900 border-b border-slate-200 dark:border-zinc-800">
+                <p className="text-xs text-slate-600 dark:text-zinc-400 font-medium" aria-live="polite">
+                  {selectedDay !== null
+                    ? t('calendar.releasingOn', { date: dayOfMonthLabel(lang, viewYear, viewMonth, selectedDay) })
+                    : t('calendar.releasingIn', { month: monthLabel(lang, viewYear, viewMonth, { month: 'long' }), year: viewYear })}
                 </p>
+                {selectedDay !== null && (
+                  <button
+                    type="button"
+                    onClick={() => setPicked(null)}
+                    className="touch-target shrink-0 text-xs font-medium text-accent-text hover:underline"
+                  >
+                    {t('calendar.showWholeMonth')}
+                  </button>
+                )}
               </div>
-              <div className="divide-y divide-slate-200 dark:divide-zinc-800">
+              <div className="divide-y divide-slate-200 dark:divide-zinc-800" data-testid="calendar-agenda">
                 {Object.entries(booksByDay)
+                  .filter(([day]) => selectedDay === null || Number(day) === selectedDay)
                   .sort(([a], [b]) => Number(a) - Number(b))
                   .flatMap(([day, dayBooks]) =>
                     dayBooks.map(book => (
