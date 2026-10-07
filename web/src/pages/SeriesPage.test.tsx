@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
-import { MemoryRouter, useLocation } from 'react-router'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
+import { ModalHistoryProvider } from '../components/useModal'
 import SeriesPage from './SeriesPage'
 import { api } from '../api/client'
 import type { Book, Series, SeriesHardcoverLink, SeriesHardcoverSearchResult, SystemStatus } from '../api/client'
@@ -1344,5 +1345,45 @@ describe('SeriesPage translations', () => {
     expect(screen.getAllByText('Nicht vorgemerkt')).toHaveLength(2)
     expect(document.title).toBe('Serien · Bindery')
     expect(screen.queryByRole('heading', { level: 2, name: 'Series' })).not.toBeInTheDocument()
+  })
+})
+
+describe('SeriesPage with modal history', () => {
+  // #3052: opening a modal pushes a history entry with new state. The page
+  // used to refetch and re-expand the series it was opened on whenever the
+  // state object changed, so Add Book on series B collapsed B and expanded A.
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(api.listAllBooks).mockResolvedValue([])
+    vi.mocked(api.listAllAuthors).mockResolvedValue([])
+    vi.mocked(api.getSeriesHardcoverLink).mockRejectedValue(new Error('not linked'))
+  })
+
+  it('keeps the expanded series and does not refetch when a modal opens and closes', async () => {
+    const make = (id: number, title: string): Series => ({
+      id, foreignSeriesId: `manual:series:${id}`, title, description: '', monitored: false, books: [],
+    } as Series)
+    vi.mocked(api.listSeries).mockResolvedValue([make(30, 'Series A'), make(31, 'Series B')])
+    vi.mocked(api.status).mockResolvedValue({ version: 'dev', commit: 'unknown', buildDate: '', enhancedHardcoverApi: true, hardcoverTokenConfigured: true })
+    render(
+      <MemoryRouter initialEntries={[{ pathname: '/series', state: { seriesId: 30 } }]}>
+        <ModalHistoryProvider>
+          <Routes><Route path="/series" element={<SeriesPage />} /></Routes>
+        </ModalHistoryProvider>
+      </MemoryRouter>,
+    )
+    // Arrived with seriesId 30, so A is expanded.
+    expect(await screen.findByRole('button', { name: 'Add Book' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('heading', { name: 'Series B' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add Book' }))
+    expect(await screen.findByRole('dialog', { name: 'Add Book to Series Series B' })).toBeInTheDocument()
+    await act(async () => { await Promise.resolve() })
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    await act(async () => { await Promise.resolve() })
+    // B is still the expanded one and the list was fetched once.
+    fireEvent.click(screen.getByRole('button', { name: 'Add Book' }))
+    expect(await screen.findByRole('dialog', { name: 'Add Book to Series Series B' })).toBeInTheDocument()
+    expect(api.listSeries).toHaveBeenCalledTimes(1)
   })
 })

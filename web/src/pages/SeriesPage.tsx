@@ -67,19 +67,22 @@ export default function SeriesPage() {
   const [bookModalSeries, setBookModalSeries] = useState<Series | null>(null)
   const enhancedHardcoverApi = systemStatus?.enhancedHardcoverApi ?? false
 
+  // Keyed on the id alone, not the state object: opening a modal pushes an
+  // entry with new state (useModal), which must not refetch the list or
+  // re-expand the series the page was first opened on.
+  const navSeriesId = (location.state as { seriesId?: number } | null)?.seriesId
   useEffect(() => {
-    const state = location.state as { seriesId?: number } | null
     Promise.all([api.listSeries(), api.status()])
       .then(([list, status]) => {
         setSeriesList(list)
         setSystemStatus(status)
-        if (state?.seriesId) {
-          setExpanded(state.seriesId)
+        if (navSeriesId) {
+          setExpanded(navSeriesId)
         }
       })
       .catch(console.error)
       .finally(() => setLoading(false))
-  }, [location.state])
+  }, [navSeriesId])
 
   useEffect(() => {
     document.title = `${t('series.title')} · Bindery`
