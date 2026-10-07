@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, Book, ReassignPreview } from '../api/client'
 import Alert from './Alert'
+import { useModal } from './useModal'
 
 type Props = {
   sourceBookId: number
@@ -115,6 +116,8 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
   // a move that will not happen would be its own kind of lie.
   const movesOnDisk = preview?.status !== 'noop'
 
+  const { titleId, panelProps } = useModal({ onClose, canClose: !submitting })
+
   return (
     <div
       className="modal-overlay fixed inset-0 z-50 flex items-start sm:items-center justify-center bg-black/50 p-4 pt-14 sm:pt-4"
@@ -124,11 +127,10 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
       <div
         className="w-full max-w-lg rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col"
         onClick={e => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
+        {...panelProps}
       >
         <div className="shrink-0 p-4 border-b border-slate-200 dark:border-zinc-800">
-          <h3 className="text-base font-semibold">
+          <h3 id={titleId} className="text-base font-semibold">
             {t('bookDetail.fixMatch.title', 'Reassign file to another book')}
           </h3>
           <p className="mt-1 text-xs text-slate-500 dark:text-zinc-500 font-mono break-all sm:truncate" title={path}>

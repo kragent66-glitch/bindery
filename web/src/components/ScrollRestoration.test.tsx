@@ -129,6 +129,25 @@ describe('ScrollRestoration', () => {
     expect(scrollTo).toHaveBeenLastCalledWith(0, 1800)
   })
 
+  it('leaves the scroll alone when a modal pushes its history entry', async () => {
+    renderApp()
+    setScrollY(1800)
+    // useModal pushes the same pathname and search with only state changed.
+    await act(async () => { await nav('/books', { state: { binderyModals: ['m1'] } }) })
+    await go(-1)
+    // The pop back restores the list to where it already is.
+    for (const call of scrollTo.mock.calls) expect(call).toEqual([0, 1800])
+  })
+
+  it('scrolls to the top when a replace lands on a new page', async () => {
+    // A navigation made from inside a modal replaces the modal's entry, so
+    // the new page arrives as a REPLACE rather than a PUSH.
+    renderApp()
+    setScrollY(1800)
+    await act(async () => { await nav('/author/3', { replace: true }) })
+    expect(scrollTo).toHaveBeenLastCalledWith(0, 0)
+  })
+
   it('keeps restoring through a replace of the same location', async () => {
     vi.useFakeTimers()
     renderApp()

@@ -19,6 +19,7 @@ import { useView } from '../components/useView'
 import SetupChecklist from '../components/SetupChecklist'
 import { btn, btnSize } from '../components/buttons'
 import Switch from '../components/Switch'
+import { ModalPanel } from '../components/useModal'
 
 // 'az' | 'za' sort by name and back the existing toolbar buttons; the rest are
 // the column-header sorts (#1349), whitelisted server-side by authorSortOrder.
@@ -716,7 +717,7 @@ export default function AuthorsPage() {
 
       {monitoringBulkAction && (
         <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={() => setMonitoringBulkAction(null)}>
-          <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-md shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="bulk-monitoring-title" onClick={e => e.stopPropagation()}>
+          <ModalPanel onClose={() => setMonitoringBulkAction(null)} canClose={!bulkBusy} labelledBy="bulk-monitoring-title" className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-md shadow-2xl modal-max-h overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
               <h3 id="bulk-monitoring-title" className="text-lg font-semibold">
                 {monitoringBulkAction === 'monitor' ? t('common.monitor') : t('common.unmonitor')}
@@ -759,13 +760,13 @@ export default function AuthorsPage() {
                 {t('common.apply', 'Apply')}
               </button>
             </div>
-          </div>
+          </ModalPanel>
         </div>
       )}
 
       {showMonitorModeBulk && (
         <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={closeBulkMonitorMode}>
-          <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-md shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="bulk-monitor-mode-title" onClick={e => e.stopPropagation()}>
+          <ModalPanel onClose={closeBulkMonitorMode} canClose={!bulkBusy} labelledBy="bulk-monitor-mode-title" className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-md shadow-2xl modal-max-h overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
               <h3 id="bulk-monitor-mode-title" className="text-lg font-semibold">{t('authors.bulkSetMonitorModeTitle', 'Set monitor mode')}</h3>
               <p className="text-xs text-slate-600 dark:text-zinc-400 mt-1">
@@ -867,7 +868,7 @@ export default function AuthorsPage() {
                 {bulkBusy ? t('common.saving', 'Saving…') : t('authors.bulkSetMonitorModeApply', 'Apply monitor mode')}
               </button>
             </div>
-          </div>
+          </ModalPanel>
         </div>
       )}
 

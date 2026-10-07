@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { api, Author, AuthorMonitorMode, MetadataProfile, MonitorNewItems, QualityProfile, RootFolder, Series, UpdateAuthorRequest } from '../api/client'
+import { useModal } from './useModal'
 
 interface Props {
   author: Author
@@ -161,11 +162,13 @@ export default function EditAuthorModal({ author, onClose, onSaved }: Props) {
     }
   }
 
+  const { titleId, panelProps } = useModal({ onClose, canClose: !saving })
+
   return (
     <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-lg shadow-2xl modal-max-h flex flex-col" onClick={e => e.stopPropagation()}>
+      <div {...panelProps} className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-lg shadow-2xl modal-max-h flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
-          <h3 className="text-lg font-semibold">{t('editAuthorModal.title', 'Edit Author')}</h3>
+          <h3 id={titleId} className="text-lg font-semibold">{t('editAuthorModal.title', 'Edit Author')}</h3>
           <p className="text-xs text-slate-600 dark:text-zinc-500 mt-1">{author.authorName}</p>
         </div>
 

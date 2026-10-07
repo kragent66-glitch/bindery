@@ -4,6 +4,7 @@ import { api, DuplicateCandidates } from '../api/client'
 import { btn, btnSize } from './buttons'
 import DuplicateGroupCard from './DuplicateGroupCard'
 import { useDuplicateReviewActions } from './useDuplicateReviewActions'
+import { useModal } from './useModal'
 
 interface Props {
   authorId: number
@@ -37,15 +38,15 @@ export default function DuplicateCandidatesModal({ authorId, authorName, onClose
     useDuplicateReviewActions(load, onChanged)
   const error = actionError ?? loadError
 
+  const { panelProps } = useModal({ onClose, labelledBy: 'duplicate-candidates-title' })
+
   return (
     <>
       <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
         <div
           className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl p-6 w-full max-w-3xl mx-4 modal-max-h flex flex-col"
           onClick={event => event.stopPropagation()}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="duplicate-candidates-title"
+          {...panelProps}
         >
           <h2 id="duplicate-candidates-title" className="text-base font-semibold text-slate-900 dark:text-white">
             {t('duplicateCandidates.title', 'Review duplicate titles')}

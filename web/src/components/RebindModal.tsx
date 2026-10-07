@@ -5,6 +5,7 @@ import { resolveBookQuery } from '../api/booklookup'
 import { metadataSourceLink, providerDisplayName, providerFromBookForeignId } from '../util/metadataSource'
 import { btn, btnSize } from './buttons'
 import MetadataLinksMenu from './MetadataLinksMenu'
+import { useModal } from './useModal'
 
 interface AuthorMismatch {
   currentAuthor: string
@@ -45,6 +46,10 @@ export default function RebindModal({ book, onClose, onSuccess }: Props) {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [mismatch, setMismatch] = useState<AuthorMismatch | null>(null)
+
+  // A native modal <dialog> already traps focus and turns Escape into a
+  // cancel event; useModal adds the back button (#3052).
+  useModal({ onClose, canClose: !submitting, native: true, labelledBy: 'book-rebind-title' })
 
   useEffect(() => {
     const element = dialog.current!
@@ -133,6 +138,7 @@ export default function RebindModal({ book, onClose, onSuccess }: Props) {
   return (
     <dialog
       ref={dialog}
+      aria-modal="true"
       aria-labelledby="book-rebind-title"
       aria-describedby="book-rebind-description"
       className="m-auto modal-max-h w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-lg border border-slate-300 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"

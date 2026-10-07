@@ -10,6 +10,7 @@ import ErrorBoundary from './components/ErrorBoundary'
 import LibrarySearch from './components/LibrarySearch'
 import Logo from './components/Logo'
 import NavTabs from './components/NavTabs'
+import { ModalHistoryProvider } from './components/useModal'
 import { activeGroup, isEntryActive, matchesPath, navGroupsFor, type NavItem } from './components/navGroups'
 import SetupBanner from './components/SetupBanner'
 import VersionBadge from './components/VersionBadge'
@@ -437,36 +438,39 @@ function App() {
   return (
     <BrowserRouter basename={binderyBase}>
       <ScrollRestoration />
-      <AuthProvider>
-        <Suspense fallback={<PageLoadingFallback />}>
-          <Routes>
-            <Route
-              path="/login"
-              element={
-                <PublicOnlyRoute mode="login">
-                  <LoginPage />
-                </PublicOnlyRoute>
-              }
-            />
-            <Route
-              path="/setup"
-              element={
-                <PublicOnlyRoute mode="setup">
-                  <SetupPage />
-                </PublicOnlyRoute>
-              }
-            />
-            <Route
-              path="/*"
-              element={
-                <AuthGuard>
-                  <Shell />
-                </AuthGuard>
-              }
-            />
-          </Routes>
-        </Suspense>
-      </AuthProvider>
+      {/* Modals get their back button behaviour from this (#3052). */}
+      <ModalHistoryProvider>
+        <AuthProvider>
+          <Suspense fallback={<PageLoadingFallback />}>
+            <Routes>
+              <Route
+                path="/login"
+                element={
+                  <PublicOnlyRoute mode="login">
+                    <LoginPage />
+                  </PublicOnlyRoute>
+                }
+              />
+              <Route
+                path="/setup"
+                element={
+                  <PublicOnlyRoute mode="setup">
+                    <SetupPage />
+                  </PublicOnlyRoute>
+                }
+              />
+              <Route
+                path="/*"
+                element={
+                  <AuthGuard>
+                    <Shell />
+                  </AuthGuard>
+                }
+              />
+            </Routes>
+          </Suspense>
+        </AuthProvider>
+      </ModalHistoryProvider>
     </BrowserRouter>
   )
 }

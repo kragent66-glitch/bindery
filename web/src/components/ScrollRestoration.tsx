@@ -65,7 +65,10 @@ function maxScrollY(): number {
  *    where that history entry was left, keyed by location.key and kept in
  *    sessionStorage so it survives a reload too;
  *  - a PUSH that changes the list's `page` param also starts at the top;
- *  - REPLACE and other query-only pushes (filters, sort) leave the scroll
+ *  - a REPLACE to a different pathname starts at the top as well: that is
+ *    how a navigation from inside an open modal arrives (useModal);
+ *  - a REPLACE within the page and other query-only pushes (filters, sort,
+ *    a modal's own history entry) leave the scroll
  *    alone, and a location with a hash is left to the browser's own anchor
  *    handling. A REPLACE of the location being restored does not cancel the
  *    restore.
@@ -178,7 +181,14 @@ export default function ScrollRestoration() {
       return
     }
 
-    if (location.hash || navigationType !== 'PUSH' || previousPathname === null) return
+    if (location.hash || previousPathname === null) return
+    // A navigation made from inside an open modal replaces the modal's
+    // history entry (useModal), so a new page can arrive as a REPLACE too.
+    if (navigationType === 'REPLACE') {
+      if (previousPathname !== location.pathname) window.scrollTo(0, 0)
+      return
+    }
+    if (navigationType !== 'PUSH') return
     // A new page starts at the top, and so does a new page of a list:
     // Pagination sits below the rows, so page 2 would otherwise open at its
     // bottom.

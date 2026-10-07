@@ -13,6 +13,7 @@ import SaveButton from './SaveButton'
 import CalibreDeliveryPanel from './CalibreDeliveryPanel'
 import { useSaveResult } from './useSaveResult'
 import { secretInputAttrs, urlInputAttrs } from '../../util/inputAttrs'
+import { useModal } from '../../components/useModal'
 
 export default function CalibreTab() {
   const [settings, setSettings] = useState<Record<string, string>>({})
@@ -831,12 +832,13 @@ export function CalibreRollbackModal({
 
   const display = applied ?? preview
   const closable = !applying
+  const { titleId, panelProps } = useModal({ onClose, canClose: closable })
 
   return (
-    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col">
+    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div {...panelProps} className="w-full max-w-2xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col">
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
-          <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">
+          <h3 id={titleId} className="text-base font-semibold text-slate-800 dark:text-zinc-100">
             {t('settings.calibre.runs.modalTitle', { runId: run.id })}
           </h3>
           <button
@@ -978,11 +980,13 @@ export function CalibreSyncModal({
   const pct = total > 0 ? Math.min(100, (processed / total) * 100) : 0
   const running = !!progress?.running
   const { t } = useTranslation()
+  // Closing only hides the progress; the push carries on in the background.
+  const { titleId, panelProps } = useModal({ onClose })
   return (
-    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col">
+    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div {...panelProps} className="w-full max-w-xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col">
         <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
-          <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">{t('settings.calibre.pushAll.label')}</h3>
+          <h3 id={titleId} className="text-base font-semibold text-slate-800 dark:text-zinc-100">{t('settings.calibre.pushAll.label')}</h3>
           <button
             onClick={onClose}
             className="text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-40"

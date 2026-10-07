@@ -698,7 +698,7 @@ describe('SeriesPage', () => {
 
     fireEvent.click(await screen.findByRole('heading', { name: 'Dune Chronicles' }))
     fireEvent.click(screen.getByRole('button', { name: 'Add Book' }))
-    const dialog = await screen.findByRole('dialog', { name: 'Add book to Dune Chronicles' })
+    const dialog = await screen.findByRole('dialog', { name: 'Add Book to Series Dune Chronicles' })
 
     expect(within(dialog).queryByText('Dune')).not.toBeInTheDocument()
     fireEvent.click(await within(dialog).findByLabelText(/Dune Messiah/))

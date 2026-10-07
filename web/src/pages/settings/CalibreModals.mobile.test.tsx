@@ -32,7 +32,9 @@ const progress: CalibreSyncProgress = {
 // They now follow the #3053 pattern: a capped flex column whose body scrolls
 // between a fixed header and a fixed footer.
 function expectScrollingBody(dialog: HTMLElement) {
-  const panel = dialog.firstElementChild as HTMLElement
+  // The panel itself is the dialog; the backdrop around it is not (#3052).
+  const panel = dialog
+  expect(panel.parentElement!.className).toContain('modal-overlay')
   expect(panel.className).toContain('modal-max-h')
   expect(panel.className).toContain('flex flex-col')
   const [header, body, footer] = Array.from(panel.children) as HTMLElement[]

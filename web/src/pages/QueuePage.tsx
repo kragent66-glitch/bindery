@@ -11,6 +11,7 @@ import { summarizeError, ERROR_SUMMARY_LEN } from './queueError'
 import { btn, btnSize } from '../components/buttons'
 import { formatBytes } from '../util/format'
 import { downloadStatusBadge, isFailed, isMatchable, isResendable, isRetryable } from '../components/downloadStatus'
+import { ModalPanel } from '../components/useModal'
 
 export default function QueuePage() {
   const { t } = useTranslation()
@@ -686,11 +687,14 @@ export default function QueuePage() {
           className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={closeDeleteDialog}
         >
-          <div
-            className="w-full max-w-md rounded-lg border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-xl"
+          <ModalPanel
+            onClose={closeDeleteDialog}
+            canClose={!deleting}
+            labelledBy="queue-remove-title"
+            className="w-full max-w-md rounded-lg border border-slate-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-5 shadow-xl modal-max-h overflow-y-auto"
             onClick={e => e.stopPropagation()}
           >
-            <h3 className="text-lg font-semibold mb-2">{t('queue.removeTitle')}</h3>
+            <h3 id="queue-remove-title" className="text-lg font-semibold mb-2">{t('queue.removeTitle')}</h3>
             <p className="text-sm text-slate-600 dark:text-zinc-400 break-words">
               {t('queue.removeBody', { title: deleteTarget.title })}
             </p>
@@ -724,7 +728,7 @@ export default function QueuePage() {
                 {t('queue.removeConfirm')}
               </button>
             </div>
-          </div>
+          </ModalPanel>
         </div>
       )}
     </div>

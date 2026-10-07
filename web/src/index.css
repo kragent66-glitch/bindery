@@ -57,6 +57,31 @@
   }
 }
 
+/* A phone in landscape leaves well under 500px of height. A modal's header
+   and footer then take most of it, and its scrolling list shrank to a sliver
+   (27px in Reconcile catalogue; Edit author scrolled a 717px form through a
+   156px window). Below that height the whole panel scrolls as one area: its
+   sections keep their natural height and inner lists drop their caps.
+   Unlayered, so it wins over the max-h-* and flex-1 utilities. */
+@media (max-height: 500px) {
+  .modal-max-h {
+    overflow-y: auto;
+  }
+  .modal-max-h > * {
+    flex: none;
+  }
+  .modal-max-h [class*='max-h-'] {
+    max-height: none;
+  }
+}
+
+/* useModal focuses the panel itself when nothing inside asked for focus, so
+   a screen reader starts in the dialog and Tab continues from there. The
+   panel is not a control, so it gets no focus ring. */
+[data-modal-panel]:focus {
+  outline: none;
+}
+
 /* iOS Safari zooms the page in when a form control with a font size under
    16px takes focus, and leaves it zoomed. Unlayered so it beats the text-sm
    utilities on individual controls. */

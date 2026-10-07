@@ -5,6 +5,7 @@ import {
   ReorganizeResponse,
   ReorganizeScope,
 } from '../api/reorganize'
+import { useModal } from './useModal'
 
 interface Props {
   scope: ReorganizeScope
@@ -84,13 +85,16 @@ export default function RenameFilesModal({ scope, id, label, onClose, onApplied 
   const shown = applied ?? preview
   const moves = shown?.moves ?? []
 
+  const { titleId, panelProps } = useModal({ onClose, canClose: !applying })
+
   return (
     <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onClose}>
       <div
+        {...panelProps}
         className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-700 rounded-lg shadow-xl p-6 w-full max-w-2xl mx-4 modal-max-h flex flex-col"
         onClick={e => e.stopPropagation()}
       >
-        <h2 className="text-base font-semibold mb-1 text-slate-900 dark:text-white">Rename files</h2>
+        <h2 id={titleId} className="text-base font-semibold mb-1 text-slate-900 dark:text-white">Rename files</h2>
         <p className="text-xs text-slate-500 dark:text-zinc-400 mb-4">
           Move the files for{' '}
           <span className="font-medium text-slate-700 dark:text-zinc-200">{label}</span> to match the
