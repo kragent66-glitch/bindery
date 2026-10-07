@@ -75,7 +75,8 @@ describe('CalibreSyncModal translations', () => {
     render(<CalibreSyncModal progress={progress({ stats: { total: 4, processed: 4, pushed: 1, alreadyInCalibre: 2, failed: 0, skipped: 1 } })} error={null} onClose={vi.fn()} />)
     expect(screen.getByRole('heading', { name: 'Push all to Calibre' })).toBeInTheDocument()
     expect(screen.getByText('Done. Pushed 1, already in Calibre 2, failed 0, skipped 1.')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument()
+    // The header X and the footer button both read Close once it is done.
+    expect(screen.getAllByRole('button', { name: 'Close' })).toHaveLength(2)
   })
 
   it('follows the active locale', async () => {
@@ -86,6 +87,6 @@ describe('CalibreSyncModal translations', () => {
     render(<CalibreSyncModal progress={progress()} error={null} onClose={vi.fn()} />)
     expect(screen.getByRole('heading', { name: 'Tout envoyer vers Calibre' })).toBeInTheDocument()
     expect(screen.getByText('Envoyés')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Fermer' })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Fermer' })).toHaveLength(2)
   })
 })

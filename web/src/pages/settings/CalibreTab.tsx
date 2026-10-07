@@ -786,8 +786,8 @@ function CalibreRunsList({
 // CalibreRollbackModal shows the rollback preview, lets the admin confirm,
 // and surfaces the resulting per-action list. Apply uses amber styling
 // rather than red because rollback restores Bindery state — it does not
-// delete on-disk files.
-function CalibreRollbackModal({
+// delete on-disk files. Exported for its own test.
+export function CalibreRollbackModal({
   run,
   onClose,
   onApplied,
@@ -831,8 +831,8 @@ function CalibreRollbackModal({
 
   return (
     <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
+      <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col">
+        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
           <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">
             {t('settings.calibre.runs.modalTitle', { runId: run.id })}
           </h3>
@@ -840,12 +840,13 @@ function CalibreRollbackModal({
             onClick={closable ? onClose : undefined}
             disabled={!closable}
             className="text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-40"
+            aria-label={t('common.close')}
             title={closable ? '' : t('settings.calibre.runs.applying')}
           >
             ✕
           </button>
         </div>
-        <div className="p-4 space-y-3">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
           <p className="text-xs text-slate-600 dark:text-zinc-400">{t('settings.calibre.runs.modalIntro')}</p>
 
           {previewLoading && (
@@ -931,7 +932,7 @@ function CalibreRollbackModal({
             </>
           )}
         </div>
-        <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-800 flex justify-end gap-2">
+        <div className="shrink-0 px-4 py-3 border-t border-slate-200 dark:border-zinc-800 flex justify-end gap-2">
           <button
             onClick={closable ? onClose : undefined}
             disabled={!closable}
@@ -976,18 +977,19 @@ export function CalibreSyncModal({
   const { t } = useTranslation()
   return (
     <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
-      <div className="w-full max-w-xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
+      <div className="w-full max-w-xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col">
+        <div className="shrink-0 flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
           <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">{t('settings.calibre.pushAll.label')}</h3>
           <button
             onClick={onClose}
             className="text-slate-500 hover:text-slate-700 dark:text-zinc-400 dark:hover:text-zinc-200 disabled:opacity-40"
+            aria-label={t('settings.calibre.pushAll.close')}
             title={running ? t('settings.calibre.pushAll.closeRunningHint') : t('settings.calibre.pushAll.close')}
           >
             ✕
           </button>
         </div>
-        <div className="p-4 space-y-3">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3">
           {error && (
             <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
           )}
@@ -1082,7 +1084,7 @@ export function CalibreSyncModal({
             </>
           )}
         </div>
-        <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-800 flex justify-end">
+        <div className="shrink-0 px-4 py-3 border-t border-slate-200 dark:border-zinc-800 flex justify-end">
           {/* Closable while running: after the queueing, the run waits on
               Calibre, which can take as long as Calibre stays closed. The
               delivery queue carries on without the modal. */}

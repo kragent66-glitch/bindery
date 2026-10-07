@@ -164,4 +164,19 @@ describe('FixMatchModal', () => {
     expect(screen.getByText(/This moves and renames the file on disk/)).toBeInTheDocument()
     expect(api.reassignFile).not.toHaveBeenCalled()
   })
+
+  // A fixed 5rem top offset plus an uncapped panel pushed the footer under
+  // the browser toolbar on a phone.
+  it('caps the panel on a phone and scrolls its body', () => {
+    renderModal()
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.className).toContain('modal-max-h')
+    expect(dialog.className).toContain('flex flex-col')
+    const overlay = dialog.parentElement!
+    expect(overlay.className).toContain('sm:pt-20')
+    expect(overlay.className.split(/\s+/)).not.toContain('pt-20')
+    const body = dialog.children[1] as HTMLElement
+    expect(body.className).toContain('overflow-y-auto')
+    expect(body.className).toContain('min-h-0')
+  })
 })

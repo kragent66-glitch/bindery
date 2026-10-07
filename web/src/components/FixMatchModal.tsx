@@ -117,17 +117,17 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
 
   return (
     <div
-      className="modal-overlay fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-20"
+      className="modal-overlay fixed inset-0 z-50 flex items-start justify-center bg-black/50 p-4 pt-14 sm:pt-20"
       onClick={onClose}
       role="presentation"
     >
       <div
-        className="w-full max-w-lg rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl"
+        className="w-full max-w-lg rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl modal-max-h flex flex-col"
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
-        <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
+        <div className="shrink-0 p-4 border-b border-slate-200 dark:border-zinc-800">
           <h3 className="text-base font-semibold">
             {t('bookDetail.fixMatch.title', 'Reassign file to another book')}
           </h3>
@@ -137,7 +137,7 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
         </div>
 
         {!target && (
-          <div className="p-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4">
             {/* Said up front, before a book is even picked, so nobody discovers
                 it from the list of candidates alone. */}
             <p className="mb-3 text-xs text-amber-700 dark:text-amber-400">
@@ -180,7 +180,7 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
         )}
 
         {target && (
-          <div className="p-4">
+          <div className="flex-1 min-h-0 overflow-y-auto p-4">
             <p className="text-sm text-slate-700 dark:text-zinc-300">
               {t('bookDetail.fixMatch.reassigningTo', 'Reassigning to')}{' '}
               <span className="font-medium text-slate-900 dark:text-white">{target.title}</span>
@@ -257,7 +257,7 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
           </div>
         )}
 
-        <div className="p-4 border-t border-slate-200 dark:border-zinc-800 flex justify-end gap-2">
+        <div className="shrink-0 p-4 border-t border-slate-200 dark:border-zinc-800 flex flex-wrap justify-end gap-2">
           {target && (
             <button
               type="button"

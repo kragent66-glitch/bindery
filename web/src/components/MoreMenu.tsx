@@ -27,6 +27,8 @@ export default function MoreMenu({
   ariaLabel,
   className = '',
   buttonClassName = `${btn.secondary} ${btnSize.md}`,
+  placement = 'below',
+  disabled = false,
 }: {
   items: MoreMenuItem[]
   /** Accessible name for the trigger, e.g. "More actions". */
@@ -39,6 +41,9 @@ export default function MoreMenu({
   ariaLabel?: string
   className?: string
   buttonClassName?: string
+  /** 'above' opens the menu upward, for a trigger at the bottom of the screen. */
+  placement?: 'below' | 'above'
+  disabled?: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [activeIndex, setActiveIndex] = useState(-1)
@@ -141,6 +146,7 @@ export default function MoreMenu({
         aria-expanded={open}
         aria-label={ariaLabel}
         aria-controls={open ? menuId : undefined}
+        disabled={disabled}
         onClick={() => (open ? close(false) : openAt('first'))}
         onKeyDown={onTriggerKeyDown}
         className={buttonClassName}
@@ -155,7 +161,7 @@ export default function MoreMenu({
           role="menu"
           aria-label={ariaLabel ?? label}
           onKeyDown={onMenuKeyDown}
-          className="absolute right-0 z-20 mt-1 min-w-44 rounded-md border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 py-1"
+          className={`absolute right-0 z-20 ${placement === 'above' ? 'bottom-full mb-1' : 'mt-1'} min-w-44 rounded-md border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 py-1`}
         >
           {items.map((item, i) => (
             <button
@@ -167,7 +173,7 @@ export default function MoreMenu({
               title={item.title}
               tabIndex={i === activeIndex ? 0 : -1}
               onClick={() => select(item)}
-              className={`block w-full px-3 py-1.5 text-left text-sm disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus:bg-slate-200 dark:focus:bg-zinc-800 ${
+              className={`block w-full px-3 py-1.5 pointer-coarse:py-2.5 text-left text-sm disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus:bg-slate-200 dark:focus:bg-zinc-800 ${
                 item.danger
                   ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40'
                   : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-800'
