@@ -34,6 +34,7 @@ const AdoptionFacets = forwardRef<HTMLInputElement, Props>(function AdoptionFace
     <div className="mb-3 space-y-2">
       <div className="flex flex-col sm:flex-row gap-3">
         <input
+          enterKeyHint="search"
           ref={searchRef}
           type="search"
           value={filters.search}

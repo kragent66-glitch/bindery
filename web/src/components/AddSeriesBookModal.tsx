@@ -105,6 +105,7 @@ export default function AddSeriesBookModal({ series, onClose, onLinked }: Props)
 
         <div className="p-4 flex-1 overflow-y-auto space-y-4">
           <input
+            enterKeyHint="search"
             type="search"
             value={query}
             onChange={e => setQuery(e.target.value)}
