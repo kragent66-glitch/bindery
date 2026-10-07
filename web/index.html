@@ -4,16 +4,8 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <!-- use-credentials so the manifest fetch still carries the cookie when an
-         auth proxy sits in front of Bindery. Relative start_url and scope in
-         the manifest keep it working under a URL base. -->
     <link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials" />
-    <!-- viewport-fit=cover pairs with the env(safe-area-inset-*) padding on the
-         header and the fixed bottom bars, which matters once installed and
-         running standalone. In a normal tab the insets are 0. -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <!-- Browser chrome colour per OS scheme. src/theme.ts rewrites both when
-         the in-app toggle overrides the OS. -->
     <meta name="theme-color" content="#f8fafc" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#09090b" media="(prefers-color-scheme: dark)" />
     <meta name="mobile-web-app-capable" content="yes" />

@@ -11,12 +11,30 @@ import { THEME_COLORS, useTheme } from './theme'
 // Mobile and install metadata in index.html, and the web app manifest it
 // links. The Go side (cmd/bindery/spa_test.go) checks the manifest is served
 // as application/manifest+json under a URL base.
+//
+// index.html carries no comments, since they would ship to every visitor.
+// The reasoning behind its tags lives here instead:
+//   - The manifest link is crossorigin="use-credentials" because manifests are
+//     fetched in CORS mode without cookies by default, which an auth proxy in
+//     front of Bindery would reject.
+//   - The manifest's start_url and scope are "." so they resolve against the
+//     manifest URL, which the injected <base> puts under the URL base.
+//   - viewport-fit=cover only ships together with the env(safe-area-inset-*)
+//     padding in index.css on the header and the fixed bottom bars.
+//   - There is one theme-color meta per OS colour scheme. theme-bootstrap.js
+//     (before the first paint) and theme.ts (on every toggle) rewrite both to
+//     the in-app theme, so an override of the OS also recolours the browser
+//     bar.
 
 const tag = (pattern: RegExp) => html.match(pattern)?.[0]
 const publicFiles = import.meta.glob('../public/*', { query: '?url', import: 'default', eager: true })
 const hasPublicFile = (name: string) => `../public/${name}` in publicFiles
 
 describe('index.html mobile metadata', () => {
+  it('ships no HTML comments', () => {
+    expect(html).not.toContain('<!--')
+  })
+
   it('has a theme-color meta per colour scheme matching the theme backgrounds', () => {
     const light = tag(/<meta name="theme-color"[^>]*prefers-color-scheme: light[^>]*>/)
     const dark = tag(/<meta name="theme-color"[^>]*prefers-color-scheme: dark[^>]*>/)
@@ -60,7 +78,7 @@ describe('web app manifest', () => {
     start_url: string
     scope: string
     display: string
-    icons: { src: string; sizes: string; type: string }[]
+    icons: { src: string; sizes: string; type: string; purpose: string }[]
   }
 
   it('describes an installable standalone app', () => {
@@ -83,6 +101,17 @@ describe('web app manifest', () => {
       expect(icon.src.startsWith('/'), icon.src).toBe(false)
       expect(hasPublicFile(icon.src), icon.src).toBe(true)
     }
+  })
+
+  it('has a padded maskable icon alongside the plain "any" ones', () => {
+    // The maskable variant keeps the glyph inside the central safe zone on a
+    // full bleed background, so launchers can crop it to any shape. The
+    // round favicon would be clipped if it were offered as maskable.
+    const maskable = manifest.icons.filter(icon => icon.purpose === 'maskable')
+    expect(maskable.map(icon => icon.sizes)).toContain('512x512')
+    expect(maskable.map(icon => icon.src)).not.toContain('favicon.png')
+    const any = manifest.icons.filter(icon => icon.purpose === 'any')
+    expect(any.map(icon => icon.sizes)).toEqual(expect.arrayContaining(['192x192', '512x512']))
   })
 })
 

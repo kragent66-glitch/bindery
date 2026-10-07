@@ -18,10 +18,11 @@ const testManifest = `{"name":"Bindery","start_url":".","scope":"."}`
 // headers and, when urlBase is set, under the URL base mount.
 func spaTestServer(urlBase string) http.Handler {
 	dist := fstest.MapFS{
-		"index.html":           {Data: []byte(`<!doctype html><html><head></head><body></body></html>`)},
-		"manifest.webmanifest": {Data: []byte(testManifest)},
-		"apple-touch-icon.png": {Data: []byte("\x89PNG\r\n\x1a\n")},
-		"icon-192.png":         {Data: []byte("\x89PNG\r\n\x1a\n")},
+		"index.html":            {Data: []byte(`<!doctype html><html><head></head><body></body></html>`)},
+		"manifest.webmanifest":  {Data: []byte(testManifest)},
+		"apple-touch-icon.png":  {Data: []byte("\x89PNG\r\n\x1a\n")},
+		"icon-192.png":          {Data: []byte("\x89PNG\r\n\x1a\n")},
+		"icon-maskable-512.png": {Data: []byte("\x89PNG\r\n\x1a\n")},
 	}
 	r := chi.NewRouter()
 	r.Use(api.SecurityHeaders(""))
@@ -61,7 +62,7 @@ func TestSPAHandler_ServesManifest(t *testing.T) {
 }
 
 func TestSPAHandler_ServesIcons(t *testing.T) {
-	for _, name := range []string{"apple-touch-icon.png", "icon-192.png"} {
+	for _, name := range []string{"apple-touch-icon.png", "icon-192.png", "icon-maskable-512.png"} {
 		rec := httptest.NewRecorder()
 		spaTestServer("/bindery").ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/bindery/"+name, nil))
 		if rec.Code != http.StatusOK {
