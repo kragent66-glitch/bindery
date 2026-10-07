@@ -72,6 +72,11 @@ export const bulkApi = {
     request<BulkResult>('/book/bulk', { method: 'POST', body: JSON.stringify({ ids: [id], action: 'search' }) }),
   bulkActionBooks: (ids: number[], action: BookBulkAction, mediaType?: MediaType) =>
     request<BulkResult>('/book/bulk', { method: 'POST', body: JSON.stringify({ ids, action, ...(mediaType ? { mediaType } : {}) }) }),
+  // Duplicate review (#2999): exclude rows the page showed as empty. With
+  // expectNoFiles the server skips (code 'has_files') any row that gained a
+  // file since the page loaded, instead of excluding it on stale state.
+  excludeEmptyBooks: (ids: number[]) =>
+    request<BulkResult>('/book/bulk', { method: 'POST', body: JSON.stringify({ ids, action: 'exclude', expectNoFiles: true }) }),
   bulkActionWanted: (ids: number[], action: WantedBulkAction) =>
     request<BulkResult>('/wanted/bulk', { method: 'POST', body: JSON.stringify({ ids, action }) }),
 }

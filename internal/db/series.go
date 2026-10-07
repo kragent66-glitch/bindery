@@ -979,8 +979,8 @@ func (r *SeriesRepo) ListBookSeriesMembershipsForBook(ctx context.Context, bookI
 	return out[bookID], nil
 }
 
-func (r *SeriesRepo) scanBookSeriesMemberships(ctx context.Context, query string, arg int64) (map[int64][]BookSeriesMembership, error) {
-	rows, err := r.db.QueryContext(ctx, query, arg)
+func (r *SeriesRepo) scanBookSeriesMemberships(ctx context.Context, query string, args ...any) (map[int64][]BookSeriesMembership, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

@@ -251,6 +251,7 @@ export default function WantedPage() {
       </div>
 
       <input
+        enterKeyHint="search"
         type="search"
         value={search}
         onChange={e => setSearch(e.target.value)}

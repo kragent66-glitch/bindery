@@ -110,6 +110,7 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
         <div className="p-4 flex-1 overflow-y-auto">
           <form onSubmit={search} className="flex gap-2">
             <input
+              enterKeyHint="search"
               value={query}
               onChange={event => setQuery(event.target.value)}
               className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"

@@ -1115,7 +1115,7 @@ function BookDetailPageInner() {
                             className="px-3 py-2 flex items-center gap-2 min-w-0 border-t first:border-t-0 border-slate-100 dark:border-zinc-900"
                           >
                             <code
-                              className="font-mono text-xs text-slate-500 dark:text-zinc-500 truncate"
+                              className="min-w-0 font-mono text-xs text-slate-500 dark:text-zinc-500 break-all sm:truncate"
                               title={row.path}
                             >
                               {row.path}
@@ -1352,6 +1352,9 @@ function BookDetailPageInner() {
                 </label>
                 <input
                   id="book-asin"
+                  autoCapitalize="characters"
+                  autoCorrect="off"
+                  spellCheck={false}
                   value={asinDraft}
                   onChange={e => setAsinDraft(e.target.value.toUpperCase())}
                   placeholder="B08GB58KD5"

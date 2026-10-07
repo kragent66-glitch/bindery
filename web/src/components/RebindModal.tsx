@@ -171,6 +171,7 @@ export default function RebindModal({ book, onClose, onSuccess }: Props) {
                   <label htmlFor="rebind-query" className="mb-1 block text-sm font-medium">{t('bookRebind.query')}</label>
                   <div className="flex flex-col gap-2 sm:flex-row">
                     <input
+                      enterKeyHint="search"
                       ref={queryInput}
                       id="rebind-query"
                       value={query}

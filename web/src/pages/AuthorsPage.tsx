@@ -491,6 +491,7 @@ export default function AuthorsPage() {
       {/* Search & Sort controls */}
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <input
+          enterKeyHint="search"
           type="search"
           value={search}
           onChange={e => setSearch(e.target.value)}

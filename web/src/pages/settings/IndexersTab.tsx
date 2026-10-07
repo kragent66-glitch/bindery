@@ -8,6 +8,7 @@ import { inputCls } from './formStyles'
 import { parseCats, parsePriority } from './helpers'
 import Toggle from './Toggle'
 import { dangerLink } from '../../components/buttons'
+import { secretInputAttrs, urlInputAttrs } from '../../util/inputAttrs'
 
 // IndexerTestResultBanner renders a probe result with the same ok/warn/fail
 // semantics as the saved-row Test feedback (ok=true + 0 results → amber warn).
@@ -622,12 +623,12 @@ function EditIndexerForm({ indexer, onClose, onSaved }: { indexer: Indexer; onCl
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.url')}</label>
-        <input value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.indexers.form.urlPlaceholder')} className={inputCls} />
+        <input {...urlInputAttrs} value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.indexers.form.urlPlaceholder')} className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.urlHintEdit')}</p>
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.apiKeyEditLabel')}</label>
-        <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="••••••••" type="password" className={inputCls} />
+        <input {...secretInputAttrs} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="••••••••" type="password" className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.apiKeyEditHint')}</p>
       </div>
       <div>
@@ -708,12 +709,12 @@ function AddIndexerForm({ onClose, onAdded }: { onClose: () => void; onAdded: (i
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.url')}</label>
-        <input value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.indexers.form.urlPlaceholderExample')} className={inputCls} />
+        <input {...urlInputAttrs} value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.indexers.form.urlPlaceholderExample')} className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.indexers.form.urlHintAdd')}</p>
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.apiKey')}</label>
-        <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('settings.indexers.form.apiKey')} type="password" className={inputCls} />
+        <input {...secretInputAttrs} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('settings.indexers.form.apiKey')} type="password" className={inputCls} />
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.categories')}</label>
@@ -776,14 +777,14 @@ function EditProwlarrForm({ instance, onClose, onSaved }: { instance: ProwlarrIn
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.url')}</label>
-        <input value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.prowlarr.urlPlaceholder')} className={inputCls} />
+        <input {...urlInputAttrs} value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.prowlarr.urlPlaceholder')} className={inputCls} />
         {urlChanged && (
           <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">{t('settings.prowlarr.urlChangeWarning')}</p>
         )}
       </div>
       <div>
         <label className={labelCls}>{t('settings.prowlarr.apiKeyEditLabel')}</label>
-        <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="••••••••" type="password" className={inputCls} />
+        <input {...secretInputAttrs} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder="••••••••" type="password" className={inputCls} />
         <p className="text-xs text-slate-500 dark:text-zinc-500 mt-1">{t('settings.prowlarr.apiKeyEditHint')}</p>
       </div>
       <div className="flex items-center gap-2">
@@ -848,11 +849,11 @@ function AddProwlarrForm({ onClose, onAdded }: { onClose: () => void; onAdded: (
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.url')}</label>
-        <input value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.prowlarr.urlPlaceholder')} className={inputCls} />
+        <input {...urlInputAttrs} value={url} onChange={e => setUrl(e.target.value)} placeholder={t('settings.prowlarr.urlPlaceholder')} className={inputCls} />
       </div>
       <div>
         <label className={labelCls}>{t('settings.indexers.form.apiKey')}</label>
-        <input value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('settings.prowlarr.apiKeyPlaceholder')} type="password" className={inputCls} />
+        <input {...secretInputAttrs} value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={t('settings.prowlarr.apiKeyPlaceholder')} type="password" className={inputCls} />
       </div>
       <div className="flex items-center gap-2">
         <Toggle checked={syncOnStartup} onChange={() => setSyncOnStartup(!syncOnStartup)} />

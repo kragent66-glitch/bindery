@@ -580,6 +580,40 @@
       "substring": "One title is the main title or subtitle of the other"
     }
   },
+  "duplicateReview": {
+    "pageTitle": "Duplicates",
+    "backToBooks": "← Books",
+    "groupCount": "{{count}} group(s)",
+    "pageDescription": "Titles by the same author that look like the same book, across your whole library. The row with files is marked to keep, and the evidence shows whether the rows agree. Nothing changes until you exclude a row.",
+    "groupLabel": "Duplicate group: {{title}}",
+    "signalsLabel": "Evidence across rows",
+    "agreementLabel": "Likely the same book:",
+    "conflictLabel": "May be different books:",
+    "signals": {
+      "shared-isbn": "Rows {{rows}} share ISBN {{values}}",
+      "shared-asin": "Rows {{rows}} share ASIN {{values}}",
+      "same-series-position": "Rows {{rows}} are both {{series}} #{{position}}",
+      "series-position-conflict": "Rows {{rows}} hold different positions in {{series}}: {{positions}}",
+      "year-conflict": "Rows {{rows}} were released years apart: {{values}}",
+      "language-conflict": "Rows {{rows}} are in different languages: {{values}}"
+    },
+    "keep": "Keep: has files",
+    "hasFiles": "Has files",
+    "noFiles": "No files",
+    "isbn": "ISBN {{isbn}}",
+    "isbnMore": "ISBN {{isbn}} (+{{count}})",
+    "asin": "ASIN {{asin}}",
+    "excludeEmpty": "Exclude the {{count}} empty row(s) in this group",
+    "excludeEmptyTitle": "Exclude {{count}} empty row(s)?",
+    "excludeEmptyBody": "Keep \"{{keep}}\", which has files, and exclude:\n{{rows}}\n\nExcluded rows leave Wanted and are no longer searched. You can include them again later.",
+    "excludeEmptyPartial": "{{count}} row(s) could not be excluded",
+    "excludeEmptySkipped": "{{count}} row(s) were skipped because they have files now. Review the group again.",
+    "excludeWithFilesTitle": "Exclude a row that has files?",
+    "excludeWithFilesBody": "\"{{title}}\" has files in your library. Excluding it hides it from Wanted and stops searches for it; the files stay on disk.",
+    "noSuggestionConflict": "The rows disagree, so nothing is suggested. Check the evidence before excluding a row.",
+    "noSuggestionFiles": "More than one row has files, so nothing is suggested.",
+    "noSuggestionEvidence": "Nothing ties every empty row to the row with files (no shared ISBN, ASIN, series position or matching title), so nothing is suggested."
+  },
   "books": {
     "title": "Books",
     "countLabel": "{{count}} books",
@@ -620,7 +654,9 @@
     "unexclude": "Un-exclude",
     "excluded": "Excluded",
     "showExcluded": "Show excluded",
-    "sortByColumn": "Sort by {{column}}"
+    "sortByColumn": "Sort by {{column}}",
+    "reviewDuplicates": "Review duplicates",
+    "reviewDuplicatesHint": "Find titles across the library that look like the same book; nothing changes until you exclude a row"
   },
   "wanted": {
     "title": "Wanted",

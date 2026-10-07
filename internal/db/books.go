@@ -1545,6 +1545,30 @@ func (r *BookRepo) SetExcluded(ctx context.Context, id int64, excluded bool) err
 	return err
 }
 
+// ExcludeIfNoFiles sets the excluded flag only while the book has no file:
+// no book_files row and no legacy file_path, ebook_file_path or
+// audiobook_file_path. It reports whether the row was excluded. The check
+// and the write are one UPDATE, so an import that lands between a caller's
+// read and this call can never be excluded on a stale "no files" (#2999).
+// An already excluded book with no files reports true.
+func (r *BookRepo) ExcludeIfNoFiles(ctx context.Context, id int64) (bool, error) {
+	res, err := r.db.ExecContext(ctx, `UPDATE books SET excluded = 1, updated_at = ?
+		WHERE id = ?
+		  AND COALESCE(file_path, '') = ''
+		  AND COALESCE(ebook_file_path, '') = ''
+		  AND COALESCE(audiobook_file_path, '') = ''
+		  AND NOT EXISTS (SELECT 1 FROM book_files WHERE book_id = books.id)`,
+		timeValueArg(time.Now().UTC()), id)
+	if err != nil {
+		return false, fmt.Errorf("exclude book %d if no files: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 func (r *BookRepo) Delete(ctx context.Context, id int64) error {
 	// book_files rows are removed via ON DELETE CASCADE on the FK.
 	_, err := r.exec.ExecContext(ctx, "DELETE FROM books WHERE id=?", id)
