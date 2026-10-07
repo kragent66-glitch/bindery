@@ -44,6 +44,11 @@ describe('index.css', () => {
     expect(block(touch, /select:not\(\[multiple\]\):not\(\[size\]\)\s*\{/)).toMatch(/padding-right:\s*2\.5rem/)
   })
 
+  it('caps a select at the width of its container', () => {
+    const bases = [...built.matchAll(/@layer base\s*\{/g)].map(m => block(built.slice(m.index), /@layer base\s*\{/))
+    expect(bases.join('\n')).toMatch(/(^|[\s,}])select\s*\{[^}]*max-width:\s*100%/)
+  })
+
   it('defines a 44px touch-target hit area under a coarse pointer', () => {
     const components = block(built, /@layer components\s*\{/)
     const coarse = block(components, /@media \(pointer: coarse\)\s*\{/)

@@ -101,6 +101,18 @@
   }
 }
 
+/* A select is as wide as its longest option, and on touch screens that
+   option is set at 16px with 2.5rem kept for the arrow, so a long one ran
+   past a 320px screen (Default monitor mode in Settings, Metadata, made the
+   page 349px wide). Capping it at its container lets the value truncate
+   instead. In the base layer so a max-w-* utility still wins, and it changes
+   nothing for a select that already fits. */
+@layer base {
+  select {
+    max-width: 100%;
+  }
+}
+
 /* Native controls (select popups, date pickers, scrollbars) follow
    color-scheme, not the page colours, so the dark theme still opened white
    pickers. Tracks the .dark class rather than the OS setting because the

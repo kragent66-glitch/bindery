@@ -212,26 +212,28 @@ export default function LogsTab() {
         </button>
       </div>
 
-      {/* Toolbar row 2: date range + component + search */}
+      {/* Toolbar row 2: date range + component + search. Below sm each date
+          field takes a full row and may shrink: a datetime input's intrinsic
+          width at the 16px touch font ran past a 320px screen. */}
       <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 w-full sm:w-auto min-w-0">
           <span className="text-slate-500 dark:text-zinc-500">{t('settings.logs.from')}</span>
           <input
             type="datetime-local"
             aria-label={t('settings.logs.from')}
             value={logFrom}
             onChange={e => setLogFrom(e.target.value)}
-            className="bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-2 py-1 text-xs"
+            className="min-w-0 flex-1 sm:flex-none bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-2 py-1 text-xs"
           />
         </div>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 w-full sm:w-auto min-w-0">
           <span className="text-slate-500 dark:text-zinc-500">{t('settings.logs.to')}</span>
           <input
             type="datetime-local"
             aria-label={t('settings.logs.to')}
             value={logTo}
             onChange={e => setLogTo(e.target.value)}
-            className="bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-2 py-1 text-xs"
+            className="min-w-0 flex-1 sm:flex-none bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-2 py-1 text-xs"
           />
         </div>
         <input

@@ -566,7 +566,7 @@ export default function BooksPage() {
                     <a
                       href={`${BINDERY_BASE}/api/v1/book/${book.id}/file`}
                       onClick={e => e.stopPropagation()}
-                      className="text-[10px] text-accent-text hover:underline"
+                      className="touch-target inline-block pointer-coarse:py-1.5 text-[10px] text-accent-text hover:underline"
                       title={t('books.downloadFile')}
                     >
                       {t('books.download')}

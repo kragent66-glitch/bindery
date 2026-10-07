@@ -123,7 +123,7 @@ export default function FilterPopover({
         aria-controls={open ? panelId : undefined}
         aria-label={ariaLabel}
         onClick={() => setOpen(o => !o)}
-        className={`${btn.secondary} ${btnSize.sm}`}
+        className={`touch-target ${btn.secondary} ${btnSize.sm}`}
       >
         {label}
         {activeCount > 0 && (

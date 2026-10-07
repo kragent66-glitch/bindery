@@ -40,6 +40,19 @@ export const lazyLocales: BackendModule = {
 // paint is already in the right language, with no flash of English or of raw
 // keys: main.tsx waits for i18nReady before rendering, and changeLanguage()
 // resolves only after the new bundle has loaded.
+// <html lang> names the language the page is actually in, so screen readers
+// pick the right voice and the browser hyphenates and translates correctly.
+// index.html ships lang="en"; this keeps it in step with the UI language from
+// the first render and on every change. The resolved language is the one with
+// translations in use: a browser language with no bundle shows English and
+// says so, and fr-CA reads as fr.
+export function syncDocumentLang(): void {
+  if (typeof document === 'undefined') return
+  document.documentElement.lang = i18n.resolvedLanguage || i18n.language || 'en'
+}
+
+i18n.on('languageChanged', syncDocumentLang)
+
 export const i18nReady = i18n
   .use(lazyLocales)
   .use(LanguageDetector)
@@ -60,5 +73,6 @@ export const i18nReady = i18n
       escapeValue: false, // React already escapes output
     },
   })
+  .finally(syncDocumentLang)
 
 export default i18n

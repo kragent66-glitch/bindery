@@ -410,7 +410,7 @@ export default function QueuePage() {
                       <button
                         onClick={retryAllFailed}
                         disabled={bulkBusy}
-                        className="px-2.5 py-1 text-xs rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium"
+                        className="touch-target px-2.5 py-1 text-xs rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-medium"
                       >
                         {t('queue.retryAllFailed', 'Retry all failed')}
                       </button>
@@ -418,7 +418,7 @@ export default function QueuePage() {
                     <button
                       onClick={clearAllFailed}
                       disabled={bulkBusy}
-                      className="px-2.5 py-1 text-xs rounded border border-red-300 dark:border-red-900 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50 font-medium"
+                      className="touch-target px-2.5 py-1 text-xs rounded border border-red-300 dark:border-red-900 text-red-700 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 disabled:opacity-50 font-medium"
                     >
                       {t('queue.clearAllFailed', 'Clear all failed')}
                     </button>
@@ -504,7 +504,10 @@ export default function QueuePage() {
                   <div className="min-w-0 flex-1">
                     <h3 className="font-medium text-sm [overflow-wrap:anywhere] sm:truncate">{item.title}</h3>
                     <BookAuthorLink book={item.book} />
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs">
+                    {/* The time toggle in this row is 16px tall with a 44px
+                        hit area on touch. The margin keeps that hit area off
+                        the author link above and the hints below. */}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1 text-xs pointer-coarse:my-3.5 pointer-coarse:gap-y-5">
                       <DownloadStatusChip status={item.status} />
                       <span className="text-slate-600 dark:text-zinc-500">{formatBytes(item.size)}</span>
                       {item.percentage && (
@@ -522,7 +525,7 @@ export default function QueuePage() {
                           <TapToReveal
                             label={ts.label}
                             detail={ts.absolute}
-                            className="text-slate-500 dark:text-zinc-600"
+                            className="touch-target text-slate-500 dark:text-zinc-600"
                           />
                         ) : null
                       })()}
@@ -598,8 +601,11 @@ export default function QueuePage() {
                   {/* Below sm the actions take a full line under the content:
                       beside it the open Match picker squeezed the error text
                       to one character per line on a 320px phone and pushed
-                      Search off screen. */}
-                  <div data-testid="queue-row-actions" className="basis-full mt-2 flex flex-wrap justify-end items-center gap-2 sm:basis-auto sm:mt-0 sm:ml-4 sm:flex-nowrap sm:flex-shrink-0">
+                      Search off screen. min-w-0 here and on the picker: as
+                      flex items both took the search input's intrinsic width
+                      (418px at the 16px touch font) as their minimum, which
+                      made a 320px page 526px wide. */}
+                  <div data-testid="queue-row-actions" className="basis-full min-w-0 mt-2 flex flex-wrap justify-end items-center gap-2 sm:basis-auto sm:mt-0 sm:ml-4 sm:flex-nowrap sm:flex-shrink-0">
                     {isMatchable(item.status) && (
                       <MatchBookControl
                         disabled={retryingImportIds.has(item.id)}
@@ -812,7 +818,7 @@ export function MatchBookControl({ disabled, onMatch, alreadyMatched = false }: 
   }
 
   return (
-    <div className="w-full sm:w-64 p-2 bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded space-y-1">
+    <div className="w-full min-w-0 sm:w-64 p-2 bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded space-y-1">
       <div className="flex gap-1">
         <input
           enterKeyHint="search"

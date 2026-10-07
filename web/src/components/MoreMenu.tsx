@@ -43,7 +43,10 @@ export default function MoreMenu({
   ariaLabel?: string
   className?: string
   buttonClassName?: string
-  /** 'above' opens the menu upward, for a trigger at the bottom of the screen. */
+  /**
+   * 'above' opens the menu upward, for a trigger at the bottom of the screen.
+   * Either way the menu flips when the other side has the room it needs.
+   */
   placement?: 'below' | 'above'
   disabled?: boolean
 }) {
@@ -58,13 +61,36 @@ export default function MoreMenu({
   // the trigger sits near the left of a narrow screen (a wrapped button row
   // on a phone) a right aligned menu runs off the left edge, so it flips.
   const [align, setAlign] = useState<'right' | 'left'>('right')
+  // Which side of the trigger the menu opens on. Starts at `placement` and
+  // flips when the menu would run past the bottom (or top) of the viewport
+  // and the other side has more room: an Author detail More menu near the
+  // bottom of a phone screen opened below the fold. When neither side has
+  // room the menu takes the roomier one and scrolls inside a capped height.
+  const [vertical, setVertical] = useState<'below' | 'above'>(placement)
+  const [maxHeight, setMaxHeight] = useState<number | undefined>(undefined)
 
   // Measure before paint so the menu never shows clipped for a frame.
   useLayoutEffect(() => {
     if (!open) return
     const rect = menuRef.current?.getBoundingClientRect()
-    if (align === 'right' && rect && rect.left < 0) setAlign('left')
-  }, [open, align])
+    if (!rect) return
+    if (align === 'right' && rect.left < 0) setAlign('left')
+    const trigger = triggerRef.current?.getBoundingClientRect()
+    if (!trigger || !rect.height) return
+    const margin = 8
+    const roomBelow = window.innerHeight - trigger.bottom - margin
+    const roomAbove = trigger.top - margin
+    if (vertical === 'below' && rect.height > roomBelow && roomAbove > roomBelow) {
+      setVertical('above')
+      return
+    }
+    if (vertical === 'above' && rect.height > roomAbove && roomBelow > roomAbove) {
+      setVertical('below')
+      return
+    }
+    const room = Math.floor(vertical === 'below' ? roomBelow : roomAbove)
+    if (maxHeight === undefined && rect.height > room && room > 0) setMaxHeight(room)
+  }, [open, align, vertical, maxHeight])
 
   const enabledIndexes = items.map((it, i) => (it.disabled ? -1 : i)).filter(i => i >= 0)
 
@@ -105,6 +131,8 @@ export default function MoreMenu({
   const openAt = (where: 'first' | 'last') => {
     if (enabledIndexes.length === 0) return
     setAlign('right')
+    setVertical(placement)
+    setMaxHeight(undefined)
     setOpen(true)
     setActiveIndex(where === 'first' ? enabledIndexes[0] : enabledIndexes[enabledIndexes.length - 1])
   }
@@ -177,7 +205,8 @@ export default function MoreMenu({
           role="menu"
           aria-label={ariaLabel ?? label}
           onKeyDown={onMenuKeyDown}
-          className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} z-20 max-w-[calc(100vw-1rem)] ${placement === 'above' ? 'bottom-full mb-1' : 'mt-1'} min-w-44 rounded-md border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 py-1`}
+          style={maxHeight !== undefined ? { maxHeight } : undefined}
+          className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} z-20 max-w-[calc(100vw-1rem)] ${vertical === 'above' ? 'bottom-full mb-1' : 'mt-1'} ${maxHeight !== undefined ? 'overflow-y-auto overscroll-contain' : ''} min-w-44 rounded-md border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 py-1`}
         >
           {items.map((item, i) => (
             <button

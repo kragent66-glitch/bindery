@@ -277,7 +277,7 @@ export default function IndexersTab({ indexers, setIndexers, prowlarrInstances, 
       {confirmDialog}
       <div className="flex justify-between items-center mb-4">
         <h3 className="text-lg font-semibold">{t('settings.indexers.heading')}</h3>
-        <button onClick={() => setShowAddIndexer(true)} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded text-xs font-medium">
+        <button onClick={() => setShowAddIndexer(true)} className="touch-target px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 rounded text-xs font-medium">
           {t('settings.indexers.addButton')}
         </button>
       </div>

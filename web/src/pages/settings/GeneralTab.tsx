@@ -68,15 +68,25 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
   const [audiobookTemplateResult, audiobookTemplateSave] = useSaveResult()
   const [audiobookFileResult, audiobookFileSave] = useSaveResult()
 
+  // The Security section's config is fetched here, alongside the settings,
+  // and the tab waits for both. Security used to fetch its own config only
+  // once it mounted, which was after the settings arrived, so it popped in
+  // between Appearance and File Naming a round trip later and pushed every
+  // section below it down by its own height. Since phones got the tab select
+  // (#3065) that content sits on screen, and the jump was most of the page's
+  // layout shift (CLS 0.05 to 0.52 on a throttled Pixel 7).
+  const [authCfg, setAuthCfg] = useState<AuthConfig | null>(null)
+
   useEffect(() => {
-    api.listSettings()
+    const settingsLoaded = api.listSettings()
       .then(list => {
         const map: Record<string, string> = {}
         list.forEach(s => { map[s.key] = s.value })
         setSettings(map)
       })
       .catch(console.error)
-      .finally(() => setLoading(false))
+    const authCfgLoaded = api.authConfig().then(setAuthCfg).catch(console.error)
+    Promise.all([settingsLoaded, authCfgLoaded]).finally(() => setLoading(false))
     api.getStorage().then(setStorage).catch(console.error)
   }, [])
 
@@ -241,7 +251,7 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
 
       {/* Security — visible to all authenticated users for their own password
           change; admin-only sub-controls are gated inside the component. */}
-      <SecuritySection />
+      <SecuritySection initialCfg={authCfg} />
 
       {isAdmin && (<>
       {/* Naming */}
@@ -866,11 +876,11 @@ function StorageHealthBadge({ status, loading }: { status: StorageDirStatus | un
   )
 }
 
-function SecuritySection() {
+function SecuritySection({ initialCfg }: { initialCfg: AuthConfig | null }) {
   const { t } = useTranslation()
   const { confirm, confirmDialog } = useConfirmDialog()
   const { status, refresh, isAdmin } = useAuth()
-  const [cfg, setCfg] = useState<AuthConfig | null>(null)
+  const [cfg, setCfg] = useState<AuthConfig | null>(initialCfg)
   const [showKey, setShowKey] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
   const [rotatingSecret, setRotatingSecret] = useState(false)
@@ -881,11 +891,11 @@ function SecuritySection() {
   const [modeWarning, setModeWarning] = useState('')
   const apiKeyClipboard = useClipboardCopy()
 
+  // GeneralTab loads the first config with the settings, so this only
+  // refetches after a change here.
   const loadCfg = () => {
     api.authConfig().then(setCfg).catch(console.error)
   }
-
-  useEffect(() => { loadCfg() }, [])
 
   const regenerate = async () => {
     if (!await confirm({

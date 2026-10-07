@@ -22,7 +22,7 @@ interface BulkActionBarProps {
 const PHONE_INLINE_ACTIONS = 2
 
 const actionClass = (variant: BulkAction['variant']) =>
-  `px-3 py-1.5 rounded text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+  `touch-target px-3 py-1.5 rounded text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
     variant === 'danger'
       ? 'bg-red-600 hover:bg-red-500 text-white'
       : variant === 'caution'
@@ -30,7 +30,7 @@ const actionClass = (variant: BulkAction['variant']) =>
         : 'bg-slate-600 hover:bg-slate-500 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-white'
   }`
 
-const clearClass = 'px-3 py-1.5 rounded text-xs font-medium text-slate-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
+const clearClass = 'touch-target px-3 py-1.5 rounded text-xs font-medium text-slate-400 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
 
 /**
  * Sticky footer shown whenever one or more items are selected on a list page.
@@ -50,7 +50,7 @@ export default function BulkActionBar({ count, actions, onClear, busy = false }:
       <span className="text-sm font-medium text-white min-w-0 truncate sm:shrink-0">
         {t('bulkActionBar.selected', { count })}
       </span>
-      <div className={`flex items-center gap-2 justify-end ${collapse ? 'shrink-0' : 'flex-wrap'}`}>
+      <div className={`flex items-center gap-2 justify-end ${collapse ? 'shrink-0' : 'flex-wrap pointer-coarse:gap-y-5'}`}>
         {inline.map((action) => (
           <button
             key={action.label}
