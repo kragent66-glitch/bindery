@@ -40,6 +40,7 @@ import (
 	"github.com/vavallee/bindery/internal/metadata/dnb"
 	"github.com/vavallee/bindery/internal/metadata/googlebooks"
 	"github.com/vavallee/bindery/internal/metadata/hardcover"
+	"github.com/vavallee/bindery/internal/metadata/nb"
 	"github.com/vavallee/bindery/internal/metadata/openlibrary"
 	"github.com/vavallee/bindery/internal/metrics"
 	"github.com/vavallee/bindery/internal/models"
@@ -306,6 +307,8 @@ func main() {
 	//
 	// - "dnb" is the recommended choice for German/Austrian/Swiss catalogues,
 	//   where OpenLibrary coverage is too thin for German-language books.
+	// - "nb" is the same for Norwegian ones: original titles where
+	//   OpenLibrary has the English translation.
 	// - "hardcover" trades breadth for a cleaner, editorially curated
 	//   catalogue: no translation editions masquerading as separate works, no
 	//   omnibus bundles, no non-book merchandise rows (#2040).
@@ -318,6 +321,11 @@ func main() {
 	switch primaryName {
 	case "dnb":
 		primaryProvider = dnbClient
+	case "nb":
+		// Opt-in only: unlike the others, NB is never added as an enricher,
+		// so an install that did not choose it sends NB no traffic. NB
+		// publishes no rate limits for a fleet of independent installs.
+		primaryProvider = nb.New()
 	case "hardcover":
 		primaryProvider = hcClient
 	default:

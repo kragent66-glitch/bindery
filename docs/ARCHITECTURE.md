@@ -22,8 +22,11 @@ OpenLibrary    Google Books, Hardcover.app,   Audnex, Audible
 ```
 
 Exactly one provider is *primary* — it defines what an author's catalogue is.
-`metadata.primary_provider` selects OpenLibrary (default), DNB, or Hardcover
-(token required); every provider that isn't primary is wired as an enricher.
+`metadata.primary_provider` selects OpenLibrary (default), DNB, Nasjonalbiblioteket
+(`nb`), or Hardcover (token required); every provider that isn't primary is wired
+as an enricher, except Nasjonalbiblioteket, which is wired only when it is primary.
+Switching the primary away from it therefore leaves `nb:` authors with no provider
+to sync from until they are relinked.
 
 ## Components
 
@@ -48,7 +51,7 @@ The `internal/` tree is organised by domain, not by layer:
 | `db` | Connection pooling, transaction helpers, repository interfaces, and the embedded schema migrations under `db/migrations/` (`NNN_description.sql`, applied idempotently at boot). |
 | `migrate` | Bulk-import of authors and related records from a `readarr.db` or a Goodreads CSV export. |
 | `models` | Domain types (Author, Book, Edition, Series, Indexer, etc.) shared across handlers, repos, and pipelines. |
-| `metadata` | OpenLibrary, Google Books, Hardcover, DNB, Audnex, Audible — fetchers and unifying interfaces. |
+| `metadata` | OpenLibrary, Google Books, Hardcover, DNB, Nasjonalbiblioteket, Audnex, Audible — fetchers and unifying interfaces. |
 | `indexer` | Newznab/Torznab clients, query builder, four-tier fallback, per-indexer query deduplication, result deduplication, ranking. |
 | `decision` | Quality profiles, language filter, custom formats, delay profiles, blocklist consultation. |
 | `downloader` | SABnzbd, NZBGet, qBittorrent, Transmission, Deluge, rTorrent clients (queue/history polling, submission, deletion). |

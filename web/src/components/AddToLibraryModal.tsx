@@ -90,7 +90,7 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
         const value = (s.value || '').trim().toLowerCase()
         // Mirror MetadataPrimaryProviders on the backend; anything else means
         // no explicit choice, so no notice.
-        if (value === 'openlibrary' || value === 'dnb' || value === 'hardcover') setPrimaryProvider(value)
+        if (value === 'openlibrary' || value === 'dnb' || value === 'nb' || value === 'hardcover') setPrimaryProvider(value)
       })
       .catch(() => { /* unset; no provider notice needed */ })
   }, [isRequester])
@@ -325,8 +325,8 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="add-to-library-title" className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-lg shadow-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()} onKeyDown={handleDialogKeyDown}>
+    <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="add-to-library-title" className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-lg shadow-2xl modal-max-h flex flex-col" onClick={e => e.stopPropagation()} onKeyDown={handleDialogKeyDown}>
         <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
           <h3 id="add-to-library-title" className="text-lg font-semibold">{t('addToLibrary.title')}</h3>
           <p className="text-xs text-fg-muted mt-0.5">{t('addToLibrary.description')}</p>
@@ -355,6 +355,7 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
           <div className="p-4 flex-1 overflow-y-auto">
             <div className="flex gap-2">
               <input
+                enterKeyHint="search"
                 type="text"
                 value={query}
                 onChange={e => setQuery(e.target.value)}
@@ -373,7 +374,7 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
               </button>
             </div>
 
-            <div className="mt-4 space-y-2 max-h-[50vh] overflow-y-auto">
+            <div className="mt-4 space-y-2 max-h-[50dvh] overflow-y-auto">
               {rows.map((row, i) => {
                 if (row.kind === 'author') return renderAuthorRow(row.author, i)
                 if (row.kind === 'book') return renderBookRow(row.book, i)

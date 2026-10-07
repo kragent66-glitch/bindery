@@ -28,3 +28,42 @@
   --color-fg-muted: var(--fg-muted);
   --color-accent-text: var(--accent-text);
 }
+
+/* Modal sizing on phones. `vh` is measured with the mobile browser toolbar
+   collapsed, so a panel capped at 90vh outgrows the visible area whenever the
+   toolbar is showing and its footer buttons end up at (or under) the screen
+   edge. `dvh` tracks the visible area. On narrow screens the cap also keeps a
+   3.5rem gap above and below the centred panel: iOS Safari treats a tap near
+   the bottom edge as "show the toolbar" instead of delivering it, so footer
+   buttons must not sit there. */
+@utility modal-max-h {
+  max-height: 90dvh;
+  @media (width < 40rem) {
+    max-height: calc(100dvh - 7rem);
+  }
+}
+
+@utility modal-overlay {
+  overscroll-behavior: contain;
+}
+
+/* On touch devices, stop the page behind an open modal from scrolling: the
+   scroll collapses and expands the browser toolbar, which resizes the modal
+   mid-interaction. Scoped to coarse pointers so desktop keeps its scrollbar
+   (hiding it there shifts the page sideways). */
+@media (pointer: coarse) {
+  html:has(.modal-overlay, dialog[open]) {
+    overflow: hidden;
+  }
+}
+
+/* iOS Safari zooms the page in when a form control with a font size under
+   16px takes focus, and leaves it zoomed. Unlayered so it beats the text-sm
+   utilities on individual controls. */
+@media (hover: none) and (pointer: coarse) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}

@@ -34,7 +34,7 @@ export default function SeriesNameModal({ title, initialName = '', submitLabel, 
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
+    <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
       <form
         role="dialog"
         aria-modal="true"

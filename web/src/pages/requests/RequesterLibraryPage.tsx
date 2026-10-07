@@ -50,6 +50,7 @@ export default function RequesterLibraryPage() {
         className="flex gap-2 max-w-md"
       >
         <input
+          enterKeyHint="search"
           type="search"
           value={query}
           onChange={e => setQuery(e.target.value)}

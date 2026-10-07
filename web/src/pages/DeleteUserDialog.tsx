@@ -54,7 +54,7 @@ export default function DeleteUserDialog({ user, counts, users, busy, onCancel, 
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
       <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-lg p-5 w-full max-w-md space-y-4">
         <h2 className="text-base font-semibold">{t('users.deleteTitle', { username: user.username })}</h2>
 

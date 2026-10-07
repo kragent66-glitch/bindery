@@ -683,7 +683,7 @@ export default function QueuePage() {
 
       {deleteTarget && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
           onClick={closeDeleteDialog}
         >
           <div
@@ -804,6 +804,7 @@ export function MatchBookControl({ disabled, onMatch, alreadyMatched = false }: 
     <div className="w-64 p-2 bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 rounded space-y-1">
       <div className="flex gap-1">
         <input
+          enterKeyHint="search"
           autoFocus
           className="flex-1 px-2 py-1 text-xs rounded border border-slate-300 dark:border-zinc-700 bg-white dark:bg-zinc-900"
           placeholder={t('queue.matchBookPlaceholder', 'Search your library')}

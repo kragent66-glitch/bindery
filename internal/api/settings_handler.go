@@ -72,7 +72,7 @@ const SettingDefaultAudiobookRootFolderID = "library.defaultAudiobookRootFolderI
 
 // SettingMetadataPrimaryProvider is the KV key that selects the primary
 // metadata provider used for author/book search and lookup. Valid values are
-// "openlibrary" (default), "dnb", and "hardcover". Empty or unset falls back to
+// "openlibrary" (default), "dnb", "nb", and "hardcover". Empty or unset falls back to
 // "openlibrary" for backwards compatibility.
 //
 // "hardcover" requires a Hardcover API token (SettingHardcoverAPIToken) —
@@ -85,7 +85,7 @@ const SettingMetadataPrimaryProvider = "metadata.primary_provider"
 // MetadataPrimaryProviders lists the accepted values of
 // SettingMetadataPrimaryProvider, in the order the UI presents them. The first
 // entry is the default used when the setting is empty or unset.
-var MetadataPrimaryProviders = []string{"openlibrary", "dnb", "hardcover"}
+var MetadataPrimaryProviders = []string{"openlibrary", "dnb", "nb", "hardcover"}
 
 // IsMetadataPrimaryProviderValid reports whether value names a provider that
 // may be promoted to primary. The empty string is valid and means "default".

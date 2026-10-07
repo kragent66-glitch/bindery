@@ -14,6 +14,7 @@ function providerLabel(author: Author): string {
   if (provider === 'hardcover' || author.foreignAuthorId.startsWith('hc:')) return 'Hardcover'
   if (provider === 'openlibrary' || author.foreignAuthorId.startsWith('OL')) return 'OpenLibrary'
   if (provider === 'dnb' || author.foreignAuthorId.startsWith('dnb:')) return 'DNB'
+  if (provider === 'nb' || author.foreignAuthorId.startsWith('nb:')) return 'Nasjonalbiblioteket'
   if (provider) return provider
   return 'Metadata'
 }
@@ -100,8 +101,8 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
   }
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
-      <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-xl shadow-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
+    <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={onClose}>
+      <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-xl shadow-2xl modal-max-h flex flex-col" onClick={e => e.stopPropagation()}>
         <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
           <h3 className="text-lg font-semibold">{t('authorMetadataLink.title', 'Link metadata')}</h3>
         </div>
@@ -109,6 +110,7 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
         <div className="p-4 flex-1 overflow-y-auto">
           <form onSubmit={search} className="flex gap-2">
             <input
+              enterKeyHint="search"
               value={query}
               onChange={event => setQuery(event.target.value)}
               className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded-md px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"

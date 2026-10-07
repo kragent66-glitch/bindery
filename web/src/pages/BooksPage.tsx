@@ -250,6 +250,7 @@ export default function BooksPage() {
       {/* Controls */}
       <div className="flex flex-col sm:flex-row gap-3 mb-6">
         <input
+          enterKeyHint="search"
           type="search"
           value={search}
           onChange={e => setSearch(e.target.value)}

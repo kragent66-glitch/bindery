@@ -12,6 +12,7 @@ import Toggle from './Toggle'
 import SaveButton from './SaveButton'
 import CalibreDeliveryPanel from './CalibreDeliveryPanel'
 import { useSaveResult } from './useSaveResult'
+import { secretInputAttrs, urlInputAttrs } from '../../util/inputAttrs'
 
 export default function CalibreTab() {
   const [settings, setSettings] = useState<Record<string, string>>({})
@@ -394,6 +395,7 @@ function CalibreSection({
             </p>
             <div className="flex gap-2">
               <input
+                {...urlInputAttrs}
                 value={settings['calibre.plugin_url'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.plugin_url': e.target.value }))}
                 placeholder="http://calibre.default.svc:8099"
@@ -421,6 +423,7 @@ function CalibreSection({
             </p>
             <div className="flex gap-2">
               <input
+                {...secretInputAttrs}
                 type="password"
                 value={settings['calibre.plugin_api_key'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.plugin_api_key': e.target.value }))}
@@ -830,7 +833,7 @@ function CalibreRollbackModal({
   const closable = !applying
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-2xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
           <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">
@@ -975,7 +978,7 @@ export function CalibreSyncModal({
   const running = !!progress?.running
   const { t } = useTranslation()
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
+    <div className="modal-overlay fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true">
       <div className="w-full max-w-xl rounded-lg bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 shadow-xl">
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-800">
           <h3 className="text-base font-semibold text-slate-800 dark:text-zinc-100">{t('settings.calibre.pushAll.label')}</h3>

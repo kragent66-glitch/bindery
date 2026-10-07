@@ -135,7 +135,7 @@ export default function RebindModal({ book, onClose, onSuccess }: Props) {
       ref={dialog}
       aria-labelledby="book-rebind-title"
       aria-describedby="book-rebind-description"
-      className="m-auto max-h-[90dvh] w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-lg border border-slate-300 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
+      className="m-auto modal-max-h w-[calc(100%-2rem)] max-w-2xl overflow-y-auto rounded-lg border border-slate-300 bg-white p-0 text-slate-900 shadow-xl backdrop:bg-black/60 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
       onCancel={event => { event.preventDefault(); if (!submitting) onClose() }}
       onClick={event => { if (event.target === event.currentTarget && !submitting) onClose() }}
     >
@@ -171,6 +171,7 @@ export default function RebindModal({ book, onClose, onSuccess }: Props) {
                   <label htmlFor="rebind-query" className="mb-1 block text-sm font-medium">{t('bookRebind.query')}</label>
                   <div className="flex flex-col gap-2 sm:flex-row">
                     <input
+                      enterKeyHint="search"
                       ref={queryInput}
                       id="rebind-query"
                       value={query}

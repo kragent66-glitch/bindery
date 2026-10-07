@@ -769,7 +769,11 @@ like everything else on that tab that names server paths.
   author's catalogue looks like. It is community data: expect occasional
   duplicates, language mix-ups, and box-set entries. The "primary" selector
   (Settings → Metadata Profiles → Library Defaults) offers OpenLibrary,
-  **DNB** (German National Library), and **Hardcover**.
+  **DNB** (German National Library), **Nasjonalbiblioteket** (National Library
+  of Norway: Norwegian books under their original titles, only used when chosen
+  as primary), and **Hardcover**. Switching the primary away from
+  Nasjonalbiblioteket switches it off entirely, so authors linked to it stop
+  syncing until you relink each one with "Link metadata" on their page.
 - **Hardcover** is an enricher by default — it improves search results,
   ratings, and series data, and powers import lists and the Discover wishlist
   row. **Without an API token (Settings → API Keys) Hardcover is silently
@@ -842,8 +846,8 @@ bound to with a copy button, and lists any other provider ids the same book is
 known by. That is the thing to check before deciding a book needs re-binding,
 and the id is what to quote in a bug report. Hover or activate **Links** while
 confirming a book in the Add to library dialog or in the book header to open
-trustworthy upstream pages for OpenLibrary, Google Books, Hardcover, and DNB
-records.
+trustworthy upstream pages for OpenLibrary, Google Books, Hardcover, DNB and
+Nasjonalbiblioteket records.
 Calibre and Audiobookshelf ids remain visible only under **Metadata source**
 because they do not map to stable public pages.
 

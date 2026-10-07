@@ -456,6 +456,7 @@ export default function AuthorsPage() {
       {/* Search & Sort controls */}
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
         <input
+          enterKeyHint="search"
           type="search"
           value={search}
           onChange={e => setSearch(e.target.value)}
@@ -679,7 +680,7 @@ export default function AuthorsPage() {
       />
 
       {monitoringBulkAction && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={() => setMonitoringBulkAction(null)}>
+        <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={() => setMonitoringBulkAction(null)}>
           <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-md shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="bulk-monitoring-title" onClick={e => e.stopPropagation()}>
             <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
               <h3 id="bulk-monitoring-title" className="text-lg font-semibold">
@@ -728,7 +729,7 @@ export default function AuthorsPage() {
       )}
 
       {showMonitorModeBulk && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={closeBulkMonitorMode}>
+        <div className="modal-overlay fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50" onClick={closeBulkMonitorMode}>
           <div className="bg-slate-100 dark:bg-zinc-900 border border-slate-300 dark:border-zinc-700 rounded-lg w-full max-w-md shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="bulk-monitor-mode-title" onClick={e => e.stopPropagation()}>
             <div className="p-4 border-b border-slate-200 dark:border-zinc-800">
               <h3 id="bulk-monitor-mode-title" className="text-lg font-semibold">{t('authors.bulkSetMonitorModeTitle', 'Set monitor mode')}</h3>
