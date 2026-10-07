@@ -157,7 +157,10 @@ export default function UsersPage() {
       {!loading && <p className="text-xs text-slate-500 dark:text-zinc-500">{t('users.autoApproveHint')}</p>}
 
       {!loading && (
-        <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-lg overflow-hidden">
+        // Five columns are wider than a phone. The wrapper used to clip the
+        // overflow, which cut off Reset password and Delete; scrolling it
+        // sideways keeps both reachable.
+        <div className="bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 rounded-lg overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-950">
@@ -215,19 +218,21 @@ export default function UsersPage() {
                   <td className="px-4 py-3 text-slate-500 dark:text-zinc-500">
                     {new Date(u.createdAt).toLocaleDateString()}
                   </td>
-                  <td className="px-4 py-3 flex gap-2 justify-end">
-                    <button
-                      onClick={() => handleReset(u.id)}
-                      className={`${btnCls} text-xs bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-300`}
-                    >
-                      {t('users.resetPassword')}
-                    </button>
-                    <button
-                      onClick={() => handleDelete(u)}
-                      className={`${btnCls} text-xs bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400`}
-                    >
-                      {t('common.delete')}
-                    </button>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2 justify-end whitespace-nowrap">
+                      <button
+                        onClick={() => handleReset(u.id)}
+                        className={`${btnCls} text-xs bg-slate-100 dark:bg-zinc-800 hover:bg-slate-200 dark:hover:bg-zinc-700 text-slate-700 dark:text-zinc-300`}
+                      >
+                        {t('users.resetPassword')}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(u)}
+                        className={`${btnCls} text-xs bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400`}
+                      >
+                        {t('common.delete')}
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

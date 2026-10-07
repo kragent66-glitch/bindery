@@ -119,3 +119,35 @@ describe('MoreMenu', () => {
     expect(trigger()).not.toHaveFocus()
   })
 })
+
+describe('MoreMenu near the screen edge', () => {
+  // On a phone the trigger can wrap to the start of a row, and a menu lined
+  // up with its right edge then opened at left=-101px, clipping its items.
+  it('flips to the left edge when a right aligned menu would overflow', () => {
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const left = this.getAttribute('role') === 'menu' && this.className.includes('right-0') ? -101 : 16
+      return { left, right: left + 176, top: 0, bottom: 0, width: 176, height: 0, x: left, y: 0, toJSON: () => ({}) } as DOMRect
+    })
+    try {
+      render(<MoreMenu label="More" items={[{ label: 'Delete', onSelect: vi.fn() }]} />)
+      fireEvent.click(screen.getByRole('button', { name: /More/ }))
+      const menu = screen.getByRole('menu')
+      expect(menu.className).toContain('left-0')
+      expect(menu.className).not.toContain('right-0')
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it('stays right aligned when it fits, and again on the next open', () => {
+    render(<MoreMenu label="More" items={[{ label: 'Delete', onSelect: vi.fn() }]} />)
+    fireEvent.click(screen.getByRole('button', { name: /More/ }))
+    expect(screen.getByRole('menu').className).toContain('right-0')
+  })
+
+  it('renders caution items in amber', () => {
+    render(<MoreMenu label="More" items={[{ label: 'Set both', onSelect: vi.fn(), caution: true }]} />)
+    fireEvent.click(screen.getByRole('button', { name: /More/ }))
+    expect(screen.getByRole('menuitem', { name: 'Set both' }).className).toContain('text-amber-700')
+  })
+})

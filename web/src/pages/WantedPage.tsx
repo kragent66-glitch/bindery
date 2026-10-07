@@ -15,7 +15,16 @@ import { isAutoGrabRefusal } from '../util/autoGrabRefusal'
 
 // Shared grid template so the header row and every list row line up exactly.
 // columns: checkbox · cover · title+author · format · actions
-const ROW_GRID = 'grid grid-cols-[1.5rem_2rem_1fr_6rem_8.5rem] items-center gap-3'
+// Below sm the fixed format and action columns left the title about 13px at
+// 375px, so a phone gets three columns and the format and actions move to a
+// second line under the title (see ROW_CONTROLS). On a touch screen from sm
+// up the format column is wider: form controls render at 16px there (see
+// index.css), and "Audiobook" at 16px does not fit in 6rem.
+const ROW_GRID = 'grid grid-cols-[1.5rem_2rem_minmax(0,1fr)] sm:grid-cols-[1.5rem_2rem_1fr_6rem_8.5rem] sm:pointer-coarse:grid-cols-[1.5rem_2rem_1fr_8.5rem_8.5rem] items-center gap-x-3 gap-y-1.5 sm:gap-3'
+// Holds the format select and the actions. A flex line spanning the cover and
+// title columns on a phone; display: contents from sm, so its two children
+// drop back into their own grid columns.
+const ROW_CONTROLS = 'col-start-2 col-span-2 flex flex-wrap items-center gap-2 sm:contents'
 
 // Query-string keys and their defaults; defaults stay out of the URL.
 const LIST_DEFAULTS = { q: '', excluded: '' }
@@ -285,8 +294,8 @@ export default function WantedPage() {
             />
             <span aria-hidden />
             <span>{t('wanted.colTitleAuthor')}</span>
-            <span>{t('wanted.colFormat')}</span>
-            <span className="text-right">{t('wanted.colActions')}</span>
+            <span className="hidden sm:block">{t('wanted.colFormat')}</span>
+            <span className="hidden sm:block text-right">{t('wanted.colActions')}</span>
           </div>
 
           {pageItems.map((book, i) => {
@@ -357,52 +366,54 @@ export default function WantedPage() {
                     )}
                   </div>
 
-                  {/* format control — compact select, still changes the value */}
-                  <div className="min-w-0">
-                    <select
-                      value={book.mediaType || 'ebook'}
-                      onChange={e => changeMediaType(book, e.target.value as 'ebook' | 'audiobook' | 'both')}
-                      className="w-full bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded text-[11px] px-1.5 py-0.5 focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
-                      aria-label={t('wanted.changeFormat', { title: book.title })}
-                      title={t('wanted.changeFormat', { title: book.title })}
-                    >
-                      <option value="ebook">{t('books.mediaEbook')}</option>
-                      <option value="audiobook">{t('books.mediaAudiobook')}</option>
-                      <option value="both">{t('books.mediaBoth')}</option>
-                    </select>
-                    {book.mediaType === 'both' && (
-                      <div className="mt-0.5 text-[10px] text-slate-500 dark:text-zinc-500 truncate">
-                        {book.ebookFilePath ? t('wanted.ebookDone') : t('wanted.ebookNeeded')}
-                        {' · '}
-                        {book.audiobookFilePath ? t('wanted.audiobookDone') : t('wanted.audiobookNeeded')}
-                      </div>
-                    )}
-                  </div>
+                  <div className={ROW_CONTROLS} data-testid="wanted-row-controls">
+                    {/* format control: compact select, still changes the value */}
+                    <div className="min-w-28 flex-1 sm:min-w-0 sm:flex-none">
+                      <select
+                        value={book.mediaType || 'ebook'}
+                        onChange={e => changeMediaType(book, e.target.value as 'ebook' | 'audiobook' | 'both')}
+                        className="w-full bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded text-[11px] px-1.5 py-0.5 focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+                        aria-label={t('wanted.changeFormat', { title: book.title })}
+                        title={t('wanted.changeFormat', { title: book.title })}
+                      >
+                        <option value="ebook">{t('books.mediaEbook')}</option>
+                        <option value="audiobook">{t('books.mediaAudiobook')}</option>
+                        <option value="both">{t('books.mediaBoth')}</option>
+                      </select>
+                      {book.mediaType === 'both' && (
+                        <div className="mt-0.5 text-[10px] text-slate-500 dark:text-zinc-500 truncate">
+                          {book.ebookFilePath ? t('wanted.ebookDone') : t('wanted.ebookNeeded')}
+                          {' · '}
+                          {book.audiobookFilePath ? t('wanted.audiobookDone') : t('wanted.audiobookNeeded')}
+                        </div>
+                      )}
+                    </div>
 
-                  {/* actions */}
-                  <div className="flex items-center justify-end gap-1.5">
-                    {book.excluded && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-700 dark:text-amber-400">
-                        {t('wanted.excluded')}
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => unmonitor(book)}
-                      disabled={unmonitoringId === book.id}
-                      className="px-2 py-1 rounded text-xs font-medium bg-slate-200 dark:bg-zinc-800 hover:bg-amber-100 dark:hover:bg-amber-900/30 hover:text-amber-700 dark:hover:text-amber-400 text-slate-700 dark:text-zinc-300 disabled:opacity-50 transition-colors"
-                      title={t('wanted.unmonitorHint')}
-                    >
-                      {unmonitoringId === book.id ? '…' : t('common.unmonitor')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => searchBook(book)}
-                      disabled={searchingId === book.id}
-                      className="px-2 py-1 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 transition-colors"
-                    >
-                      {searchingId === book.id ? t('wanted.searching') : t('common.search')}
-                    </button>
+                    {/* actions */}
+                    <div className="flex items-center justify-end gap-1.5">
+                      {book.excluded && (
+                        <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/20 text-amber-700 dark:text-amber-400">
+                          {t('wanted.excluded')}
+                        </span>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => unmonitor(book)}
+                        disabled={unmonitoringId === book.id}
+                        className="px-2 py-1 rounded text-xs font-medium bg-slate-200 dark:bg-zinc-800 hover:bg-amber-100 dark:hover:bg-amber-900/30 hover:text-amber-700 dark:hover:text-amber-400 text-slate-700 dark:text-zinc-300 disabled:opacity-50 transition-colors"
+                        title={t('wanted.unmonitorHint')}
+                      >
+                        {unmonitoringId === book.id ? '…' : t('common.unmonitor')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => searchBook(book)}
+                        disabled={searchingId === book.id}
+                        className="px-2 py-1 rounded text-xs font-medium bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-50 transition-colors"
+                      >
+                        {searchingId === book.id ? t('wanted.searching') : t('common.search')}
+                      </button>
+                    </div>
                   </div>
                 </div>
 

@@ -149,7 +149,27 @@ const (
 	// to exempt the request — never the mere presence of an apikey parameter,
 	// which an attacker can forge to switch the CSRF layer off (#708).
 	viaAPIKeyCtxKey ctxKey = "auth.via_api_key" //nolint:gosec // context key name, not a credential
+	// sessionLookupFailedCtxKey marks a request that carried a correctly
+	// signed session cookie whose epoch or revocation check could not run.
+	sessionLookupFailedCtxKey ctxKey = "auth.session_lookup_failed"
 )
+
+// StatusClientClosedRequest is the nginx convention for a request the client
+// abandoned before the server answered. Nobody reads the response; the code
+// only keeps an abandoned request from being counted as a server fault.
+const StatusClientClosedRequest = 499
+
+// SessionLookupFailed reports whether the request carried a correctly signed
+// session cookie that the middleware could not check against the database
+// (an error, or the request being cancelled mid lookup). Such a request is
+// neither signed in nor signed out. Handlers on paths the middleware lets
+// through without identity, GET /auth/status above all, must answer it with
+// an error rather than report the caller as signed out: the UI treats
+// authenticated=false as a logout and goes to the login page.
+func SessionLookupFailed(ctx context.Context) bool {
+	v, _ := ctx.Value(sessionLookupFailedCtxKey).(bool)
+	return v
+}
 
 // AuthedViaAPIKey reports whether the request was authenticated by a verified
 // API key. False for session-cookie, proxy, local-only, or disabled-mode
@@ -465,8 +485,26 @@ func Middleware(p Provider) func(http.Handler) http.Handler {
 						// not treat as a revoked cookie either. Flag it so an
 						// otherwise-unauthenticated request fails with 500 rather
 						// than silently logging the user out on a DB blip.
-						slog.Error("session lookup failed", "user_id", uid, "error", lookupErr)
+						//
+						// A request the client abandoned (the browser aborting a
+						// fetch on navigation) cancels its own context, which
+						// fails the lookup with context.Canceled. That is not a
+						// database fault and touches nothing shared: the cookie,
+						// the user row and other requests on the same session are
+						// unaffected. Log it quietly.
+						//
+						// This treats a done context as "the client left". That
+						// holds only while no server side request timeout (a
+						// context deadline or http.TimeoutHandler) sits in front
+						// of this middleware. If one is added, a deadline here is
+						// a server fault and must be logged and answered as one.
+						if ctx.Err() != nil {
+							slog.Debug("session lookup abandoned by client", "user_id", uid, "error", lookupErr)
+						} else {
+							slog.Error("session lookup failed", "user_id", uid, "error", lookupErr)
+						}
 						epochLookupFailed = true
+						ctx = context.WithValue(ctx, sessionLookupFailedCtxKey, true)
 					case usable:
 						ctx = context.WithValue(ctx, userIDCtxKey, uid)
 						ctx = context.WithValue(ctx, userRoleCtxKey, p.UserRole(ctx, uid))
@@ -584,6 +622,13 @@ func Middleware(p Provider) func(http.Handler) http.Handler {
 			// of the path-based bypasses above applied (those already returned),
 			// so surface this as a server error instead of a spurious 401.
 			if epochLookupFailed {
+				if r.Context().Err() != nil {
+					// The client is gone; answer for the access log only.
+					// 499 assumes no server side request timeout sits in
+					// front of auth; see the lookup comment above.
+					w.WriteHeader(StatusClientClosedRequest)
+					return
+				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
 				if _, err := w.Write([]byte(`{"error":"internal error"}`)); err != nil {

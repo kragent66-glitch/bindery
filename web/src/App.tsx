@@ -258,7 +258,9 @@ function Shell() {
               <button
                 onClick={() => setMenuOpen(open => !open)}
                 className="xl:hidden p-2 rounded-md text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-200 dark:hover:bg-zinc-800 transition-colors"
-                aria-label="Toggle menu"
+                aria-label={t('nav.toggleMenu', 'Toggle menu')}
+                aria-expanded={menuOpen}
+                aria-controls={menuOpen ? 'mobile-menu' : undefined}
               >
                 {menuOpen ? (
                   <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -275,7 +277,15 @@ function Shell() {
         </div>
 
         {menuOpen && (
-          <div className="xl:hidden border-t border-slate-200 dark:border-zinc-800">
+          // The header is sticky, so a menu taller than the screen (the admin
+          // one runs to about 840px) could never scroll into view with the
+          // page. Cap it at the viewport below the 4rem header row, its 1px
+          // border and the header's top safe area inset, and scroll it on its
+          // own.
+          <div
+            id="mobile-menu"
+            className="xl:hidden border-t border-slate-200 dark:border-zinc-800 max-h-[calc(100dvh-4rem-1px-env(safe-area-inset-top))] overflow-y-auto overscroll-contain"
+          >
             {/* From lg up the search, the icons and the account menu stay in
                 the header row, so the menu only carries the nav links. */}
             {!isRequester && <div className="lg:hidden px-4 py-3 border-b border-slate-200/50 dark:border-zinc-800/50">

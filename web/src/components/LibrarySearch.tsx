@@ -286,7 +286,7 @@ export default function LibrarySearch({ className = '', onNavigate, autoFocus }:
         role="listbox"
         aria-label={t('librarySearch.label')}
         hidden={!open || rows.length === 0}
-        className="absolute left-0 right-0 sm:right-auto sm:min-w-[20rem] mt-1 max-h-[70vh] overflow-y-auto py-1 rounded-md border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 shadow-lg z-50"
+        className="absolute left-0 right-0 sm:right-auto sm:min-w-[20rem] mt-1 max-h-[70dvh] overflow-y-auto py-1 rounded-md border border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 shadow-lg z-50"
       >
         {open && loading && !results && (
           <li role="presentation" className="px-3 py-2 text-sm text-fg-muted">{t('librarySearch.searching')}</li>

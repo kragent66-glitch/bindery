@@ -1,6 +1,9 @@
 {
   "common": {
     "loading": "Loading…",
+    "serverUnavailable": "Bindery is not answering right now.",
+    "retry": "Retry",
+    "retrying": "Retrying…",
     "viewOnSource": "View on {{source}} ↗",
     "links": "Links",
     "gridView": "Grid view",
@@ -44,6 +47,7 @@
     "saved": "Saved ✓",
     "saveError": "Error",
     "more": "More",
+    "close": "Close",
     "confirm": "Confirm",
     "confirmTitle": "Are you sure?",
     "moreActions": "More",
@@ -90,7 +94,8 @@
     "request": "Request",
     "myRequests": "My requests",
     "requests": "Requests",
-    "requestsPending": "{{count}} pending requests"
+    "requestsPending": "{{count}} pending requests",
+    "toggleMenu": "Toggle menu"
   },
   "librarySearch": {
     "label": "Search library",
@@ -907,6 +912,15 @@
       "about": "About",
       "advanced": "Advanced"
     },
+    "sectionLabel": "Settings section",
+    "groups": {
+      "sources": "Sources",
+      "library": "Library",
+      "integrations": "Integrations",
+      "system": "System"
+    },
+    "previewBadge": "Preview",
+    "tabWithPreview": "{{tab}} (Preview)",
     "about": {
       "title": "About",
       "hint": "Build details for this Bindery instance. Include the version and commit when filing a bug report.",
