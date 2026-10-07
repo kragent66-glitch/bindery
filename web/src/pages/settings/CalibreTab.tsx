@@ -293,12 +293,12 @@ function CalibreSection({
             Directory containing <code className="text-[11px] bg-slate-200 dark:bg-zinc-800 px-1 rounded">metadata.db</code>.
             Used by both the write integration and library import.
           </p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <input
               value={settings['calibre.library_path'] ?? ''}
               onChange={e => setSettings(s => ({ ...s, 'calibre.library_path': e.target.value }))}
               placeholder="/data/calibre-library"
-              className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+              className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
             />
             <SaveButton
               result={libraryPathSaveResult}
@@ -341,12 +341,12 @@ function CalibreSection({
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">Binary path (optional)</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">Leave blank to resolve <code className="text-[11px] bg-slate-200 dark:bg-zinc-800 px-1 rounded">calibredb</code> on PATH. Set explicitly when running in a container that bundles Calibre at a pinned location.</p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 value={settings['calibre.binary_path'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.binary_path': e.target.value }))}
                 placeholder="/usr/bin/calibredb"
-                className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+                className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
               />
               <SaveButton
                 result={binaryPathSaveResult}
@@ -393,13 +393,13 @@ function CalibreSection({
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
               Base URL of the Bindery Bridge plugin&rsquo;s HTTP server running inside Calibre.
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 {...urlInputAttrs}
                 value={settings['calibre.plugin_url'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.plugin_url': e.target.value }))}
                 placeholder="http://calibre.default.svc:8099"
-                className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+                className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
               />
               <SaveButton
                 result={pluginUrlSaveResult}
@@ -421,14 +421,14 @@ function CalibreSection({
                 ? t('settings.calibre.transport.apiKeyPullHelp')
                 : <>Bearer token configured in the plugin&rsquo;s Calibre Preferences dialog.</>}
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 {...secretInputAttrs}
                 type="password"
                 value={settings['calibre.plugin_api_key'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.plugin_api_key': e.target.value }))}
                 placeholder="plugin api key"
-                className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+                className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
               />
               <SaveButton
                 result={pluginKeySaveResult}
@@ -453,12 +453,12 @@ function CalibreSection({
               a share address is more reliable than a mapped drive letter, which the running Calibre may not see.
               Leave empty when both containers see the library at the same path.
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 value={settings['calibre.push_path_remap'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.push_path_remap': e.target.value }))}
                 placeholder="/books:/mnt/user/media/books"
-                className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+                className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
               />
               <SaveButton
                 result={pushRemapSaveResult}
@@ -650,12 +650,12 @@ function CalibreSection({
         <div>
           <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">Ingest folder path</label>
           <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">Mount the same path into both containers. CWA's docs use <code className="text-[11px] bg-slate-200 dark:bg-zinc-800 px-1 rounded">/cwa-book-ingest</code>.</p>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <input
               value={settings['cwa.ingest_path'] ?? ''}
               onChange={e => setSettings(s => ({ ...s, 'cwa.ingest_path': e.target.value }))}
               placeholder="/cwa-book-ingest"
-              className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+              className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
             />
             <SaveButton
               result={cwaPathSaveResult}

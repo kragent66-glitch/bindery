@@ -350,7 +350,7 @@ export default function SeriesPage() {
               aria-pressed={filter === f}
               onClick={() => selectFilter(f)}
               title={f === 'missing' && enhancedHardcoverApi ? t('series.filterMissingHint') : undefined}
-              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${filter === f ? 'bg-slate-300 dark:bg-zinc-700 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'}`}
+              className={`touch-target px-3 py-1 rounded-md text-xs font-medium transition-colors ${filter === f ? 'bg-slate-300 dark:bg-zinc-700 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'}`}
             >
               {t(`series.filter.${f}`)}
             </button>
@@ -399,9 +399,12 @@ export default function SeriesPage() {
                   className="p-4 cursor-pointer hover:bg-slate-200/50 dark:hover:bg-zinc-800/50 transition-colors"
                   onClick={() => toggleExpanded(series)}
                 >
-                  <div className="flex items-start justify-between gap-3">
+                  {/* Below sm the name gets its own line and the badges wrap
+                      under it: beside them it was cut to about nine
+                      characters on a phone. */}
+                  <div className="flex flex-wrap sm:flex-nowrap items-start justify-between gap-x-3 gap-y-1">
                     <div className="min-w-0">
-                      <h3 className="font-semibold truncate">{series.title}</h3>
+                      <h3 className="font-semibold [overflow-wrap:anywhere] sm:truncate">{series.title}</h3>
                       {series.description && (
                         <p className="text-xs text-slate-600 dark:text-zinc-500 mt-1 line-clamp-2">{series.description}</p>
                       )}

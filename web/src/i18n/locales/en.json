@@ -880,7 +880,11 @@
     "noReleases": "No monitored books releasing this month",
     "releasingIn": "Releasing in {{month}} {{year}}",
     "prevMonth": "Previous month",
-    "nextMonth": "Next month"
+    "nextMonth": "Next month",
+    "dayReleases_one": "{{date}}: {{count}} release",
+    "dayReleases_other": "{{date}}: {{count}} releases",
+    "releasingOn": "Releasing on {{date}}",
+    "showWholeMonth": "Show the whole month"
   },
   "settings": {
     "title": "Settings",

@@ -1,4 +1,5 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { Suspense, useCallback, useEffect, useState } from 'react'
+import { lazyWithReload } from '../util/lazyWithReload'
 import { useTranslation } from 'react-i18next'
 import { api, DownloadClient, Indexer, ProwlarrInstance } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -18,23 +19,24 @@ import ProtocolMismatchWarning from '../components/ProtocolMismatchWarning'
 // Indexers and Clients tabs. Everything else is genuinely tab-local and lives
 // inside its own tab component.
 
-// Each tab is a default export, so lazy(() => import(...)) resolves directly.
-const GeneralTab = lazy(() => import('./settings/GeneralTab'))
-const IndexersTab = lazy(() => import('./settings/IndexersTab'))
-const ClientsTab = lazy(() => import('./settings/ClientsTab'))
-const NotificationsTab = lazy(() => import('./settings/NotificationsTab'))
-const QualityTab = lazy(() => import('./settings/QualityTab'))
-const MetadataTab = lazy(() => import('./settings/MetadataTab'))
-const RootFoldersTab = lazy(() => import('./settings/RootFoldersTab'))
-const CalibreTab = lazy(() => import('./settings/CalibreTab'))
-const ABSTab = lazy(() => import('./settings/ABSTab'))
-const GrimmoryTab = lazy(() => import('./settings/GrimmoryTab'))
-const ApiKeysTab = lazy(() => import('./settings/ApiKeysTab'))
-const ImportTab = lazy(() => import('./settings/ImportTab'))
-const BlocklistTab = lazy(() => import('./settings/BlocklistTab'))
-const LogsTab = lazy(() => import('./settings/LogsTab'))
-const AdvancedTab = lazy(() => import('./settings/AdvancedTab'))
-const AboutTab = lazy(() => import('./settings/AboutTab'))
+// Each tab is a default export, so lazyWithReload(() => import(...)) resolves
+// directly. The wrapper reloads once if a tab chunk is gone after an upgrade.
+const GeneralTab = lazyWithReload(() => import('./settings/GeneralTab'))
+const IndexersTab = lazyWithReload(() => import('./settings/IndexersTab'))
+const ClientsTab = lazyWithReload(() => import('./settings/ClientsTab'))
+const NotificationsTab = lazyWithReload(() => import('./settings/NotificationsTab'))
+const QualityTab = lazyWithReload(() => import('./settings/QualityTab'))
+const MetadataTab = lazyWithReload(() => import('./settings/MetadataTab'))
+const RootFoldersTab = lazyWithReload(() => import('./settings/RootFoldersTab'))
+const CalibreTab = lazyWithReload(() => import('./settings/CalibreTab'))
+const ABSTab = lazyWithReload(() => import('./settings/ABSTab'))
+const GrimmoryTab = lazyWithReload(() => import('./settings/GrimmoryTab'))
+const ApiKeysTab = lazyWithReload(() => import('./settings/ApiKeysTab'))
+const ImportTab = lazyWithReload(() => import('./settings/ImportTab'))
+const BlocklistTab = lazyWithReload(() => import('./settings/BlocklistTab'))
+const LogsTab = lazyWithReload(() => import('./settings/LogsTab'))
+const AdvancedTab = lazyWithReload(() => import('./settings/AdvancedTab'))
+const AboutTab = lazyWithReload(() => import('./settings/AboutTab'))
 
 type Tab = 'indexers' | 'clients' | 'notifications' | 'quality' | 'metadata' | 'general' | 'import' | 'rootfolders' | 'logs' | 'blocklist' | 'calibre' | 'abs' | 'grimmory' | 'api-keys' | 'advanced' | 'about'
 

@@ -213,7 +213,7 @@ export default function BooksPage() {
   }
 
   const statusBtnCls = (active: boolean) =>
-    `px-3 py-1 rounded-md text-xs font-medium transition-colors ${active ? 'bg-slate-300 dark:bg-zinc-700 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'}`
+    `touch-target px-3 py-1 rounded-md text-xs font-medium transition-colors ${active ? 'bg-slate-300 dark:bg-zinc-700 text-slate-900 dark:text-white' : 'text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white'}`
 
   // Clicking a column header sorts by that column: first click ascending, a
   // second click on the same column flips to descending (mirrors the sort
@@ -438,12 +438,16 @@ export default function BooksPage() {
                     onClick={() => navigate(`/book/${book.id}`, { state: bookNavState(i) })}
                   >
                     <td className="px-3 py-2 w-8" onClick={e => e.stopPropagation()}>
-                      <input
-                        type="checkbox"
-                        checked={selectedIds.has(book.id)}
-                        onChange={() => toggleSelect(book.id)}
-                        className="rounded-full border-slate-400 dark:border-zinc-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0"
-                      />
+                      {/* The label fills the cell, so the whole cell toggles
+                          the box: the 16px box alone is hard to tap. */}
+                      <label className="flex items-center -mx-3 -my-2 px-3 py-2 cursor-pointer pointer-coarse:min-h-11">
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(book.id)}
+                          onChange={() => toggleSelect(book.id)}
+                          className="rounded-full border-slate-400 dark:border-zinc-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0"
+                        />
+                      </label>
                     </td>
                     <td className="px-3 py-2">
                       <Link to={`/book/${book.id}`} state={bookNavState(i)} className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
@@ -498,14 +502,20 @@ export default function BooksPage() {
               className={`border rounded-lg bg-slate-100 dark:bg-zinc-900 overflow-hidden group text-left transition-colors ${selectedIds.has(book.id) ? 'border-emerald-500' : 'border-slate-200 dark:border-zinc-800 hover:border-emerald-500'}`}
             >
               <div className="aspect-[2/3] bg-slate-200 dark:bg-zinc-800 relative">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(book.id)}
-                  onChange={() => toggleSelect(book.id)}
-                  className={`absolute top-2 left-2 z-10 rounded-full border-slate-400 dark:border-zinc-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 ${selectedIds.has(book.id) ? '' : 'bg-white/80 dark:bg-zinc-900/80'}`}
-                  title={`Select ${book.title}`}
+                {/* The label is the tap area: 32px round the box, 44px on a
+                    touch screen, where the box sits further in to make room. */}
+                <label
+                  className="absolute top-0 left-0 z-10 flex p-2 pointer-coarse:p-3.5 cursor-pointer"
                   onClick={e => e.stopPropagation()}
-                />
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(book.id)}
+                    onChange={() => toggleSelect(book.id)}
+                    className={`rounded-full border-slate-400 dark:border-zinc-600 text-emerald-500 focus:ring-emerald-500 focus:ring-offset-0 ${selectedIds.has(book.id) ? '' : 'bg-white/80 dark:bg-zinc-900/80'}`}
+                    title={`Select ${book.title}`}
+                  />
+                </label>
                 <Link to={`/book/${book.id}`} state={bookNavState(i)} className="block w-full h-full">
                   {book.imageUrl ? (
                     <img loading="lazy" decoding="async" src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />

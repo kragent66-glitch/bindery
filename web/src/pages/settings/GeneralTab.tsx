@@ -473,13 +473,13 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">
               {t('settings.general.audiobookFileTemplateHint', 'Leave empty to keep the download’s original file layout. Set a template to rename every audiobook track in playback order; it must include {Part}. A single-file audiobook is renamed too, as part 1, unless {Part} sits in a group with its own text, such as {Title}{ - Pt. Part:3}.{ext}, which is left out when there is only one file.')}
             </p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <input
                 type="text"
                 value={settings['naming.audiobook_file_template'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'naming.audiobook_file_template': e.target.value }))}
                 placeholder="{Title} - Part {Part:3}.{ext}"
-                className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+                className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm font-mono focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
               />
               <SaveButton
                 result={audiobookFileResult}
@@ -499,11 +499,11 @@ export default function GeneralTab({ onNavigate }: GeneralTabProps = {}) {
           <div>
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">{t('settings.general.preferredLanguage')}</label>
             <p className="text-xs text-slate-600 dark:text-zinc-500 mb-2">{t('settings.general.preferredLanguageHint')}</p>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <select
                 value={settings['search.preferredLanguage'] ?? 'en'}
                 onChange={e => setSettings(s => ({ ...s, 'search.preferredLanguage': e.target.value }))}
-                className="flex-1 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
+                className="grow basis-48 min-w-0 bg-slate-200 dark:bg-zinc-800 border border-slate-300 dark:border-zinc-700 rounded px-3 py-2 text-sm focus:outline-none focus:border-slate-400 dark:focus:border-zinc-600"
               >
                 <option value="any">{t('settings.general.preferredLanguageAny')}</option>
                 <option value="en">{t('settings.general.preferredLanguageEn')}</option>

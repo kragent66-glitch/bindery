@@ -302,8 +302,8 @@ export default function IndexersTab({ indexers, setIndexers, prowlarrInstances, 
                     <p className="text-xs text-slate-600 dark:text-zinc-500 truncate">{idx.url}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-3 flex-shrink-0 flex-wrap">
-                  <button onClick={() => setEditingIndexer(editingIndexer === idx.id ? null : idx.id)} className="text-xs text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white">{t('common.edit')}</button>
+                <div className="flex items-center gap-3 pointer-coarse:gap-6 flex-shrink-0 flex-wrap">
+                  <button onClick={() => setEditingIndexer(editingIndexer === idx.id ? null : idx.id)} className="touch-target text-xs text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white">{t('common.edit')}</button>
                   <button
                     disabled={indexerTestResults[idx.id]?.testing}
                     onClick={async () => {
@@ -315,12 +315,12 @@ export default function IndexersTab({ indexers, setIndexers, prowlarrInstances, 
                         setIndexerTestResults(prev => ({ ...prev, [idx.id]: { ok: false, status: 0, categories: 0, bookSearch: false, latencyMs: 0, searchResults: 0, error: err instanceof Error ? err.message : 'Request failed', testing: false } }))
                       }
                     }}
-                    className="text-xs text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-50"
+                    className="touch-target text-xs text-slate-600 dark:text-zinc-400 hover:text-slate-900 dark:hover:text-white disabled:opacity-50"
                   >
                     {indexerTestResults[idx.id]?.testing ? t('common.testing') : t('common.test')}
                   </button>
                   {confirmDeleteIndexer === idx.id ? (
-                    <span className="flex items-center gap-1.5">
+                    <span className="flex items-center gap-1.5 pointer-coarse:gap-6">
                       <span className="text-xs text-slate-500 dark:text-zinc-500">{t('common.delete')}?</span>
                       <button
                         onClick={async () => {
@@ -328,12 +328,12 @@ export default function IndexersTab({ indexers, setIndexers, prowlarrInstances, 
                           setIndexers(indexers.filter(i => i.id !== idx.id))
                           setConfirmDeleteIndexer(null)
                         }}
-                        className={`text-xs font-medium ${dangerLink}`}
+                        className={`touch-target text-xs font-medium ${dangerLink}`}
                       >{t('common.yes')}</button>
-                      <button onClick={() => setConfirmDeleteIndexer(null)} className="text-xs text-slate-500 dark:text-zinc-500 hover:text-slate-700 dark:hover:text-zinc-300">{t('common.no')}</button>
+                      <button onClick={() => setConfirmDeleteIndexer(null)} className="touch-target text-xs text-slate-500 dark:text-zinc-500 hover:text-slate-700 dark:hover:text-zinc-300">{t('common.no')}</button>
                     </span>
                   ) : (
-                    <button onClick={() => setConfirmDeleteIndexer(idx.id)} className={`text-xs ${dangerLink}`}>
+                    <button onClick={() => setConfirmDeleteIndexer(idx.id)} className={`touch-target text-xs ${dangerLink}`}>
                       {t('common.delete')}
                     </button>
                   )}
