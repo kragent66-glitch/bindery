@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { Route, Routes } from 'react-router'
-import { screen } from '@testing-library/react'
+import { fireEvent, screen } from '@testing-library/react'
 import AuthGuard from './AuthGuard'
 import { makeAuthStatus, renderWithRouter } from '../test-utils'
 
@@ -9,7 +9,7 @@ const { authState } = vi.hoisted(() => ({
     value: {
       status: null as unknown,
       loading: false,
-    },
+    } as { status: unknown; loading: boolean; statusError?: boolean; refresh?: () => Promise<void> },
   },
 }))
 
@@ -85,5 +85,21 @@ describe('AuthGuard', () => {
     renderGuard()
 
     expect(screen.getByText('Protected content')).toBeInTheDocument()
+  })
+
+  it('offers a retry instead of the login page when the status check failed', () => {
+    const refresh = vi.fn(() => Promise.resolve())
+    authState.value = {
+      status: null,
+      loading: false,
+      statusError: true,
+      refresh,
+    }
+
+    renderGuard()
+
+    expect(screen.queryByText('Login page')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(refresh).toHaveBeenCalledTimes(1)
   })
 })
