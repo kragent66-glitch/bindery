@@ -98,10 +98,16 @@ export default function BooksPage() {
   // Shown on the Filters trigger so an applied filter is visible without
   // opening it. Status is not counted: it has its own row and is never hidden.
   const activeFilterCount = [mediaFilter, monitoredFilter].filter(Boolean).length
+  // The query a total belongs to, minus the page. The snap back to the last
+  // page may only use a total fetched for the query on screen: going back
+  // across a filter change would otherwise clamp with the other query's total
+  // before the refetch starts, and a failed fetch (total 0) would reset it.
+  const queryKey = JSON.stringify([debouncedSearch, statusFilter, mediaFilter, monitoredFilter, sort])
+  const [totalKey, setTotalKey] = useState<string | null>(null)
   const { page, pageSize, paginationProps } = useServerPagination(total, 50, 'books', {
     page: list.page,
     setPage: list.setPage,
-    ready: !loading,
+    ready: !loading && totalKey === queryKey,
   })
 
   // Server-side list: page, page size, search, status, media type, monitored,
@@ -122,12 +128,19 @@ export default function BooksPage() {
       if (request !== loadRequestRef.current) return
       setBooks(items)
       setTotal(total)
+      setTotalKey(queryKey)
     })
-      .catch(console.error)
+      .catch(err => {
+        if (request === loadRequestRef.current) setTotalKey(null)
+        console.error(err)
+      })
       .finally(() => {
         if (request === loadRequestRef.current) setLoading(false)
       })
-  }, [page, pageSize, debouncedSearch, statusFilter, mediaFilter, monitoredParam, sort])
+  }, [page, pageSize, debouncedSearch, statusFilter, mediaFilter, monitoredParam, sort, queryKey])
+
+  // A selection only means something on the page it was made on.
+  useEffect(() => { setSelectedIds(new Set()) }, [page, queryKey])
 
   useEffect(() => { load() }, [load])
 

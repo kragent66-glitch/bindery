@@ -117,6 +117,7 @@ beforeEach(() => {
   server.use(
     http.get(apiUrl('/indexer'), () => HttpResponse.json([])),
     http.get(apiUrl('/downloadclient'), () => HttpResponse.json([])),
+    http.get(apiUrl('/system/setup-state'), () => new HttpResponse(null, { status: 404 })),
   )
 })
 
@@ -195,6 +196,56 @@ describe('BooksPage list state in the URL', () => {
     await waitFor(() => expect(lastListArgs()).toMatchObject({ offset: 100, status: undefined }))
   })
 
+  it('keeps the page when back crosses a filter change whose total was smaller', async () => {
+    vi.mocked(api.listBooks).mockImplementation(async ({ offset = 0, status } = {}) => ({
+      items: [makeBook(offset + 1)],
+      total: status === 'wanted' ? 10 : 150,
+      limit: 50,
+      offset,
+    }))
+    renderAt(['/books?page=3'], booksRoute)
+    expect((await screen.findAllByText('Book 101')).length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Wanted' }))
+    expect((await screen.findAllByText('Book 1')).length).toBeGreaterThan(0)
+    expect(current().search).toBe('?status=wanted')
+
+    // The wanted list's total (10, one page) must not clamp page 3 of the
+    // unfiltered list on the way back.
+    await goBack()
+    expect((await screen.findAllByText('Book 101')).length).toBeGreaterThan(0)
+    await new Promise(r => setTimeout(r, 50))
+    expect(current().search).toBe('?page=3')
+    expect(lastListArgs()).toMatchObject({ offset: 100, status: undefined })
+  })
+
+  it('does not rewrite the page after a failed fetch', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(api.listBooks).mockRejectedValue(new Error('boom'))
+    renderAt(['/books?page=3'], booksRoute)
+    await waitFor(() => expect(vi.mocked(api.listBooks)).toHaveBeenCalled())
+    await new Promise(r => setTimeout(r, 50))
+    expect(current().search).toBe('?page=3')
+    expect(seen.every(s => s.type !== 'REPLACE')).toBe(true)
+  })
+
+  it('clears the bulk selection when the page or a filter changes', async () => {
+    renderAt(['/books'], booksRoute)
+    fireEvent.click(await screen.findByTitle('Select Book 1'))
+    expect(screen.getByTitle('Select Book 1')).toBeChecked()
+
+    fireEvent.click(screen.getByRole('button', { name: '2' }))
+    expect((await screen.findAllByText('Book 51')).length).toBeGreaterThan(0)
+    await goBack()
+    expect(await screen.findByTitle('Select Book 1')).not.toBeChecked()
+
+    fireEvent.click(screen.getByTitle('Select Book 1'))
+    expect(screen.getByTitle('Select Book 1')).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: 'Wanted' }))
+    await waitFor(() => expect(current().search).toBe('?status=wanted'))
+    expect(await screen.findByTitle('Select Book 1')).not.toBeChecked()
+  })
+
   it('replaces the history entry while typing instead of pushing one per keystroke', async () => {
     renderAt(['/start', '/books'], booksRoute)
     const box = await screen.findByPlaceholderText('Search books')
@@ -241,6 +292,25 @@ describe('AuthorsPage list state in the URL', () => {
   })
 })
 
+describe('AuthorsPage bulk selection', () => {
+  it('clears the selection when the page changes', async () => {
+    vi.spyOn(api, 'listAuthors').mockImplementation(async ({ offset = 0 } = {}) => ({
+      items: [makeAuthor(offset + 1)],
+      total: 120,
+      limit: 50,
+      offset,
+    }))
+    vi.spyOn(api, 'refreshAllAuthorsStatus').mockResolvedValue(null as never)
+    renderAt(['/'], <Route path="/" element={<AuthorsPage />} />)
+    fireEvent.click(await screen.findByTitle('Select Author 1'))
+    expect(screen.getByTitle('Select Author 1')).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: '2' }))
+    await waitFor(() => expect(current().search).toBe('?page=2'))
+    await goBack()
+    expect(await screen.findByTitle('Select Author 1')).not.toBeChecked()
+  })
+})
+
 describe('WantedPage list state in the URL', () => {
   beforeEach(() => {
     vi.spyOn(api, 'listWanted').mockResolvedValue(Array.from({ length: 120 }, (_, i) => makeBook(i + 1)))
@@ -251,13 +321,26 @@ describe('WantedPage list state in the URL', () => {
     await screen.findByText('Book 1')
     fireEvent.click(screen.getByRole('button', { name: '3' }))
     await waitFor(() => expect(current()).toMatchObject({ search: '?page=3', type: 'PUSH' }))
-    expect(await screen.findByText('Book 101')).toBeInTheDocument()
+    expect((await screen.findAllByText('Book 101')).length).toBeGreaterThan(0)
 
     await goTo('/book/101')
     expect(await screen.findByText('book detail')).toBeInTheDocument()
     await goBack()
-    expect(await screen.findByText('Book 101')).toBeInTheDocument()
+    expect((await screen.findAllByText('Book 101')).length).toBeGreaterThan(0)
     expect(screen.queryByText('Book 1')).not.toBeInTheDocument()
+  })
+
+  it('clears the bulk selection when the page changes', async () => {
+    renderAt(['/wanted'], <Route path="/wanted" element={<WantedPage />} />)
+    await screen.findByText('Book 1')
+    fireEvent.click(screen.getByLabelText('common.selectAllPage'))
+    expect(screen.getByLabelText('common.selectAllPage')).toBeChecked()
+    fireEvent.click(screen.getByRole('button', { name: '2' }))
+    expect((await screen.findAllByText('Book 51')).length).toBeGreaterThan(0)
+    expect(screen.getByLabelText('common.selectAllPage')).not.toBeChecked()
+    await goBack()
+    await screen.findByText('Book 1')
+    expect(screen.getByLabelText('common.selectAllPage')).not.toBeChecked()
   })
 
   it('keeps the search and the excluded toggle in the URL', async () => {

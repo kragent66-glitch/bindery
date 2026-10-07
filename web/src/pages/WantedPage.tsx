@@ -175,6 +175,9 @@ export default function WantedPage() {
   // rule used by BooksPage/AuthorDetailPage.
   const pageItemIds = pageItems.map(b => b.id)
 
+  // A selection only means something on the page it was made on.
+  useEffect(() => { setSelectedIds(new Set()) }, [list.page, list.values.q, showExcluded])
+
   // Keep the select-all checkbox indeterminate state in sync.
   const allPageSelected = pageItems.length > 0 && pageItems.every(b => selectedIds.has(b.id))
   const somePageSelected = pageItems.some(b => selectedIds.has(b.id)) && !allPageSelected

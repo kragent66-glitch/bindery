@@ -109,11 +109,39 @@ describe('ScrollRestoration', () => {
     expect(scrollTo.mock.calls.length).toBe(after)
   })
 
-  it('leaves the scroll alone for a query-only push or a hash link', async () => {
+  it('leaves the scroll alone for a filter push or a hash link', async () => {
+    renderApp()
+    setScrollY(1800)
+    await go('/books?status=wanted')
+    await go('/settings#indexers')
+    expect(scrollTo).not.toHaveBeenCalled()
+  })
+
+  it('scrolls to the top when paging pushes a new page', async () => {
     renderApp()
     setScrollY(1800)
     await go('/books?page=2')
-    await go('/settings#indexers')
-    expect(scrollTo).not.toHaveBeenCalled()
+    expect(scrollTo).toHaveBeenLastCalledWith(0, 0)
+    scrollTo.mockClear()
+    // Going back to page 1 restores where page 1 was left instead.
+    setScrollY(1500)
+    await go(-1)
+    expect(scrollTo).toHaveBeenLastCalledWith(0, 1800)
+  })
+
+  it('keeps restoring through a replace of the same location', async () => {
+    vi.useFakeTimers()
+    renderApp()
+    setScrollY(1800)
+    await go('/book/7')
+    scrollHeight = 800
+    await go(-1)
+    // The list page rewrites its own URL with a replace while the rows are
+    // still loading; the restore must carry on.
+    await act(async () => { await nav('/books', { replace: true }) })
+    scrollTo.mockClear()
+    scrollHeight = 5000
+    act(() => { vi.advanceTimersByTime(100) })
+    expect(scrollTo).toHaveBeenLastCalledWith(0, 1800)
   })
 })

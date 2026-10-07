@@ -103,10 +103,15 @@ export default function AuthorsPage() {
   const [refreshing, setRefreshing] = useState(false)
 
   const monitoredParam = monitoredFilter === 'monitored' ? true : monitoredFilter === 'unmonitored' ? false : undefined
+  // The query a total belongs to, minus the page; see BooksPage. The snap
+  // back to the last page only trusts a total fetched for this query.
+  const queryKey = JSON.stringify([debouncedSearch, sort, monitoredFilter])
+  const [totalKey, setTotalKey] = useState<string | null>(null)
+  const loadRequestRef = useRef(0)
   const { page, pageSize, paginationProps } = useServerPagination(total, 50, 'authors', {
     page: list.page,
     setPage: list.setPage,
-    ready: !loading,
+    ready: !loading && totalKey === queryKey,
   })
 
   // Server-side list: page, page size, search, sort, and the monitored filter
@@ -114,6 +119,7 @@ export default function AuthorsPage() {
   // reachable (issue #1010). load() refetches the current page; the mutation
   // handlers below call it to refresh.
   const load = useCallback(() => {
+    const request = ++loadRequestRef.current
     setLoading(true)
     api.listAuthors({
       limit: pageSize,
@@ -121,10 +127,20 @@ export default function AuthorsPage() {
       search: debouncedSearch || undefined,
       sort,
       monitored: monitoredParam,
-    }).then(({ items, total }) => { setAuthors(items); setTotal(total) })
-      .catch(console.error)
+    }).then(({ items, total }) => {
+      setAuthors(items)
+      setTotal(total)
+      if (request === loadRequestRef.current) setTotalKey(queryKey)
+    })
+      .catch(err => {
+        if (request === loadRequestRef.current) setTotalKey(null)
+        console.error(err)
+      })
       .finally(() => setLoading(false))
-  }, [page, pageSize, debouncedSearch, sort, monitoredParam])
+  }, [page, pageSize, debouncedSearch, sort, monitoredParam, queryKey])
+
+  // A selection only means something on the page it was made on.
+  useEffect(() => { setSelectedIds(new Set()) }, [page, queryKey])
 
   useEffect(() => { load() }, [load])
 

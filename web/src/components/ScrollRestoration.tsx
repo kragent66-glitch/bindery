@@ -64,8 +64,11 @@ function maxScrollY(): number {
  *  - a POP (back, forward, the Android back gesture, the iOS swipe) returns to
  *    where that history entry was left, keyed by location.key and kept in
  *    sessionStorage so it survives a reload too;
- *  - REPLACE and query-only pushes leave the scroll alone, and a location with
- *    a hash is left to the browser's own anchor handling.
+ *  - a PUSH that changes the list's `page` param also starts at the top;
+ *  - REPLACE and other query-only pushes (filters, sort) leave the scroll
+ *    alone, and a location with a hash is left to the browser's own anchor
+ *    handling. A REPLACE of the location being restored does not cancel the
+ *    restore.
  *
  * Restoring waits for the page to grow tall enough, because a list fetches its
  * rows after mounting, and gives up as soon as the user scrolls themselves.
@@ -76,6 +79,7 @@ export default function ScrollRestoration() {
   const positionsRef = useRef<Map<string, number> | null>(null)
   const keyRef = useRef(entryKey(location))
   const pathnameRef = useRef<string | null>(null)
+  const searchRef = useRef<string | null>(null)
 
   const positions = () => {
     if (!positionsRef.current) positionsRef.current = readPositions()
@@ -118,11 +122,25 @@ export default function ScrollRestoration() {
     }
   }, [])
 
+  // The restore in flight, if any, and the location it is restoring. It lives
+  // outside the effect so a REPLACE of the same location (a page tidying its
+  // own URL while rows load) does not cancel it through effect cleanup.
+  const restoreRef = useRef<{ stop: () => void; pathname: string; search: string } | null>(null)
+  useEffect(() => () => restoreRef.current?.stop(), [])
+
   useLayoutEffect(() => {
     const key = entryKey(location)
     keyRef.current = key
     const previousPathname = pathnameRef.current
+    const previousSearch = searchRef.current
     pathnameRef.current = location.pathname
+    searchRef.current = location.search
+
+    const inFlight = restoreRef.current
+    if (inFlight) {
+      if (navigationType === 'REPLACE' && inFlight.pathname === location.pathname && inFlight.search === location.search) return
+      inFlight.stop()
+    }
 
     if (navigationType === 'POP') {
       const target = positions().get(key)
@@ -137,6 +155,7 @@ export default function ScrollRestoration() {
         window.removeEventListener('wheel', stop)
         window.removeEventListener('touchmove', stop)
         window.removeEventListener('keydown', stop)
+        if (restoreRef.current?.stop === stop) restoreRef.current = null
       }
       const attempt = () => {
         if (cancelled) return
@@ -151,15 +170,20 @@ export default function ScrollRestoration() {
         window.scrollTo(0, target)
         timer = setTimeout(attempt, RESTORE_INTERVAL_MS)
       }
+      restoreRef.current = { stop, pathname: location.pathname, search: location.search }
       window.addEventListener('wheel', stop, { passive: true })
       window.addEventListener('touchmove', stop, { passive: true })
       window.addEventListener('keydown', stop)
       attempt()
-      return stop
+      return
     }
 
-    if (location.hash) return
-    if (navigationType === 'PUSH' && previousPathname !== null && previousPathname !== location.pathname) {
+    if (location.hash || navigationType !== 'PUSH' || previousPathname === null) return
+    // A new page starts at the top, and so does a new page of a list:
+    // Pagination sits below the rows, so page 2 would otherwise open at its
+    // bottom.
+    const pageParam = (search: string | null) => new URLSearchParams(search ?? '').get('page')
+    if (previousPathname !== location.pathname || pageParam(previousSearch) !== pageParam(location.search)) {
       window.scrollTo(0, 0)
     }
     // positions() only reads a ref; it does not need to be a dependency.
