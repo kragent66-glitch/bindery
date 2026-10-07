@@ -567,7 +567,7 @@ export default function AuthorsPage() {
                     <td className="px-3 py-2">
                       <Link to={`/author/${author.id}`} state={authorNavState(i)} className="flex items-center gap-2">
                         {author.imageUrl ? (
-                          <img src={author.imageUrl} alt="" className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
+                          <img loading="lazy" decoding="async" src={author.imageUrl} alt="" className="w-7 h-7 rounded-full object-cover flex-shrink-0" />
                         ) : (
                           <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center text-xs font-bold text-slate-500 dark:text-zinc-600 flex-shrink-0">
                             {author.authorName.charAt(0)}
@@ -623,7 +623,7 @@ export default function AuthorsPage() {
                 />
                 <Link to={`/author/${author.id}`} state={authorNavState(i)} className="flex gap-3 p-4 hover:bg-slate-200/40 dark:hover:bg-zinc-800/40 transition-colors">
                   {author.imageUrl ? (
-                    <img src={author.imageUrl} alt={author.authorName} className="w-16 h-16 rounded-full object-cover flex-shrink-0" />
+                    <img loading="lazy" decoding="async" src={author.imageUrl} alt={author.authorName} className="w-16 h-16 rounded-full object-cover flex-shrink-0" />
                   ) : (
                     <div className="w-16 h-16 rounded-full bg-slate-200 dark:bg-zinc-800 flex items-center justify-center flex-shrink-0 text-xl font-bold text-slate-500 dark:text-zinc-600">
                       {author.authorName.charAt(0)}

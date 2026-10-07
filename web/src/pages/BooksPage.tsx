@@ -399,7 +399,7 @@ export default function BooksPage() {
                     <td className="px-3 py-2">
                       <Link to={`/book/${book.id}`} state={bookNavState(i)} className="flex items-center gap-2" onClick={e => e.stopPropagation()}>
                         {book.imageUrl ? (
-                          <img src={book.imageUrl} alt="" className="w-6 h-9 object-cover rounded flex-shrink-0" />
+                          <img loading="lazy" decoding="async" src={book.imageUrl} alt="" className="w-6 h-9 object-cover rounded flex-shrink-0" />
                         ) : (
                           <div className="w-6 h-9 bg-slate-200 dark:bg-zinc-800 rounded flex-shrink-0" />
                         )}
@@ -459,7 +459,7 @@ export default function BooksPage() {
                 />
                 <Link to={`/book/${book.id}`} state={bookNavState(i)} className="block w-full h-full">
                   {book.imageUrl ? (
-                    <img src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />
+                    <img loading="lazy" decoding="async" src={book.imageUrl} alt={book.title} className="w-full h-full object-cover" />
                   ) : (
                     <div className="w-full h-full flex flex-col items-center justify-center gap-2 p-3 text-center">
                       <svg className="w-8 h-8 text-slate-400 dark:text-zinc-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5} aria-hidden="true">

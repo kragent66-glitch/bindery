@@ -22,7 +22,7 @@ export default function BulkActionBar({ count, actions, onClear, busy = false }:
   if (count === 0) return null
 
   return (
-    <div className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-between gap-4 px-6 py-3 bg-slate-800 dark:bg-zinc-950 border-t border-slate-600 dark:border-zinc-700 shadow-xl">
+    <div className="fixed bottom-0 left-0 right-0 z-50 flex items-center justify-between gap-4 px-safe-6 pt-3 pb-safe-3 bg-slate-800 dark:bg-zinc-950 border-t border-slate-600 dark:border-zinc-700 shadow-xl">
       <span className="text-sm font-medium text-white shrink-0">
         {t('bulkActionBar.selected', { count })}
       </span>

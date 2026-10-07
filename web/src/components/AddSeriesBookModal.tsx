@@ -140,7 +140,7 @@ export default function AddSeriesBookModal({ series, onClose, onLinked }: Props)
                       className="text-emerald-500 focus:ring-emerald-500"
                     />
                     {book.imageUrl ? (
-                      <img src={book.imageUrl} alt="" className="w-8 h-10 object-cover rounded flex-shrink-0" />
+                      <img loading="lazy" decoding="async" src={book.imageUrl} alt="" className="w-8 h-10 object-cover rounded flex-shrink-0" />
                     ) : (
                       <div className="w-8 h-10 bg-slate-300 dark:bg-zinc-700 rounded flex-shrink-0" />
                     )}

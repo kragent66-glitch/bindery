@@ -198,7 +198,7 @@ export default function RebindModal({ book, onClose, onSuccess }: Props) {
                         <div key={candidate.foreignBookId} className="rounded p-3 hover:bg-slate-100 dark:hover:bg-zinc-800">
                           <label className="flex cursor-pointer items-start gap-3 rounded focus-within:outline-2 focus-within:outline-emerald-600">
                             <input type="radio" name="rebind-result" className="mt-1 accent-emerald-600" disabled={isEdition || isOtherLibraryBook} checked={selected === candidate} onChange={() => { setSelected(candidate); setError(null) }} />
-                            {candidate.imageUrl && <img src={candidate.imageUrl} alt="" loading="lazy" className="h-16 w-11 shrink-0 rounded object-cover" />}
+                            {candidate.imageUrl && <img src={candidate.imageUrl} alt="" loading="lazy" decoding="async" className="h-16 w-11 shrink-0 rounded object-cover" />}
                             <span className="min-w-0 flex-1 text-sm">
                               <span className="block break-words font-medium">{candidate.title}</span>
                               <span className="block text-slate-600 dark:text-zinc-400">{candidate.author?.authorName || t('bookRebind.unknownAuthor')}</span>

@@ -69,7 +69,7 @@ export default function RequesterLibraryPage() {
         {items.map(b => (
           <li key={b.id} className="min-w-0">
             {b.coverUrl ? (
-              <img src={b.coverUrl} alt="" loading="lazy" className="w-full aspect-[2/3] object-cover rounded-md bg-slate-200 dark:bg-zinc-800" />
+              <img src={b.coverUrl} alt="" loading="lazy" decoding="async" className="w-full aspect-[2/3] object-cover rounded-md bg-slate-200 dark:bg-zinc-800" />
             ) : (
               <div aria-hidden="true" className="w-full aspect-[2/3] rounded-md bg-slate-200 dark:bg-zinc-800" />
             )}

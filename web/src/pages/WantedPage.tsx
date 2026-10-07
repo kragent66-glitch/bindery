@@ -215,7 +215,7 @@ export default function WantedPage() {
   return (
     <div className={selectedIds.size > 0 ? 'pb-16' : ''}>
       {toast && (
-        <div className="fixed bottom-6 right-6 z-50 px-4 py-2.5 bg-red-600 text-white rounded-lg shadow-lg text-sm font-medium animate-fade-in">
+        <div className="fixed bottom-safe-6 right-safe-6 z-50 px-4 py-2.5 bg-red-600 text-white rounded-lg shadow-lg text-sm font-medium animate-fade-in">
           {toast}
         </div>
       )}
@@ -298,7 +298,7 @@ export default function WantedPage() {
 
                   {/* uniform cover slot */}
                   {book.imageUrl ? (
-                    <img
+                    <img loading="lazy" decoding="async"
                       src={book.imageUrl}
                       alt=""
                       className="w-8 h-11 object-cover rounded bg-slate-200 dark:bg-zinc-800"

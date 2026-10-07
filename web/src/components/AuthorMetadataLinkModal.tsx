@@ -147,7 +147,7 @@ export default function AuthorMetadataLinkModal({ author, onClose, onLinked }: P
               >
                 <div className="flex items-center gap-3 min-w-0">
                   {candidate.imageUrl ? (
-                    <img src={candidate.imageUrl} alt={candidate.authorName} className="w-12 h-12 rounded-full object-cover flex-shrink-0" />
+                    <img loading="lazy" decoding="async" src={candidate.imageUrl} alt={candidate.authorName} className="w-12 h-12 rounded-full object-cover flex-shrink-0" />
                   ) : (
                     <div className="w-12 h-12 rounded-full bg-slate-300 dark:bg-zinc-700 flex items-center justify-center text-sm font-bold text-slate-600 dark:text-zinc-300 flex-shrink-0">
                       {candidate.authorName.charAt(0).toUpperCase()}
