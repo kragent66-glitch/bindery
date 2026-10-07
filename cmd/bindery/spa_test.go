@@ -87,3 +87,67 @@ func TestSPAHandler_FallsBackToIndex(t *testing.T) {
 		t.Fatalf("fallback did not serve the injected index: %q", rec.Body.String())
 	}
 }
+
+// A tab still running the previous build asks for chunk names the new build
+// no longer has. Answering with the app shell (200 text/html) made iOS
+// WebKit reject the import as "'text/html' is not a valid JavaScript MIME
+// type." instead of reloading; a missing asset must 404.
+func TestSPAHandler_MissingAssetIs404(t *testing.T) {
+	for _, base := range []string{"", "/bindery"} {
+		for _, p := range []string{
+			"/assets/BooksPage-abc123.js",
+			"/assets/index-abc123.css",
+			"/assets/nested/missing.png",
+			"/assets/",
+			"/stale-chunk-abc123.js",
+			"/workbox-abc123.mjs",
+			"/assets/BooksPage-abc123.js.map",
+		} {
+			t.Run("base="+base+p, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				spaTestServer(base).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, base+p, nil))
+				if rec.Code != http.StatusNotFound {
+					t.Fatalf("status = %d, want 404", rec.Code)
+				}
+				if ct := rec.Header().Get("Content-Type"); strings.HasPrefix(ct, "text/html") {
+					t.Fatalf("Content-Type = %q, want anything but the HTML app shell", ct)
+				}
+				if strings.Contains(rec.Body.String(), "<html") {
+					t.Fatalf("body is the app shell: %q", rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestSPAHandler_RoutesStillFallBackToIndex(t *testing.T) {
+	for _, base := range []string{"", "/bindery"} {
+		for _, p := range []string{"/", "/books", "/author/10", "/settings/calibre", "/assetsmanager", "/book/12/assets"} {
+			t.Run("base="+base+p, func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				spaTestServer(base).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, base+p, nil))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want 200", rec.Code)
+				}
+				if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+					t.Fatalf("Content-Type = %q, want text/html", ct)
+				}
+			})
+		}
+	}
+}
+
+func TestSPAHandler_ExistingAssetIsServed(t *testing.T) {
+	dist := fstest.MapFS{
+		"index.html":                 {Data: []byte(`<!doctype html>`)},
+		"assets/BooksPage-abc123.js": {Data: []byte("export default 1\n")},
+	}
+	rec := httptest.NewRecorder()
+	spaHandler(dist, []byte("<html></html>")).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/BooksPage-abc123.js", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
+		t.Fatalf("Content-Type = %q, want a JavaScript type", ct)
+	}
+}

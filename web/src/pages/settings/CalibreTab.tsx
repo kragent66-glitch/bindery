@@ -831,6 +831,9 @@ export function CalibreRollbackModal({
   }
 
   const display = applied ?? preview
+  // An older server sends actions: null for a run with nothing to undo.
+  const actions = display?.actions ?? []
+  const nothingToRollBack = !!preview && !applied && (preview.actions ?? []).length === 0
   const closable = !applying
   const { titleId, panelProps } = useModal({ onClose, canClose: closable })
 
@@ -895,13 +898,17 @@ export function CalibreRollbackModal({
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-700 dark:text-zinc-300 mb-1">
                   {t('settings.calibre.runs.actionsHeading')}
                 </p>
-                {display.actions.length === 0 ? (
+                {nothingToRollBack ? (
+                  <p className="text-xs text-slate-500 dark:text-zinc-500" data-testid="calibre-rollback-nothing">
+                    {display.dryRun ? t('settings.calibre.runs.nothingToRollBackDryRun') : t('settings.calibre.runs.nothingToRollBack')}
+                  </p>
+                ) : actions.length === 0 ? (
                   <p className="text-xs text-slate-500 dark:text-zinc-500">{t('settings.calibre.runs.noActions')}</p>
                 ) : (
                   <div className="max-h-64 overflow-y-auto rounded border border-slate-200 dark:border-zinc-800">
                     <table className="w-full text-xs">
                       <tbody>
-                        {display.actions.map(action => (
+                        {actions.map(action => (
                           <tr
                             key={`${action.entityType}-${action.externalId}-${action.localId}-${action.action}`}
                             className="border-t border-slate-200 dark:border-zinc-800"
@@ -948,7 +955,7 @@ export function CalibreRollbackModal({
           {!applied && (
             <button
               onClick={apply}
-              disabled={applying || previewLoading || !!error}
+              disabled={applying || previewLoading || !!error || nothingToRollBack}
               className="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 rounded text-sm font-medium text-white disabled:opacity-50"
             >
               {applying ? t('settings.calibre.runs.applying') : t('settings.calibre.runs.applyRollback')}

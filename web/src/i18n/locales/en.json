@@ -979,6 +979,8 @@
         "skipped": "{{count}} entries will be skipped (already rolled back or out of scope)",
         "actionsHeading": "Planned actions",
         "noActions": "Nothing to do.",
+        "nothingToRollBack": "Nothing to roll back. This import left nothing Bindery can undo.",
+        "nothingToRollBackDryRun": "Nothing to roll back. This was a dry run, so it never changed your library.",
         "applyRollback": "Apply rollback",
         "applying": "Applying…",
         "cancel": "Cancel",

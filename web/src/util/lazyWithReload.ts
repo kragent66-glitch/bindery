@@ -17,8 +17,11 @@ import { lazy, type ComponentType, type LazyExoticComponent } from 'react'
 export const CHUNK_RELOAD_KEY = 'bindery:chunk-reload'
 
 // Messages for a failed dynamic import across browsers: Chromium, Firefox,
-// Safari, and Vite's own preload helper.
-const CHUNK_ERROR = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|Unable to preload CSS|ChunkLoadError|Loading (CSS )?chunk .* failed/i
+// Safari, and Vite's own preload helper. The MIME type variants cover a chunk
+// that came back as an HTML page (a server or proxy answering a missing file
+// with the app shell); WebKit on iOS reports only "'text/html' is not a valid
+// JavaScript MIME type." for that, never a failed fetch.
+const CHUNK_ERROR = /Failed to fetch dynamically imported module|error loading dynamically imported module|Importing a module script failed|is not a valid JavaScript MIME type|Failed to load module script|disallowed MIME type|Unable to preload CSS|ChunkLoadError|Loading (CSS )?chunk .* failed/i
 
 export function isChunkLoadError(err: unknown): boolean {
   if (err instanceof Error) return CHUNK_ERROR.test(`${err.name}: ${err.message}`)

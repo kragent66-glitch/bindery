@@ -519,8 +519,10 @@ function AudiobookshelfSection() {
   }
   const rollbackActionDetail = (action: ABSRollbackAction) =>
     action.reason || `${action.entityType}${action.localId ? ` #${action.localId}` : ''}`
-  const rollbackPreviewChanges = rollbackResult?.actions.filter(action => action.action !== 'skip') ?? []
-  const rollbackPreviewRetained = rollbackResult?.actions.filter(action => action.action === 'skip') ?? []
+  // An older server sends actions: null for a run with nothing to undo.
+  const rollbackActions = rollbackResult?.actions ?? []
+  const rollbackPreviewChanges = rollbackActions.filter(action => action.action !== 'skip')
+  const rollbackPreviewRetained = rollbackActions.filter(action => action.action === 'skip')
 
   return (
     <section>

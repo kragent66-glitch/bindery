@@ -357,11 +357,16 @@ describe('CalibreTab coverage', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'common.close' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
 
-    mocked.calibreRunRollbackPreview.mockResolvedValueOnce(rollbackResult({ actions: [], runId: 8 }))
+    // A preview with nothing to undo keeps Apply disabled (see
+    // CalibreRollbackModal.empty.test.tsx), so the apply failure needs one.
+    mocked.calibreRunRollbackPreview.mockResolvedValueOnce(rollbackResult({
+      actions: [{ entityType: 'book', externalId: 'c-9', localId: 19, action: 'delete', displayName: 'Emma', reason: '' }],
+      runId: 8,
+    }))
     mocked.calibreRunRollback.mockRejectedValueOnce('locked')
     fireEvent.click(screen.getAllByRole('button', { name: 'settings.calibre.runs.rollback' })[1])
     dialog = await screen.findByRole('dialog')
-    expect(await within(dialog).findByText('settings.calibre.runs.noActions')).toBeInTheDocument()
+    expect(await within(dialog).findByText('Emma')).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'settings.calibre.runs.applyRollback' }))
     expect(await within(dialog).findByText(/settings\.calibre\.runs\.error .*locked/)).toBeInTheDocument()
     expect(mocked.calibreRunRollback).toHaveBeenCalledWith(8)
