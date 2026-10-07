@@ -105,7 +105,7 @@ export function ModalHistoryProvider({ children }: { children: ReactNode }) {
   // itself where the navigator exposes it (BrowserRouter and MemoryRouter
   // both do), and otherwise from the navigations made through here.
   const seenKey = useRef<string | null>(null)
-  const tracked = useRef<{ pathname: string; search: string; hash: string; state: unknown }>(location)
+  const tracked = useRef<{ pathname: string; search: string; hash: string; state: unknown; key?: string }>(location)
   if (seenKey.current !== location.key) {
     seenKey.current = location.key
     tracked.current = location
@@ -135,6 +135,19 @@ export function ModalHistoryProvider({ children }: { children: ReactNode }) {
   const pendingBack = useRef(false)
   const pendingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const queue = useRef<Array<() => void>>([])
+  // The key of the entry each open modal pushed. Only that exact entry is
+  // ever popped on close: if the page navigated in the meantime (a replace
+  // of the modal's entry), the entry on top is a real page and stays.
+  const pushedKey = useRef(new Map<string, string | undefined>())
+
+  // Ids in the top entry's marker that belong to a modal open right now. A
+  // marker can outlive its modal: a reload with a modal open, a tab the
+  // browser discarded and restored, or forward onto an entry whose modal has
+  // since closed. Such a marker must not change how navigation behaves.
+  const ownedIds = useCallback(
+    (state: unknown) => modalIdsOf(state).filter(id => live.current.has(id) && !closed.current.has(id)),
+    [],
+  )
 
   const flush = useCallback(() => {
     while (!pendingBack.current && queue.current.length > 0) {
@@ -148,22 +161,23 @@ export function ModalHistoryProvider({ children }: { children: ReactNode }) {
     pendingTimer.current = undefined
   }, [])
 
-  // Pop every entry on top that belongs to a modal that has closed.
+  // Pop the entry on top if a modal that has closed pushed it. When a back
+  // lands this runs again, so nested modals closed together unwind one
+  // entry at a time.
   const settle = useCallback(() => {
     if (pendingBack.current) return
-    const ids = modalIdsOf(top().state)
-    let n = 0
-    for (let i = ids.length - 1; i >= 0; i--) {
-      if (!closed.current.has(ids[i]) || live.current.has(ids[i])) break
-      n++
-    }
-    if (n === 0) return
+    const entry = top()
+    const ids = modalIdsOf(entry.state)
+    const last = ids[ids.length - 1]
+    if (last === undefined || !closed.current.has(last) || live.current.has(last)) return
+    if (!pushedKey.current.has(last) || pushedKey.current.get(last) !== entry.key) return
+    pushedKey.current.delete(last)
     pendingBack.current = true
     pendingTimer.current = setTimeout(() => {
       landBack()
       flush()
     }, PENDING_BACK_TIMEOUT_MS)
-    navigate(-n)
+    navigate(-1)
   }, [navigate, landBack, flush, top])
 
   // When a back of ours lands, release whatever waited for it.
@@ -178,23 +192,40 @@ export function ModalHistoryProvider({ children }: { children: ReactNode }) {
     if (pendingTimer.current !== undefined) clearTimeout(pendingTimer.current)
   }, [])
 
+  // On mount (a reload, or a tab restored after the browser discarded it) no
+  // modal is open yet, so a marker on the top entry is stale. Drop it so the
+  // entry behaves as the plain page it now is.
+  useEffect(() => {
+    const entry = top()
+    const ids = modalIdsOf(entry.state)
+    if (ids.length === 0 || ownedIds(entry.state).length > 0) return
+    const state = { ...(entry.state as Record<string, unknown>) }
+    delete state[STATE_KEY]
+    const to = { pathname: entry.pathname, search: entry.search, hash: entry.hash }
+    tracked.current = { ...to, state }
+    navigate(to, { replace: true, state: Object.keys(state).length > 0 ? state : null })
+    // Only on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const open = useCallback((id: string, force = false) => {
     if (live.current.has(id) && !force) return
     live.current.add(id)
     closed.current.delete(id)
     const run = () => {
       const loc = top()
-      const ids = modalIdsOf(loc.state)
-      if (ids.includes(id)) return
+      if (modalIdsOf(loc.state).includes(id)) return
+      const ids = ownedIds(loc.state).filter(other => other !== id)
       const base = isStateObject(loc.state) ? loc.state ?? {} : {}
       const state = { ...base, [STATE_KEY]: [...ids, id] }
       const to = { pathname: loc.pathname, search: loc.search, hash: loc.hash }
       tracked.current = { ...to, state }
       navigate(to, { state })
+      pushedKey.current.set(id, top().key)
     }
     if (pendingBack.current) queue.current.push(run)
     else run()
-  }, [navigate, top])
+  }, [navigate, top, ownedIds])
 
   const close = useCallback((id: string) => {
     if (!live.current.delete(id)) return
@@ -202,15 +233,17 @@ export function ModalHistoryProvider({ children }: { children: ReactNode }) {
     settle()
   }, [settle])
 
-  // A push made while a modal entry is on top replaces that entry, and any
-  // navigation waits for a back of ours that is still in flight.
+  // A push made while an open modal's entry is on top replaces that entry,
+  // and any navigation waits for a back of ours that is still in flight.
   const navigator = useMemo<Navigator>(() => {
     const inner = parent.navigator
     const currentPathname = () => joinBasename(parent.basename, top().pathname)
     const targetPathname = (to: To) => (typeof to === 'string' ? parsePath(to).pathname : to.pathname) ?? currentPathname()
     // Keep the open modals' marker when the page only tidies its own URL.
+    // Ids of modals that have closed, or that no open modal owns, are left
+    // out, so the entry is not mistaken for a modal's own later.
     const keepMarker = (to: To, state: unknown) => {
-      const ids = modalIdsOf(top().state)
+      const ids = ownedIds(top().state)
       if (ids.length === 0 || modalIdsOf(state).length > 0 || !isStateObject(state)) return state
       if (targetPathname(to) !== currentPathname()) return state
       return { ...(state ?? {}), [STATE_KEY]: ids }
@@ -223,7 +256,7 @@ export function ModalHistoryProvider({ children }: { children: ReactNode }) {
           queue.current.push(() => wrapped.push(to, state, opts))
           return
         }
-        if (modalIdsOf(top().state).length > 0) {
+        if (ownedIds(top().state).length > 0) {
           const next = keepMarker(to, state)
           setTracked(to, next)
           inner.replace(to, next, opts)
@@ -245,7 +278,7 @@ export function ModalHistoryProvider({ children }: { children: ReactNode }) {
     if (inner.createURL) wrapped.createURL = to => inner.createURL!(to)
     if (inner.encodeLocation) wrapped.encodeLocation = to => inner.encodeLocation!(to)
     return wrapped
-  }, [parent.navigator, parent.basename, top])
+  }, [parent.navigator, parent.basename, top, ownedIds])
 
   const navigationValue = useMemo(() => ({ ...parent, navigator }), [parent, navigator])
   const historyValue = useMemo<ModalHistory>(

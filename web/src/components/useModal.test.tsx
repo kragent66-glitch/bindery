@@ -225,6 +225,67 @@ describe('useModal history', () => {
   })
 })
 
+describe('useModal stale markers', () => {
+  // A marker can outlive its modal: a reload with a modal open, a tab the
+  // browser discarded, or forward onto an entry whose modal has closed.
+  function renderAt(entries: Parameters<typeof MemoryRouter>[0]['initialEntries'], index: number, props: Parameters<typeof Page>[0] = {}) {
+    seen.length = 0
+    return render(
+      <MemoryRouter initialEntries={entries} initialIndex={index}>
+        <ModalHistoryProvider>
+          <Probe />
+          <Routes>
+            <Route path="/books" element={<Page {...props} />} />
+            <Route path="*" element={<p>elsewhere</p>} />
+          </Routes>
+        </ModalHistoryProvider>
+      </MemoryRouter>,
+    )
+  }
+
+  it('drops the marker on mount and a push after a reload stays a push', async () => {
+    renderAt(['/prev', '/books?page=2', { pathname: '/books', search: '?page=2', state: { binderyModals: ['gone'], keep: 1 } }], 2)
+    await flush()
+    expect(current.state).toEqual({ keep: 1 })
+    const reloadedKey = current.key
+    await act(async () => { await nav('/books?page=3') })
+    expect(current.search).toBe('?page=3')
+    // One back returns to the reloaded entry, not past it.
+    await back()
+    expect(current.key).toBe(reloadedKey)
+    expect(current.search).toBe('?page=2')
+  })
+
+  it('a push from an entry whose modal has closed stays a push', async () => {
+    renderAt(['/prev', '/books?page=2'], 1)
+    await open()
+    const modalKey = current.key
+    await back()
+    await flush()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // Forward onto the dead entry, then navigate.
+    await act(async () => { await nav(1) })
+    expect(current.key).toBe(modalKey)
+    await act(async () => { await nav('/book/1') })
+    expect(current.pathname).toBe('/book/1')
+    await back()
+    expect(current.key).toBe(modalKey)
+  })
+
+  it('a same page navigation from a handler that closes the modal is kept', async () => {
+    renderAt(['/prev', '/books?page=2'], 1, { onNavigateAway: navigate => navigate('/books?page=3') })
+    const pageKey = current.key
+    await open()
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'go away' })) })
+    await flush()
+    await flush()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(current.search).toBe('?page=3')
+    await back()
+    expect(current.key).toBe(pageKey)
+  })
+})
+
 describe('useModal focus', () => {
   it('moves focus into the dialog and restores it to the opener on close', async () => {
     renderPage()
