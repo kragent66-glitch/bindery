@@ -1,4 +1,5 @@
 import { request } from './core'
+import type { DuplicateCandidateGroup } from './authors'
 
 // Header library search (#2551): the caller's own catalogue, grouped, a few
 // rows per group. Rows are deliberately thin; open the entity for the rest.
@@ -27,7 +28,19 @@ export interface LibrarySearchResponse {
   series: LibrarySearchSeries[]
 }
 
+// Library-wide duplicate review (#2999): every author's duplicate groups,
+// paginated, with the same shape the per-author window returns.
+export interface LibraryDuplicateCandidates {
+  groups: DuplicateCandidateGroup[]
+  total: number
+  count: number
+  limit: number
+  offset: number
+}
+
 export const libraryApi = {
+  listLibraryDuplicateCandidates: (limit: number, offset: number) =>
+    request<LibraryDuplicateCandidates>(`/library/duplicate-candidates?limit=${limit}&offset=${offset}`),
   // Library search (local catalogue only; the metadata search is searchBooks / searchAuthors)
   searchLibrary: (q: string, limit?: number) => {
     const params = new URLSearchParams({ q })

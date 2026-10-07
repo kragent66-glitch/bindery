@@ -355,6 +355,7 @@ export default function AddToLibraryModal({ onClose, onAdded, initialQuery, mode
           <div className="p-4 flex-1 overflow-y-auto">
             <div className="flex gap-2">
               <input
+                enterKeyHint="search"
                 type="text"
                 value={query}
                 onChange={e => setQuery(e.target.value)}

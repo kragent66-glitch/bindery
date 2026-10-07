@@ -169,6 +169,7 @@ export default function HardcoverSeriesLinkModal({ series, initialResults, onClo
           )}
 
           <input
+            enterKeyHint="search"
             type="text"
             value={query}
             onChange={e => setQuery(e.target.value)}

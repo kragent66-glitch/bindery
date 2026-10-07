@@ -162,12 +162,12 @@ function MoveRow({ move }: { move: ReorganizeMove }) {
         </span>
       </div>
       <div className="font-mono text-slate-500 dark:text-zinc-500 break-all">
-        <div className="truncate" title={move.current}>
+        <div>
           <span className="text-slate-400 dark:text-zinc-600">from </span>
           {move.current}
         </div>
         {move.status !== 'noop' && (
-          <div className="truncate" title={move.proposed}>
+          <div>
             <span className="text-slate-400 dark:text-zinc-600">to </span>
             {move.proposed}
           </div>

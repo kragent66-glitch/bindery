@@ -12,6 +12,7 @@ import Toggle from './Toggle'
 import SaveButton from './SaveButton'
 import CalibreDeliveryPanel from './CalibreDeliveryPanel'
 import { useSaveResult } from './useSaveResult'
+import { secretInputAttrs, urlInputAttrs } from '../../util/inputAttrs'
 
 export default function CalibreTab() {
   const [settings, setSettings] = useState<Record<string, string>>({})
@@ -394,6 +395,7 @@ function CalibreSection({
             </p>
             <div className="flex gap-2">
               <input
+                {...urlInputAttrs}
                 value={settings['calibre.plugin_url'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.plugin_url': e.target.value }))}
                 placeholder="http://calibre.default.svc:8099"
@@ -421,6 +423,7 @@ function CalibreSection({
             </p>
             <div className="flex gap-2">
               <input
+                {...secretInputAttrs}
                 type="password"
                 value={settings['calibre.plugin_api_key'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'calibre.plugin_api_key': e.target.value }))}

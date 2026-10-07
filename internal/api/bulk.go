@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -27,7 +28,14 @@ import (
 var (
 	errBulkAuthorNotOwned = fmt.Errorf("author not found")
 	errBulkBookNotOwned   = fmt.Errorf("book not found")
+	// errBulkBookHasFiles is a skipped "exclude" with expectNoFiles: the
+	// book gained a file after the caller decided it was an empty row (#2999).
+	errBulkBookHasFiles = fmt.Errorf("book has files; not excluded")
 )
+
+// bookHasFilesCode is the bulkItemResult code for errBulkBookHasFiles, so the
+// duplicate review can say which rows it skipped.
+const bookHasFilesCode = "has_files"
 
 // bulkSearchConcurrency caps how many indexer searches a single bulk
 // action can fan out at once. Sized to a small fixed number rather than
@@ -451,11 +459,18 @@ func (h *BulkHandler) fanOutSearches(books []models.Book) {
 // single-book PUT /book/:id/exclude path but skips the toggle semantics
 // (bulk callers always want exclude=true; un-excluding remains a per-book
 // affordance).
+//
+// "expectNoFiles": true makes "exclude" conditional (#2999): a book that has
+// any file by the time the request runs is skipped with code "has_files"
+// instead of excluded. The duplicate review sends it with the empty rows it
+// showed, so a row imported after the page loaded is never excluded on the
+// strength of a stale "no files". The check and the write are one statement.
 func (h *BulkHandler) BooksBulk(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		IDs       []int64 `json:"ids"`
-		Action    string  `json:"action"`
-		MediaType string  `json:"mediaType"`
+		IDs           []int64 `json:"ids"`
+		Action        string  `json:"action"`
+		MediaType     string  `json:"mediaType"`
+		ExpectNoFiles bool    `json:"expectNoFiles"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -530,7 +545,15 @@ func (h *BulkHandler) BooksBulk(w http.ResponseWriter, r *http.Request) {
 		case "set_media_type":
 			opErr = h.setBookMediaType(r.Context(), id, req.MediaType)
 		case "exclude":
-			opErr = h.setBookExcluded(r.Context(), id, true)
+			if req.ExpectNoFiles {
+				opErr = h.excludeBookIfNoFiles(r.Context(), id)
+			} else {
+				opErr = h.setBookExcluded(r.Context(), id, true)
+			}
+		}
+		if errors.Is(opErr, errBulkBookHasFiles) {
+			resp.Results[key] = bulkItemResult{Error: opErr.Error(), Code: bookHasFilesCode}
+			continue
 		}
 		if opErr != nil {
 			resp.Results[key] = bulkItemResult{Error: opErr.Error()}
@@ -752,6 +775,27 @@ func (h *BulkHandler) setBookExcluded(ctx context.Context, id int64, excluded bo
 		return errBulkBookNotOwned
 	}
 	return h.books.SetExcluded(ctx, id, excluded)
+}
+
+// excludeBookIfNoFiles is the expectNoFiles form of setBookExcluded: the
+// same ownership check, then an exclusion that only lands while the book has
+// no file (db.BookRepo.ExcludeIfNoFiles).
+func (h *BulkHandler) excludeBookIfNoFiles(ctx context.Context, id int64) error {
+	book, err := h.books.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if book == nil || !auth.CheckOwnership(ctx, book.OwnerUserID) {
+		return errBulkBookNotOwned
+	}
+	excluded, err := h.books.ExcludeIfNoFiles(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !excluded {
+		return errBulkBookHasFiles
+	}
+	return nil
 }
 
 func (h *BulkHandler) setBookMediaType(ctx context.Context, id int64, mediaType string) error {

@@ -48,6 +48,7 @@ const BookPicker = forwardRef<HTMLInputElement, Props>(function BookPicker({ onP
     <div className="rounded border border-slate-200 dark:border-zinc-800 p-2">
       <div className="flex gap-2">
         <input
+          enterKeyHint="search"
           ref={ref}
           type="text"
           value={term}

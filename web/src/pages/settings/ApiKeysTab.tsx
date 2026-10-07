@@ -6,6 +6,7 @@ import { useClipboardCopy } from '../../components/useClipboardCopy'
 import SaveButton from './SaveButton'
 import Toggle from './Toggle'
 import { useSaveResult } from './useSaveResult'
+import { secretInputAttrs } from '../../util/inputAttrs'
 
 export default function ApiKeysTab() {
   const { t } = useTranslation()
@@ -142,6 +143,7 @@ export default function ApiKeysTab() {
             <label className="block text-xs text-slate-600 dark:text-zinc-400 mb-1">{t('settings.general.googleBooksKey')}</label>
             <div className="flex gap-2">
               <input
+                {...secretInputAttrs}
                 value={settings['googlebooks.apiKey'] ?? ''}
                 onChange={e => setSettings(s => ({ ...s, 'googlebooks.apiKey': e.target.value }))}
                 placeholder={t('settings.general.googleBooksKeyHiddenPlaceholder', 'Saved key is hidden. Enter a new key to replace it.')}
@@ -175,6 +177,7 @@ export default function ApiKeysTab() {
               </div>
               <div className="flex gap-2">
                 <input
+                  {...secretInputAttrs}
                   value={hardcoverToken}
                   onChange={e => setHardcoverToken(e.target.value)}
                   placeholder={hardcoverTokenConfigured
