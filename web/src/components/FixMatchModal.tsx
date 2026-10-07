@@ -131,7 +131,7 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
           <h3 className="text-base font-semibold">
             {t('bookDetail.fixMatch.title', 'Reassign file to another book')}
           </h3>
-          <p className="mt-1 text-xs text-slate-500 dark:text-zinc-500 font-mono truncate" title={path}>
+          <p className="mt-1 text-xs text-slate-500 dark:text-zinc-500 font-mono break-all sm:truncate" title={path}>
             {path}
           </p>
         </div>
@@ -147,6 +147,7 @@ export default function FixMatchModal({ sourceBookId, path, format, onClose, onR
               )}
             </p>
             <input
+              enterKeyHint="search"
               autoFocus
               type="text"
               value={term}

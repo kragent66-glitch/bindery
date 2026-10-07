@@ -75,6 +75,7 @@ export default function SearchPage() {
         className="flex gap-2 mb-6"
       >
         <input
+          enterKeyHint="search"
           ref={inputRef}
           value={query}
           onChange={e => setQuery(e.target.value)}
