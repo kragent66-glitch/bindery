@@ -72,6 +72,7 @@ export default function BulkActionBar({ count, actions, onClear, busy = false }:
                 label: action.label,
                 onSelect: action.onClick,
                 danger: action.variant === 'danger',
+                caution: action.variant === 'caution',
               })),
               { label: t('bulkActionBar.clear'), onSelect: onClear },
             ]}

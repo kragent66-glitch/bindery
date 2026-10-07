@@ -68,7 +68,8 @@ describe('WhatsNewToast', () => {
   })
 
   // Anchored only on the right, a max-w-sm toast ran off the left edge of a
-  // 320px screen. Pinning both sides below sm keeps it inside the gutter.
+  // 320px screen. Pinning both sides below sm keeps it inside the gutter, and
+  // ml-auto keeps it on the right once the screen is wider than max-w-sm.
   it('pins both edges below sm and only the right edge from sm', () => {
     localStorage.setItem(KEY, '1.29.1')
     render(<WhatsNewToast version="1.30.0" />)
@@ -76,5 +77,6 @@ describe('WhatsNewToast', () => {
     expect(cls).toContain('left-4')
     expect(cls).toContain('sm:left-auto')
     expect(cls).toContain('right-4')
+    expect(cls).toContain('ml-auto')
   })
 })

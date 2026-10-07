@@ -1,4 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { useTranslation } from 'react-i18next'
 import { api, DownloadClient, Indexer, ProwlarrInstance } from '../api/client'
 import { useAuth } from '../auth/AuthContext'
@@ -47,15 +48,10 @@ const ADMIN_TABS: Tab[] = ['indexers', 'clients', 'notifications', 'quality', 'm
 const ALL_TABS: Tab[] = ['general', 'about', ...ADMIN_TABS]
 
 // Allow deep-linking to a specific tab via ?tab=indexers (used by first-run
-// onboarding guidance on the Authors/Books empty states). Read from the URL
-// directly rather than via a router hook so SettingsPage stays renderable
-// without a Router context (its tests render it bare).
-function initialTabFromUrl(): Tab {
-  try {
-    const param = new URLSearchParams(window.location.search).get('tab')
-    if (param && (ALL_TABS as string[]).includes(param)) return param as Tab
-  } catch { /* ignore — fall back to general */ }
-  return 'general'
+// onboarding guidance on the Authors/Books empty states). Anything missing or
+// unknown is General.
+function tabFromParam(param: string | null): Tab {
+  return param && (ALL_TABS as string[]).includes(param) ? param as Tab : 'general'
 }
 
 // The admin tabs in their sidebar groups. The sidebar and the phone select
@@ -118,35 +114,26 @@ function TabFallback({ label }: { label: string }) {
 export default function SettingsPage() {
   const { t } = useTranslation()
   const { isAdmin } = useAuth()
-  const [tab, setTabState] = useState<Tab>(initialTabFromUrl)
+  const [searchParams, setSearchParams] = useSearchParams()
+  const tab = tabFromParam(searchParams.get('tab'))
   const narrow = useMediaQuery(BELOW_MD)
 
-  // Keep the active tab in the URL (?tab=…) so every Settings sub-tab is
-  // deep-linkable and survives a refresh, and initialTabFromUrl picks the tab
-  // on a fresh load (e.g. /blocklist redirects to /settings?tab=blocklist).
-  // Each change pushes a history entry: with replaceState, Android back left
-  // Settings entirely instead of returning to the previous tab. The popstate
-  // listener below reads the tab back out of the URL. `replace` is for
-  // corrections the user did not ask for, which should not be a back step.
+  // The active tab lives in the URL (?tab=…), so every Settings sub-tab is
+  // deep-linkable and survives a refresh (e.g. /blocklist redirects to
+  // /settings?tab=blocklist). Each change is a router navigation that pushes
+  // a history entry: with a replace, Android back left Settings entirely
+  // instead of returning to the previous tab. Going through the router (not
+  // history.pushState) gives every tab its own location key, so scroll
+  // restoration keeps tabs apart. Picking the tab already showing, and
+  // corrections the user did not ask for, replace instead: neither should
+  // be a back step.
   const setTab = useCallback((next: Tab, { replace = false }: { replace?: boolean } = {}) => {
-    setTabState(next)
-    try {
-      const url = new URL(window.location.href)
-      // No ?tab= means General, so picking General there is not a change.
-      if ((url.searchParams.get('tab') ?? 'general') === next) return
-      url.searchParams.set('tab', next)
-      if (replace) window.history.replaceState(window.history.state, '', url)
-      else window.history.pushState(window.history.state, '', url)
-    } catch { /* ignore — tab state still updates */ }
-  }, [])
-
-  // Back and forward restore the URL; follow it. With no ?tab= (the entry
-  // before the first tab change) that is General.
-  useEffect(() => {
-    const onPop = () => setTabState(initialTabFromUrl())
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
-  }, [])
+    setSearchParams(prev => {
+      const params = new URLSearchParams(prev)
+      params.set('tab', next)
+      return params
+    }, { replace: replace || next === tab })
+  }, [setSearchParams, tab])
 
   // Soft cross-tab navigation passed to tabs (e.g. General's "Manage in Root
   // Folders →", Import's "Configure … in General settings →") so those links

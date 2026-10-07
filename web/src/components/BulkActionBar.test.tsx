@@ -72,6 +72,14 @@ describe('BulkActionBar', () => {
     expect(screen.getByRole('button', { name: 'bulkActionBar.clear' })).toBeInTheDocument()
   })
 
+  it('keeps caution styling for a caution action moved into More', () => {
+    restore = mockMatchMedia(true)
+    const list: BulkAction[] = [...actions().slice(0, 2), { label: 'Set both', onClick: vi.fn(), variant: 'caution' }]
+    render(<BulkActionBar count={2} actions={list} onClear={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: /common\.more/ }))
+    expect(screen.getByRole('menuitem', { name: 'Set both' }).className).toContain('text-amber-700')
+  })
+
   it('disables the More menu items while busy', () => {
     restore = mockMatchMedia(true)
     render(<BulkActionBar count={2} actions={actions()} onClear={vi.fn()} busy />)

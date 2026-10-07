@@ -1,5 +1,7 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { act, fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from 'react-router'
+import type { NavigateFunction } from 'react-router'
 import SettingsPage from './SettingsPage'
 import { mockMatchMedia } from '../test-utils'
 
@@ -46,9 +48,26 @@ vi.mock('./settings/AdvancedTab', () => ({ default: () => <p>advanced tab</p> })
 
 let restore: () => void = () => {}
 
-beforeEach(() => {
-  window.history.replaceState(null, '', '/settings')
-})
+let navigate: NavigateFunction
+
+// Shows where the router is and how it got there, and hands the test a
+// navigate function to press back with.
+function Probe() {
+  const location = useLocation()
+  navigate = useNavigate()
+  return <output data-testid="where">{`${useNavigationType()} ${location.pathname}${location.search}`}</output>
+}
+
+function renderSettings(entry = '/settings') {
+  return render(
+    <MemoryRouter initialEntries={[entry]}>
+      <Routes><Route path="/settings" element={<SettingsPage />} /></Routes>
+      <Probe />
+    </MemoryRouter>,
+  )
+}
+
+const where = () => screen.getByTestId('where').textContent
 afterEach(() => {
   restore()
   vi.restoreAllMocks()
@@ -59,7 +78,7 @@ describe('SettingsPage navigation on a phone', () => {
   // tab changed something a screen further down and the tap looked dead.
   it('replaces the sidebar with a select below md', async () => {
     restore = mockMatchMedia(q => q.includes('48rem'))
-    render(<SettingsPage />)
+    renderSettings()
     const select = screen.getByRole('combobox', { name: 'settings.sectionLabel' })
     expect(screen.queryByRole('button', { name: 'settings.tabs.indexers' })).not.toBeInTheDocument()
     expect(await screen.findByText('general tab')).toBeInTheDocument()
@@ -71,7 +90,7 @@ describe('SettingsPage navigation on a phone', () => {
 
   it('groups the select options under translated headings', () => {
     restore = mockMatchMedia(true)
-    render(<SettingsPage />)
+    renderSettings()
     const groups = Array.from(document.querySelectorAll('optgroup')).map(g => g.label)
     expect(groups).toEqual([
       'settings.groups.sources',
@@ -83,14 +102,14 @@ describe('SettingsPage navigation on a phone', () => {
 
   it('keeps the sidebar from md up', async () => {
     restore = mockMatchMedia(false)
-    render(<SettingsPage />)
+    renderSettings()
     expect(screen.queryByRole('combobox', { name: 'settings.sectionLabel' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'settings.tabs.indexers' })).toBeInTheDocument()
     expect(await screen.findByText('general tab')).toBeInTheDocument()
   })
 
   it('translates the sidebar group headings and the Preview chip', () => {
-    render(<SettingsPage />)
+    renderSettings()
     for (const key of ['sources', 'library', 'integrations', 'system']) {
       expect(screen.getByText(`settings.groups.${key}`)).toBeInTheDocument()
     }
@@ -102,41 +121,46 @@ describe('SettingsPage navigation on a phone', () => {
 
 describe('SettingsPage tab history', () => {
   // Android back left Settings entirely because tab changes replaced the
-  // history entry instead of adding one.
-  it('pushes a history entry per tab change', async () => {
-    const push = vi.spyOn(window.history, 'pushState')
-    const replace = vi.spyOn(window.history, 'replaceState')
-    render(<SettingsPage />)
+  // history entry instead of adding one. Tab changes now go through the
+  // router, so each one is its own location with its own key.
+  it('pushes a router entry per tab change', async () => {
+    renderSettings()
     fireEvent.click(screen.getByRole('button', { name: 'settings.tabs.logs' }))
     expect(await screen.findByText('logs tab')).toBeInTheDocument()
-    expect(push).toHaveBeenCalledTimes(1)
-    expect(String(push.mock.calls[0][2])).toContain('?tab=logs')
-    expect(replace).not.toHaveBeenCalled()
+    expect(where()).toBe('PUSH /settings?tab=logs')
   })
 
-  it('does not push again when the active tab is picked', () => {
-    const push = vi.spyOn(window.history, 'pushState')
-    render(<SettingsPage />)
+  it('replaces rather than pushes when the active tab is picked', async () => {
+    renderSettings()
     fireEvent.click(screen.getByRole('button', { name: 'settings.tabs.general' }))
-    expect(push).not.toHaveBeenCalled()
+    expect(where()).toBe('REPLACE /settings?tab=general')
   })
 
-  it('follows the URL back to the previous tab', async () => {
-    render(<SettingsPage />)
+  it('goes back to the previous tab', async () => {
+    renderSettings()
     fireEvent.click(screen.getByRole('button', { name: 'settings.tabs.logs' }))
     expect(await screen.findByText('logs tab')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'settings.tabs.calibre' }))
+    expect(await screen.findByText('calibre tab')).toBeInTheDocument()
 
-    // What the browser does on back: restore the URL, then fire popstate.
-    act(() => {
-      window.history.replaceState(null, '', '/settings')
-      window.dispatchEvent(new PopStateEvent('popstate'))
-    })
+    act(() => { void navigate(-1) })
+    expect(await screen.findByText('logs tab')).toBeInTheDocument()
+    act(() => { void navigate(-1) })
+    expect(await screen.findByText('general tab')).toBeInTheDocument()
+    expect(where()).toBe('POP /settings')
+  })
+
+  // The header Settings link goes to bare /settings. The tab follows the
+  // URL, so that shows General instead of leaving the last tab up.
+  it('shows General when the URL loses its tab', async () => {
+    renderSettings('/settings?tab=logs')
+    expect(await screen.findByText('logs tab')).toBeInTheDocument()
+    act(() => { void navigate('/settings') })
     expect(await screen.findByText('general tab')).toBeInTheDocument()
   })
 
   it('still opens a deep linked tab', async () => {
-    window.history.replaceState(null, '', '/settings?tab=calibre')
-    render(<SettingsPage />)
+    renderSettings('/settings?tab=calibre')
     expect(await screen.findByText('calibre tab')).toBeInTheDocument()
   })
 })

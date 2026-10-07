@@ -153,8 +153,9 @@ export default function LogsTab() {
       <div className="flex flex-wrap items-center gap-3 mb-3">
         <h3 className="text-lg font-semibold mr-auto">{t('settings.logs.heading')}</h3>
 
-        {/* Level filter pills */}
-        <div className="flex items-center gap-1.5 text-xs">
+        {/* Level filter pills. They wrap: five pills and the label in one
+            unbreakable row pushed a phone page out to about 406px. */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs" data-testid="log-level-filter">
           <span className="text-[10px] font-medium uppercase text-slate-400 dark:text-zinc-600 mr-1">View</span>
           {(['all', 'debug', 'info', 'warn', 'error'] as const).map(f => (
             <button
@@ -409,12 +410,14 @@ export default function LogsTab() {
       <section className="mt-8">
         <h3 className="text-base font-semibold mb-3 text-slate-800 dark:text-zinc-200">{t('settings.general.backup')}</h3>
         <div className="p-4 border border-slate-200 dark:border-zinc-800 rounded-lg bg-slate-100 dark:bg-zinc-900 space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
+          {/* Stacks below sm like the retention row above: the label input
+              and button cannot shrink, so side by side they widened the page. */}
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-0" data-testid="backup-create-row">
+            <div className="min-w-0">
               <p className="text-sm text-slate-700 dark:text-zinc-300">{t('settings.general.backupCreate')}</p>
               <p className="text-xs text-slate-600 dark:text-zinc-500 mt-0.5">{t('settings.general.backupHint')}</p>
             </div>
-            <div className="flex items-center gap-2 flex-shrink-0">
+            <div className="flex flex-wrap items-center gap-2 sm:flex-shrink-0">
               <input
                 type="text"
                 value={backupLabel}

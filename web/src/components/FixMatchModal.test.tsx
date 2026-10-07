@@ -166,15 +166,16 @@ describe('FixMatchModal', () => {
   })
 
   // A fixed 5rem top offset plus an uncapped panel pushed the footer under
-  // the browser toolbar on a phone.
+  // the browser toolbar on a phone. From sm the panel is centred: a 5rem
+  // offset plus a 90dvh panel ran off any viewport under about 800px.
   it('caps the panel on a phone and scrolls its body', () => {
     renderModal()
     const dialog = screen.getByRole('dialog')
     expect(dialog.className).toContain('modal-max-h')
     expect(dialog.className).toContain('flex flex-col')
     const overlay = dialog.parentElement!
-    expect(overlay.className).toContain('sm:pt-20')
-    expect(overlay.className.split(/\s+/)).not.toContain('pt-20')
+    expect(overlay.className).toContain('sm:items-center')
+    expect(overlay.className).not.toContain('pt-20')
     const body = dialog.children[1] as HTMLElement
     expect(body.className).toContain('overflow-y-auto')
     expect(body.className).toContain('min-h-0')

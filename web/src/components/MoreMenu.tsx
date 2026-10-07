@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { btn, btnSize } from './buttons'
 
 // Overflow menu for actions that shouldn't spend room in a button row.
@@ -17,6 +17,8 @@ export interface MoreMenuItem {
   onSelect: () => void
   /** Renders the item in the destructive vocabulary. */
   danger?: boolean
+  /** Renders the item in the caution (amber) vocabulary. */
+  caution?: boolean
   disabled?: boolean
   title?: string
 }
@@ -51,6 +53,18 @@ export default function MoreMenu({
   const triggerRef = useRef<HTMLButtonElement>(null)
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
   const menuId = useId()
+  const menuRef = useRef<HTMLDivElement>(null)
+  // Which edge of the trigger the menu lines up with. Right by default; when
+  // the trigger sits near the left of a narrow screen (a wrapped button row
+  // on a phone) a right aligned menu runs off the left edge, so it flips.
+  const [align, setAlign] = useState<'right' | 'left'>('right')
+
+  // Measure before paint so the menu never shows clipped for a frame.
+  useLayoutEffect(() => {
+    if (!open) return
+    const rect = menuRef.current?.getBoundingClientRect()
+    if (align === 'right' && rect && rect.left < 0) setAlign('left')
+  }, [open, align])
 
   const enabledIndexes = items.map((it, i) => (it.disabled ? -1 : i)).filter(i => i >= 0)
 
@@ -90,6 +104,7 @@ export default function MoreMenu({
 
   const openAt = (where: 'first' | 'last') => {
     if (enabledIndexes.length === 0) return
+    setAlign('right')
     setOpen(true)
     setActiveIndex(where === 'first' ? enabledIndexes[0] : enabledIndexes[enabledIndexes.length - 1])
   }
@@ -158,10 +173,11 @@ export default function MoreMenu({
       {open && (
         <div
           id={menuId}
+          ref={menuRef}
           role="menu"
           aria-label={ariaLabel ?? label}
           onKeyDown={onMenuKeyDown}
-          className={`absolute right-0 z-20 ${placement === 'above' ? 'bottom-full mb-1' : 'mt-1'} min-w-44 rounded-md border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 py-1`}
+          className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} z-20 max-w-[calc(100vw-1rem)] ${placement === 'above' ? 'bottom-full mb-1' : 'mt-1'} min-w-44 rounded-md border border-slate-300 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-900 py-1`}
         >
           {items.map((item, i) => (
             <button
@@ -176,7 +192,9 @@ export default function MoreMenu({
               className={`block w-full px-3 py-1.5 pointer-coarse:py-2.5 text-left text-sm disabled:opacity-40 disabled:cursor-not-allowed focus-visible:outline-none focus:bg-slate-200 dark:focus:bg-zinc-800 ${
                 item.danger
                   ? 'text-red-700 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40'
-                  : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-800'
+                  : item.caution
+                    ? 'text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40'
+                    : 'text-slate-700 dark:text-zinc-300 hover:bg-slate-200 dark:hover:bg-zinc-800'
               }`}
             >
               {item.label}

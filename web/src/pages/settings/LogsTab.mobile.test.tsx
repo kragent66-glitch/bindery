@@ -72,4 +72,18 @@ describe('LogsTab on a phone', () => {
     expect(pane.className).toContain('max-h-[60dvh]')
     expect(pane.className).not.toContain('max-h-[60vh]')
   })
+
+  // The level pills and the backup row could not wrap, so together they
+  // widened a phone page to about 406px.
+  it('lets the level filter and the backup row wrap', async () => {
+    render(<LogsTab />)
+    await screen.findByText('move failed')
+    expect(screen.getByTestId('log-level-filter').className).toContain('flex-wrap')
+    const backup = screen.getByTestId('backup-create-row')
+    expect(backup.className).toContain('flex-col')
+    expect(backup.className).toContain('sm:flex-row')
+    const controls = screen.getByPlaceholderText('settings.general.backupLabelPlaceholder').parentElement!
+    expect(controls.className).toContain('flex-wrap')
+    expect(controls.className.split(/\s+/)).not.toContain('flex-shrink-0')
+  })
 })
