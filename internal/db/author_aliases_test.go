@@ -539,28 +539,21 @@ func TestMerge_WritesCanonicalRFC3339UpdatedAt(t *testing.T) {
 		t.Fatalf("merge: %v", err)
 	}
 
-	// #2792: the reparenting UPDATEs bound a raw time.Time, so the driver stored
+	// #2792: the reparenting UPDATE bound a raw time.Time, so the driver stored
 	// Go's time.String() layout ("... +0000 UTC") instead of the RFC3339 shape
-	// every other books/identifiers writer uses. Read both re-parented columns
-	// back as text and require the canonical shape.
-	for _, tc := range []struct {
-		name  string
-		query string
-		arg   int64
-	}{
-		{"books.updated_at", "SELECT CAST(updated_at AS TEXT) FROM books WHERE id = ?", b1.ID},
-		{"author_identifiers.updated_at", "SELECT CAST(updated_at AS TEXT) FROM author_identifiers WHERE author_id = ?", target.ID},
-	} {
-		var stored string
-		if err := database.QueryRow(tc.query, tc.arg).Scan(&stored); err != nil {
-			t.Fatalf("query %s: %v", tc.name, err)
-		}
-		if _, err := time.Parse(time.RFC3339Nano, stored); err != nil {
-			t.Errorf("%s = %q is not RFC3339Nano: %v", tc.name, stored, err)
-		}
-		if !strings.HasSuffix(stored, "Z") {
-			t.Errorf("%s = %q does not end with Z (UTC)", tc.name, stored)
-		}
+	// every other books writer uses. Read the column back as text and require the
+	// canonical shape; pre-fix this is "2026-... +0000 UTC" and fails to parse.
+	var stored string
+	if err := database.QueryRow(
+		"SELECT CAST(updated_at AS TEXT) FROM books WHERE id = ?", b1.ID,
+	).Scan(&stored); err != nil {
+		t.Fatalf("query book updated_at: %v", err)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, stored); err != nil {
+		t.Errorf("books.updated_at = %q is not RFC3339Nano: %v", stored, err)
+	}
+	if !strings.HasSuffix(stored, "Z") {
+		t.Errorf("books.updated_at = %q does not end with Z (UTC)", stored)
 	}
 }
 

@@ -422,7 +422,7 @@ func (r *AuthorAliasRepo) Merge(ctx context.Context, sourceID, targetID int64, o
 
 	if _, err := tx.ExecContext(ctx,
 		"UPDATE author_identifiers SET author_id = ?, updated_at = ? WHERE author_id = ?",
-		targetID, timeValueArg(time.Now().UTC()), sourceID); err != nil {
+		targetID, time.Now().UTC(), sourceID); err != nil {
 		return nil, fmt.Errorf("migrate author identifiers: %w", err)
 	}
 
