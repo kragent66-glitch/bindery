@@ -539,33 +539,28 @@ func TestMerge_WritesCanonicalRFC3339UpdatedAt(t *testing.T) {
 		t.Fatalf("merge: %v", err)
 	}
 
-	// Verify that the reparented book's updated_at is stored in RFC3339Nano format.
-	var stored string
-	err = database.QueryRow("SELECT CAST(updated_at AS TEXT) FROM books WHERE id = ?", b1.ID).Scan(&stored)
-	if err != nil {
-		t.Fatalf("query book updated_at: %v", err)
-	}
-
-	// Must parse as RFC3339Nano and end with Z (UTC).
-	if _, err := time.Parse(time.RFC3339Nano, stored); err != nil {
-		t.Errorf("book updated_at %q is not RFC3339Nano: %v", stored, err)
-	}
-	if !strings.HasSuffix(stored, "Z") {
-		t.Errorf("book updated_at %q does not end with Z (UTC)", stored)
-	}
-
-	// Also verify author_identifiers.updated_at is in the same format.
-	var identifierStored string
-	err = database.QueryRow("SELECT CAST(updated_at AS TEXT) FROM author_identifiers WHERE author_id = ?", target.ID).Scan(&identifierStored)
-	if err != nil {
-		t.Fatalf("query author_identifier updated_at: %v", err)
-	}
-
-	if _, err := time.Parse(time.RFC3339Nano, identifierStored); err != nil {
-		t.Errorf("author_identifier updated_at %q is not RFC3339Nano: %v", identifierStored, err)
-	}
-	if !strings.HasSuffix(identifierStored, "Z") {
-		t.Errorf("author_identifier updated_at %q does not end with Z (UTC)", identifierStored)
+	// #2792: the reparenting UPDATEs bound a raw time.Time, so the driver stored
+	// Go's time.String() layout ("... +0000 UTC") instead of the RFC3339 shape
+	// every other books/identifiers writer uses. Read both re-parented columns
+	// back as text and require the canonical shape.
+	for _, tc := range []struct {
+		name  string
+		query string
+		arg   int64
+	}{
+		{"books.updated_at", "SELECT CAST(updated_at AS TEXT) FROM books WHERE id = ?", b1.ID},
+		{"author_identifiers.updated_at", "SELECT CAST(updated_at AS TEXT) FROM author_identifiers WHERE author_id = ?", target.ID},
+	} {
+		var stored string
+		if err := database.QueryRow(tc.query, tc.arg).Scan(&stored); err != nil {
+			t.Fatalf("query %s: %v", tc.name, err)
+		}
+		if _, err := time.Parse(time.RFC3339Nano, stored); err != nil {
+			t.Errorf("%s = %q is not RFC3339Nano: %v", tc.name, stored, err)
+		}
+		if !strings.HasSuffix(stored, "Z") {
+			t.Errorf("%s = %q does not end with Z (UTC)", tc.name, stored)
+		}
 	}
 }
 
