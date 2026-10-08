@@ -1,0 +1,2 @@
+### Fixed
+- Proxy auth works behind Cloudflare Tunnel and any other proxy that sets `X-Forwarded-For` (#3096). Bindery checked the visitor's address against `BINDERY_TRUSTED_PROXY` instead of the proxy's own, so every proxied sign in was rejected and the login page offered nothing to click. The rejection log now shows the connecting proxy and the forwarded visitor separately. Thanks to Leftastic for the report and the exact fix.

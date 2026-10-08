@@ -670,17 +670,33 @@ func Middleware(p Provider) func(http.Handler) http.Handler {
 // identity header from a configured proxy IP. Returns (userID, true) on
 // success. Returns (0, false) when the header is missing or the source is
 // untrusted. A forged header from an untrusted IP is logged and rejected.
+//
+// The trust decision is made on the TCP peer, the proxy that actually opened
+// the connection, never on the client address resolved from
+// X-Forwarded-For. By the time this runs trustedProxyMiddleware has let
+// TrustedRealIP rewrite r.RemoteAddr to the forwarded client for a trusted
+// peer, so checking r.RemoteAddr asked "is the visitor a trusted proxy?" and
+// rejected every request through a proxy that sets X-Forwarded-For, which is
+// every real one (Cloudflare Tunnel, Traefik, nginx; #3096). RealPeerHost
+// reads the peer trustedProxyMiddleware stored before that rewrite. An
+// untrusted peer cannot move it: its forwarded headers are stripped and its
+// RemoteAddr is left alone.
 func resolveProxyIdentity(r *http.Request, p Provider) (int64, bool) {
 	header := p.ProxyAuthHeader()
 	username := strings.TrimSpace(r.Header.Get(header))
 
-	peerIP := requestPeerIP(r)
+	peerIP := net.ParseIP(RealPeerHost(r))
 
 	trusted := isTrustedProxy(peerIP, p.TrustedProxyCIDRs())
 
 	if username != "" && !trusted {
-		slog.Warn("proxy auth: identity header from untrusted source — rejecting",
-			"header", header, "peer", peerIP)
+		// peer is the connection's own address, the one the decision was
+		// made on; client is what X-Forwarded-For resolved to. They differ
+		// only when a trusted proxy forwarded the request, so reporting both
+		// tells "the proxy is not in BINDERY_TRUSTED_PROXY" apart from "a
+		// host is talking to Bindery directly".
+		slog.Warn("proxy auth: identity header from untrusted source, rejecting",
+			"header", header, "peer", RealPeerHost(r), "client", ipString(requestPeerIP(r)))
 		return 0, false
 	}
 	if !trusted || username == "" {
@@ -711,6 +727,18 @@ func isTrustedProxy(ip net.IP, cidrs []*net.IPNet) bool {
 	return false
 }
 
+// ipString renders ip for a log attribute, "" when it did not parse.
+func ipString(ip net.IP) string {
+	if ip == nil {
+		return ""
+	}
+	return ip.String()
+}
+
+// requestPeerIP returns the client IP as r.RemoteAddr carries it. Behind a
+// trusted proxy that is the client resolved from X-Forwarded-For, not the TCP
+// peer: use it to key or log the end user, never to decide whether the sender
+// is a trusted proxy (RealPeerHost answers that).
 func requestPeerIP(r *http.Request) net.IP {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
