@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vavallee/bindery/internal/models"
 )
@@ -511,6 +512,60 @@ func TestMerge_RollsBackOnFailure(t *testing.T) {
 	_, err = aliasRepo.Merge(ctx, a.ID, a.ID, MergeOptions{})
 	if err == nil {
 		t.Fatal("expected error on self-merge")
+	}
+}
+
+func TestMerge_WritesCanonicalRFC3339UpdatedAt(t *testing.T) {
+	database, err := OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+
+	ctx := context.Background()
+	authorRepo := NewAuthorRepo(database)
+	bookRepo := NewBookRepo(database)
+	aliasRepo := NewAuthorAliasRepo(database)
+
+	source := seedAuthor(t, authorRepo, "OL-source", "RR Haywood")
+	target := seedAuthor(t, authorRepo, "OL-target", "R.R. Haywood")
+	if err := authorRepo.UpsertAuthorIdentifier(ctx, source.ID, "hc:rr-haywood"); err != nil {
+		t.Fatal(err)
+	}
+
+	b1 := seedBook(t, bookRepo, source.ID, "W1", "Book One")
+
+	if _, err := aliasRepo.Merge(ctx, source.ID, target.ID, MergeOptions{OverwriteDefaults: true}); err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+
+	// Verify that the reparented book's updated_at is stored in RFC3339Nano format.
+	var stored string
+	err = database.QueryRow("SELECT CAST(updated_at AS TEXT) FROM books WHERE id = ?", b1.ID).Scan(&stored)
+	if err != nil {
+		t.Fatalf("query book updated_at: %v", err)
+	}
+
+	// Must parse as RFC3339Nano and end with Z (UTC).
+	if _, err := time.Parse(time.RFC3339Nano, stored); err != nil {
+		t.Errorf("book updated_at %q is not RFC3339Nano: %v", stored, err)
+	}
+	if !strings.HasSuffix(stored, "Z") {
+		t.Errorf("book updated_at %q does not end with Z (UTC)", stored)
+	}
+
+	// Also verify author_identifiers.updated_at is in the same format.
+	var identifierStored string
+	err = database.QueryRow("SELECT CAST(updated_at AS TEXT) FROM author_identifiers WHERE author_id = ?", target.ID).Scan(&identifierStored)
+	if err != nil {
+		t.Fatalf("query author_identifier updated_at: %v", err)
+	}
+
+	if _, err := time.Parse(time.RFC3339Nano, identifierStored); err != nil {
+		t.Errorf("author_identifier updated_at %q is not RFC3339Nano: %v", identifierStored, err)
+	}
+	if !strings.HasSuffix(identifierStored, "Z") {
+		t.Errorf("author_identifier updated_at %q does not end with Z (UTC)", identifierStored)
 	}
 }
 
